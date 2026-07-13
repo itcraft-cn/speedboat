@@ -1,0 +1,264 @@
+@startuml core_data_flow
+!theme plain
+
+title Speedboat 核心数据流 — 主节点选举 / 分布式锁 / 跨机房级联
+
+skinparam ParticipantPadding 20
+skinparam BoxPadding 10
+skinparam SequenceMessageAlign center
+
+== 流程 1：Leader 选举（Raft 共识） ==
+
+actor User as "用户/应用"
+
+box "Speedboat 门面层" #LightBlue
+  participant Speedboat as "Speedboat\n(Facade)"
+end box
+
+box "Raft 核心层" #LightGreen
+  participant RaftNode as "RaftNode\n(候选者 C)"
+  participant RaftNodePeer as "RaftNode\n(对端 Peer)"
+  participant RaftGroup as "RaftGroup\n(组管理器)"
+end box
+
+box "网络传输层" #LightYellow
+  participant NettyTransport as "NettyTransport\n(Server + Client)"
+  participant RpcMessageHandler as "RpcMessageHandler\n(服务端入站)"
+  participant RpcResponseHandler as "RpcResponseHandler\n(客户端入站)"
+end box
+
+box "序列化层" #LightCoral
+  participant CustomSerializer as "CustomSerializer\n(Header + CRC32)"
+  participant ProtostuffSerializer as "ProtostuffSerializer\n(Payload)"
+end box
+
+User -> Speedboat: start(config)
+activate Speedboat
+
+Speedboat -> Speedboat: create singleton\nmatchLocalNode()\nresolveDatacenterId()
+
+Speedboat -> NettyTransport: new NettyTransport(localEndpoint, peerEndpoints, serializer)
+activate NettyTransport
+note right: 构造时传入 CustomSerializer(ProtostuffSerializer)
+
+Speedboat -> Speedboat: new RaftNode.Builder()\n  .nodeId().peerIds()\n  .electionTimeout()\n  .transportLayer().stateMachine()\n  .build()
+
+Speedboat -> NettyTransport: start()
+NettyTransport -> NettyTransport: 创建 ServerBootstrap\n绑定 localPort 开始监听
+
+loop 每个 peer
+  NettyTransport -> NettyTransport: 创建 Bootstrap\nconnect(peerIp, peerPort)
+  note right: 为每个 peer 建立 TCP 长连接\n客户端 Channel 绑定 RpcResponseHandler
+end
+
+Speedboat -> RaftNode: start()
+activate RaftNode
+RaftNode -> RaftNode: startElectionTimer()\n随机选举超时 (150-300ms)
+
+... 选举超时触发 ...
+
+RaftNode -> RaftNode: transitionTo(CANDIDATE)\ncurrentTerm.increment()
+RaftNode -> RaftNode: votedFor = self\nvotesReceived.clear()
+
+RaftNode -> RaftNode: 构造 RequestVoteRequest\n(term, candidateId, lastLogIndex, lastLogTerm)
+
+RaftNode -> CustomSerializer: wrap(requestVoteRequest)
+activate CustomSerializer
+CustomSerializer -> ProtostuffSerializer: serialize(requestVoteRequest)
+activate ProtostuffSerializer
+ProtostuffSerializer --> CustomSerializer: byte[] payload
+deactivate ProtostuffSerializer
+CustomSerializer -> CustomSerializer: 计算 CRC32(payload)\n构建 header [len|CRC32|serializerType|messageType]\n拼接 header + payload
+CustomSerializer --> RaftNode: byte[] (header + payload)
+deactivate CustomSerializer
+
+RaftNode -> NettyTransport: broadcast(byte[])
+activate NettyTransport
+
+loop 每个 peer channel
+  NettyTransport -> NettyTransport: channel.writeAndFlush(byte[])\nTCP 发送到对端节点
+end
+
+=== 对端节点接收处理 ===
+
+NettyTransport -> RpcMessageHandler: channelRead(byte[])
+activate RpcMessageHandler
+RpcMessageHandler -> CustomSerializer: unwrap(byte[], Object.class)
+activate CustomSerializer
+CustomSerializer -> CustomSerializer: 解析 header\n校验 CRC32\n提取 payload
+CustomSerializer -> ProtostuffSerializer: deserialize(payload, RequestVoteRequest.class)
+activate ProtostuffSerializer
+ProtostuffSerializer --> CustomSerializer: RequestVoteRequest
+deactivate ProtostuffSerializer
+CustomSerializer --> RpcMessageHandler: RequestVoteRequest
+deactivate CustomSerializer
+
+RpcMessageHandler -> RpcMessageHandler: 识别为 RequestVoteRequest\n调用 transport.getRequestVoteHandler()
+
+RpcMessageHandler -> RaftNodePeer: handleRequestVote(request)
+activate RaftNodePeer
+RaftNodePeer -> RaftNodePeer: 校验 term >= currentTerm\n校验 votedFor == null || votedFor == candidateId\n校验日志完整性
+RaftNodePeer --> RpcMessageHandler: RequestVoteResponse(term, voteGranted)
+deactivate RaftNodePeer
+
+RpcMessageHandler -> CustomSerializer: wrap(responseWithId)
+CustomSerializer -> ProtostuffSerializer: serialize(...)
+ProtostuffSerializer --> CustomSerializer: byte[]
+CustomSerializer --> RpcMessageHandler: byte[]
+RpcMessageHandler -> NettyTransport: ctx.writeAndFlush(byte[])
+deactivate RpcMessageHandler
+
+=== 候选者收集响应 ===
+
+NettyTransport -> RpcResponseHandler: channelRead(byte[])
+activate RpcResponseHandler
+RpcResponseHandler -> CustomSerializer: unwrap(byte[], Object.class)
+CustomSerializer --> RpcResponseHandler: RpcResponse(RequestVoteResponse)
+RpcResponseHandler -> RpcResponseHandler: 从 pendingRequests 中取出\n对应的 CompletableFuture
+RpcResponseHandler -> RpcResponseHandler: future.complete(response)
+deactivate RpcResponseHandler
+
+RaftNode -> RaftNode: CompletableFuture 回调触发\n收集投票: votes + additionalWeight
+
+alt votes >= majority
+  RaftNode -> RaftNode: transitionTo(LEADER)
+  RaftNode -> RaftNode: startHeartbeatTimer()
+  deactivate NettyTransport
+
+  loop 每 heartbeatInterval
+    RaftNode -> CustomSerializer: wrap(HeartbeatRequest)
+    CustomSerializer --> RaftNode: byte[]
+    RaftNode -> NettyTransport: broadcast(byte[])
+    NettyTransport -> RpcMessageHandler: channelRead(byte[])
+    RpcMessageHandler -> RaftNodePeer: handleHeartbeat(request)
+    RaftNodePeer -> RaftNodePeer: resetHeartbeatTimer()
+    RaftNodePeer --> RpcMessageHandler: HeartbeatResponse
+    RpcMessageHandler -> NettyTransport: writeAndFlush
+  end
+else votes < majority
+  RaftNode -> RaftNode: transitionTo(FOLLOWER)\n重新启动选举超时计时器
+end
+
+deactivate RaftNode
+deactivate Speedboat
+
+== 流程 2：分布式锁获取 ==
+
+box "锁控层" #LightPink
+  participant DistributedLockImpl as "DistributedLockImpl\n(lockName, nodeId)"
+  participant LockStateMachine as "LockStateMachine\n(lockTable)"
+end box
+
+User -> Speedboat: getLock("lockName")
+activate Speedboat
+Speedboat -> Speedboat: lockCache.computeIfAbsent\n→ new DistributedLockImpl(...)
+Speedboat --> User: DistributedLock 实例
+deactivate Speedboat
+
+User -> DistributedLockImpl: tryLock(timeoutMs)
+activate DistributedLockImpl
+
+loop 轮询直到超时 (RETRY_INTERVAL_MS = 100ms)
+  DistributedLockImpl -> DistributedLockImpl: tryLockInternal()
+
+  DistributedLockImpl -> RaftNode: isLeader()
+  activate RaftNode
+  RaftNode --> DistributedLockImpl: true/false
+  deactivate RaftNode
+
+  alt 不是 Leader
+    DistributedLockImpl -> DistributedLockImpl: sleep(100ms)\ncontinue 轮询
+  else 是 Leader
+    DistributedLockImpl -> LockStateMachine: isLockAvailable(lockName, nodeId)
+    activate LockStateMachine
+    LockStateMachine --> DistributedLockImpl: true/false
+    deactivate LockStateMachine
+
+    alt 锁不可用
+      DistributedLockImpl -> DistributedLockImpl: sleep(100ms)\ncontinue 轮询
+    else 锁可用
+      DistributedLockImpl -> DistributedLockImpl: 创建 LockCommand.lock(lockName, nodeId)
+
+      DistributedLockImpl -> ProtostuffSerializer: serialize(lockCommand)
+      activate ProtostuffSerializer
+      ProtostuffSerializer --> DistributedLockImpl: byte[] data
+      deactivate ProtostuffSerializer
+
+      DistributedLockImpl -> RaftNode: propose(data)
+      activate RaftNode
+      RaftNode -> RaftNode: 创建 LogEntry(COMMAND, data)\n追加到本地 log
+      RaftNode -> RaftNode: 开始日志复制到 Peers
+
+      RaftNode -> CustomSerializer: wrap(AppendEntriesRequest)
+      CustomSerializer --> RaftNode: byte[]
+      RaftNode -> NettyTransport: broadcast(byte[])
+      NettyTransport -> RpcMessageHandler: channelRead(byte[])
+      RpcMessageHandler -> RaftNodePeer: handleAppendEntries(request)
+      RaftNodePeer -> RaftNodePeer: 追加日志到本地
+      RaftNodePeer --> RpcMessageHandler: AppendEntriesResponse(success)
+      RpcMessageHandler -> NettyTransport: writeAndFlush
+
+      RaftNode -> RaftNode: 收到多数确认\ncommitIndex 推进
+
+      RaftNode -> LockStateMachine: apply(logEntry)
+      activate LockStateMachine
+      LockStateMachine -> ProtostuffSerializer: deserialize(entry.data, LockCommand.class)
+      ProtostuffSerializer --> LockStateMachine: LockCommand
+      LockStateMachine -> LockStateMachine: applyCommand(command)\nlockTable[lockName].tryAcquire(nodeId, leaseTimeout)
+      LockStateMachine --> RaftNode: applied
+      deactivate LockStateMachine
+
+      RaftNode --> DistributedLockImpl: commit 成功
+      deactivate RaftNode
+
+      DistributedLockImpl -> DistributedLockImpl: startRenewTask()
+      note right: 定期续约 (leaseTimeout / 3)\n通过 renewExecutor 单线程执行
+
+      DistributedLockImpl --> User: LockHandleImpl(acquired=true)
+      deactivate DistributedLockImpl
+    end
+  end
+end
+
+== 流程 3：跨机房级联 ==
+
+box "跨机房" #LightGray
+  participant SpeedboatDC as "Speedboat\n(跨机房模式)"
+  participant IntraGroup as "RaftGroup\n(机房内层)"
+  participant InterGroup as "RaftGroup\n(机房间外层)"
+end
+
+User -> SpeedboatDC: start(config) with nodes.size() > 1
+activate SpeedboatDC
+
+SpeedboatDC -> SpeedboatDC: 检测 crossDatacenterMode = true
+
+SpeedboatDC -> SpeedboatDC: 解析本机房节点列表\n(本机房内除自己外的 peer)
+
+SpeedboatDC -> NettyTransport: new NettyTransport(...)
+SpeedboatDC -> SpeedboatDC: new RaftNode.Builder()\n  使用 intraTimeout (机房内)\n  150-300ms 选举超时
+
+SpeedboatDC -> NettyTransport: start()
+SpeedboatDC -> RaftNode: start()
+
+SpeedboatDC -> IntraGroup: 机房内选举开始
+activate IntraGroup
+IntraGroup -> IntraGroup: 各节点独立选举\n短期超时 (150-300ms)
+IntraGroup -> IntraGroup: 选出机房内 Leader
+deactivate IntraGroup
+
+SpeedboatDC -> SpeedboatDC: 机房内 Leader 参与\n机房间 RaftGroup
+
+SpeedboatDC -> InterGroup: 机房间选举开始
+activate InterGroup
+note right: 使用更长的超时\n选举 500-1000ms\n心跳 200ms
+
+InterGroup -> InterGroup: 各机房 Leader 间投票\nGlobalGroupStrategy 权重计算
+InterGroup -> InterGroup: 选出全局 Leader
+deactivate InterGroup
+
+SpeedboatDC -> SpeedboatDC: 跨机房级联就绪\n机房内 Leader 处理本地请求\n全局 Leader 处理跨机房请求
+
+deactivate SpeedboatDC
+
+@enduml

@@ -1,0 +1,7 @@
+Simian Similarity Analyzer 4.2.1 - https://simian.quandarypeak.com
+Copyright (c) 2026 Quandary Peak Research. All rights reserved.
+Apache License 2.0
+{failOnDuplication=true, ignoreCharacterCase=true, ignoreCurlyBraces=true, ignoreIdentifierCase=true, ignoreModifiers=true, ignoreStringCase=true, language=Java, threshold=20}
+Found 0 duplicate lines in 0 blocks in 0 files
+Processed a total of 1003 significant (1982 raw) lines in 31 files
+Processing time: 0.028sec

@@ -1,0 +1,873 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam packageBorderColor #555555
+skinparam ArrowColor #333333
+skinparam FontName Arial
+skinparam classFontSize 12
+skinparam defaultTextAlignment left
+skinparam packageStyle rectangle
+
+title Speedboat — Raft分布式主节点选举框架 类图
+' Core Module
+package "core (cn.itcraft.speedboat)" #LightBlue {
+    class Speedboat <<singleton>> {
+        + start(SpeedboatConfigProvider) : void
+        + stop() : void
+        + isMain() : boolean
+        + getLeaderId() : String
+        + getTerm() : long
+        + getNodeId() : String
+        + getDatacenterId() : String
+        + isRunning() : boolean
+        + getLock(String) : DistributedLock
+        - doStart() : void
+        - doStop() : void
+        - nodeId : String
+        - localIp : String
+        - localPort : int
+        - datacenterId : String
+        - crossDatacenterMode : boolean
+        - nettyTransport : NettyTransport
+        - raftNode : RaftNode
+        - lockStateMachine : LockStateMachine
+        - lockCache : ConcurrentHashMap~String,DistributedLock~
+        - running : boolean
+    }
+
+    class NodeInfo {
+        + NodeInfo(String, String, NodeState, long)
+        + getNodeId() : String
+        + getDatacenter() : String
+        + getState() : NodeState
+        + getTerm() : long
+        - nodeId : String
+        - datacenter : String
+        - state : NodeState
+        - term : long
+    }
+}
+
+' Config Module
+package "config (cn.itcraft.speedboat.config)" #LightYellow {
+    interface SpeedboatConfigProvider {
+        + getDatacenter() : String
+        + getNodes() : List~List~String~~
+        + getIntraDatacenterElectionTimeoutMin() : int
+        + getIntraDatacenterElectionTimeoutMax() : int
+        + getCrossDatacenterElectionTimeoutMin() : int
+        + getCrossDatacenterElectionTimeoutMax() : int
+    }
+
+    class PropertiesConfigProvider {
+        + PropertiesConfigProvider(String)
+        + PropertiesConfigProvider(InputStream)
+        + getDatacenter() : String
+        + getNodes() : List~List~String~~
+        - loadConfig(String) : void
+        - parseDatacenterNodes(int) : List~String~
+        - properties : Properties
+    }
+
+    class SpeedboatConfig {
+        + builder() : Builder
+        + from(SpeedboatConfig) : Builder
+        + getPort() : int
+        + getVoteWeightStrategy() : VoteWeightStrategy
+        + getGroupStrategy() : GroupStrategy
+        + getDatacenterId() : String
+        - port : int
+        - voteWeightStrategy : VoteWeightStrategy
+        - groupStrategy : GroupStrategy
+        - datacenterId : String
+    }
+
+    class SpeedboatConfig_Builder {
+        + port(int) : Builder
+        + voteWeightStrategy(VoteWeightStrategy) : Builder
+        + groupStrategy(GroupStrategy) : Builder
+        + datacenterId(String) : Builder
+        + build() : SpeedboatConfig
+    }
+
+    class SpeedboatConsts <<utility>> {
+        {static} + MIN_ELECTION_TIMEOUT_MS : int = 150
+        {static} + MAX_ELECTION_TIMEOUT_MS : int = 300
+        {static} + HEARTBEAT_INTERVAL_MS : int = 50
+        {static} + GLOBAL_MIN_ELECTION_TIMEOUT_MS : int = 500
+        {static} + GLOBAL_MAX_ELECTION_TIMEOUT_MS : int = 1000
+        {static} + GLOBAL_HEARTBEAT_INTERVAL_MS : int = 200
+        {static} + DEFAULT_PORT : int = 22222
+        {static} + GLOBAL_PORT : int = 33333
+        {static} + DEFAULT_MAX_LOG_SIZE : int = 10
+    }
+
+    class MembershipConfig {
+        + getHealthCheckIntervalMs() : int
+        + getFailureThreshold() : int
+        + getConfirmationPeriods() : int
+        + getRegistryImpl() : MembershipConfig_RegistryImpl
+        + isMembershipChangeEnabled() : boolean
+        + getConfirmationNanos() : long
+        - healthCheckIntervalMs : int
+        - failureThreshold : int
+        - confirmationPeriods : int
+        - registryImpl : MembershipConfig_RegistryImpl
+        - enableAutoRemoval : boolean
+    }
+
+    enum MembershipConfig_RegistryImpl {
+        NONE
+        NACOS
+        REDIS
+    }
+
+    class MembershipConfig_Builder {
+        + healthCheckIntervalMs(int) : Builder
+        + failureThreshold(int) : Builder
+        + registryImpl(MembershipConfig_RegistryImpl) : Builder
+        + build() : MembershipConfig
+    }
+
+    SpeedboatConfig_Builder *-- SpeedboatConfig
+    MembershipConfig_Builder *-- MembershipConfig
+    MembershipConfig *-- MembershipConfig_RegistryImpl
+    PropertiesConfigProvider ..|> SpeedboatConfigProvider
+}
+
+' Raft Module
+package "raft (cn.itcraft.speedboat.raft)" #LightGreen {
+    class RaftNode {
+        + builder() : Builder
+        + start() : void
+        + shutdown() : void
+        + isLeader() : boolean
+        + isMain() : boolean
+        + getNodeId() : String
+        + getLeaderId() : String
+        + getTerm() : Term
+        + getPeerIds() : List~String~
+        + getMembershipConfig() : MembershipConfig
+        + getHealthCheckStrategy() : HealthCheckStrategy
+        + getRegistryStrategy() : RegistryStrategy
+        + getChangeValidationStrategy() : ChangeValidationStrategy
+        + getFailureRecords() : Map~String,FailureRecord~
+        + proposeAddMember(String) : boolean
+        + proposeRemoveMember(String) : boolean
+        - handleRequestVote(RequestVoteRequest) : RequestVoteResponse
+        - handleHeartbeat(HeartbeatRequest) : HeartbeatResponse
+        - handleAppendEntries(AppendEntriesRequest) : AppendEntriesResponse
+        - startElection() : void
+        - becomeLeader() : void
+        - becomeFollower(long) : void
+        - nodeId : String
+        - currentState : NodeState
+        - term : Term
+        - votedFor : String
+        - leaderId : String
+        - electionTimeout : ElectionTimeout
+        - voteWeightStrategy : VoteWeightStrategy
+        - groupStrategy : GroupStrategy
+        - transportLayer : TransportLayer
+        - peerIds : List~String~
+        - log : List~LogEntry~
+        - commitIndex : long
+        - lastApplied : long
+        - nextIndex : Map~String,Long~
+        - matchIndex : Map~String,Long~
+        - membershipConfig : MembershipConfig
+        - healthCheckStrategy : HealthCheckStrategy
+        - registryStrategy : RegistryStrategy
+        - changeValidationStrategy : ChangeValidationStrategy
+        - failureRecords : Map~String,FailureRecord~
+        - stateMachine : StateMachine
+    }
+
+    class RaftNode_Builder {
+        + nodeId(String) : Builder
+        + peerIds(List~String~) : Builder
+        + electionTimeout(ElectionTimeout) : Builder
+        + voteWeightStrategy(VoteWeightStrategy) : Builder
+        + groupStrategy(GroupStrategy) : Builder
+        + transportLayer(TransportLayer) : Builder
+        + membershipConfig(MembershipConfig) : Builder
+        + healthCheckStrategy(HealthCheckStrategy) : Builder
+        + registryStrategy(RegistryStrategy) : Builder
+        + changeValidationStrategy(ChangeValidationStrategy) : Builder
+        + stateMachine(StateMachine) : Builder
+        + build() : RaftNode
+    }
+
+    class RaftGroup {
+        + RaftGroup(String, List~String~, SpeedboatConfig)
+        + start() : void
+        + shutdown() : void
+        + electLeader() : void
+        + getLeader() : RaftNode
+        + isMain() : boolean
+        + setParentGroup(RaftGroup) : void
+        + addChildGroup(RaftGroup) : void
+        + getParentGroup() : RaftGroup
+        + getChildGroups() : List~RaftGroup~
+        - groupId : String
+        - nodes : List~RaftNode~
+        - leader : RaftNode
+        - groupStrategy : GroupStrategy
+        - parentGroup : RaftGroup
+        - childGroups : List~RaftGroup~
+        - running : boolean
+    }
+
+    class Term {
+        + Term()
+        + getCurrent() : long
+        + increment() : void
+        + updateIfHigher(long) : boolean
+        + isMonotonicViolation(long) : boolean
+        + reset() : void
+        - current : long
+    }
+
+    class ElectionTimeout {
+        + ElectionTimeout(long, long)
+        + getNext() : long
+        + reset() : void
+        + getMinMs() : long
+        + getMaxMs() : long
+        - minMs : long
+        - maxMs : long
+        - currentTimeout : long
+    }
+
+    enum NodeState {
+        LEADER
+        FOLLOWER
+        CANDIDATE
+        + canTransitionTo(NodeState) : boolean
+    }
+
+    class VoteContext {
+        + VoteContext(String, String, boolean, boolean, long)
+        + forCandidate(String, long) : VoteContext
+        + forDatacenter(String, String, long) : VoteContext
+        - candidateId : String
+        - candidateDatacenter : String
+        - startupFirst : boolean
+        - electionInitiator : boolean
+        - term : long
+    }
+
+    class FailureRecord {
+        + FailureRecord(String)
+        + getNodeId() : String
+        + getFailureCount() : int
+        + incrementFailureCount() : void
+        + isConfirmed() : boolean
+        + setConfirmed(boolean) : void
+        + reset() : void
+        + getDurationNanos() : long
+        + shouldProposeRemoval(int, long) : boolean
+        - nodeId : String
+        - firstFailureTime : long
+        - failureCount : AtomicInteger
+        - confirmed : boolean
+    }
+
+    class LeaderRecord {
+        + LeaderRecord(long, String)
+        + getTerm() : long
+        + getLeaderId() : String
+        - term : long
+        - leaderId : String
+    }
+
+    abstract class LogEntry {
+        + LogEntry()
+        + LogEntry(long, long, String)
+        + getIndex() : long
+        + getTerm() : long
+        + getLeaderId() : String
+        + getEntryType() : EntryType
+        + getData() : byte[]
+        # index : long
+        # term : long
+        # leaderId : String
+        # entryType : LogEntry_EntryType
+        # data : byte[]
+    }
+
+    enum LogEntry_EntryType {
+        LEADER_INFO
+        MEMBER_CHANGE
+        COMMAND
+    }
+
+    class CommandLogEntry {
+        + CommandLogEntry(long, long, String, byte[])
+        + create(long, long, String, byte[]) : CommandLogEntry
+    }
+
+    class MemberChangeEntry {
+        + MemberChangeEntry(long, long, String, ChangeType, String, String)
+        + add(long, long, String, String, String) : MemberChangeEntry
+        + remove(long, long, String, String) : MemberChangeEntry
+        + getChangeType() : ChangeType
+        + getNodeId() : String
+        + getAddress() : String
+        - changeType : ChangeType
+        - nodeId : String
+        - address : String
+    }
+
+    enum MemberChangeEntry_ChangeType {
+        ADD
+        REMOVE
+    }
+
+    RaftNode_Builder *-- RaftNode
+    RaftNode *-- Term
+    RaftNode *-- ElectionTimeout
+    RaftNode *-- NodeState
+    RaftNode o-- "0..*" FailureRecord
+    RaftNode o-- LeaderRecord
+    RaftNode o-- "0..*" LogEntry
+    RaftGroup o-- "0..*" RaftNode
+    RaftGroup o-- RaftGroup : parentGroup
+    RaftGroup o-- "0..*" RaftGroup : childGroups
+    LogEntry *-- LogEntry_EntryType
+    CommandLogEntry --|> LogEntry
+    MemberChangeEntry --|> LogEntry
+    MemberChangeEntry *-- MemberChangeEntry_ChangeType
+}
+
+' Transport Module
+package "transport (cn.itcraft.speedboat.transport)" #LightPink {
+    interface TransportLayer {
+        + sendRequestVote(String, RequestVoteRequest) : CompletableFuture~RequestVoteResponse~
+        + sendHeartbeat(String, HeartbeatRequest) : CompletableFuture~HeartbeatResponse~
+        + sendAppendEntries(String, AppendEntriesRequest) : CompletableFuture~AppendEntriesResponse~
+        + setRequestVoteHandler(RequestVoteHandler) : void
+        + setHeartbeatHandler(HeartbeatHandler) : void
+        + setAppendEntriesHandler(AppendEntriesHandler) : void
+    }
+
+    interface TransportLayer_RequestVoteHandler <<FunctionalInterface>>
+    interface TransportLayer_HeartbeatHandler <<FunctionalInterface>>
+    interface TransportLayer_AppendEntriesHandler <<FunctionalInterface>>
+
+    class NodeEndpoint {
+        + NodeEndpoint(String, String, int)
+        + parse(String) : NodeEndpoint
+        + getNodeId() : String
+        + getHost() : String
+        + getPort() : int
+        - nodeId : String
+        - host : String
+        - port : int
+    }
+
+    class NettyTransport {
+        + NettyTransport(NodeEndpoint, List~NodeEndpoint~, CustomSerializer)
+        + start() : void
+        + shutdown() : void
+        + sendRequestVote(String, RequestVoteRequest) : CompletableFuture~RequestVoteResponse~
+        + sendHeartbeat(String, HeartbeatRequest) : CompletableFuture~HeartbeatResponse~
+        + sendAppendEntries(String, AppendEntriesRequest) : CompletableFuture~AppendEntriesResponse~
+        - connectToPeers() : void
+        - bossGroup : EventLoopGroup
+        - workerGroup : EventLoopGroup
+        - channels : Map~String,Channel~
+        - pendingRequests : Map~String,CompletableFuture~
+        - localEndpoint : NodeEndpoint
+        - peers : List~NodeEndpoint~
+        - serializer : CustomSerializer
+    }
+
+    class RpcMessageHandler {
+        - RpcMessageHandler(NettyTransport, CustomSerializer)
+        + channelRead(ChannelHandlerContext, Object) : void
+        + exceptionCaught(ChannelHandlerContext, Throwable) : void
+        - transport : NettyTransport
+        - serializer : CustomSerializer
+    }
+
+    class RpcResponseHandler {
+        - RpcResponseHandler(NettyTransport, CustomSerializer)
+        + channelRead(ChannelHandlerContext, Object) : void
+        + exceptionCaught(ChannelHandlerContext, Throwable) : void
+        - transport : NettyTransport
+        - serializer : CustomSerializer
+    }
+
+    NettyTransport ..|> TransportLayer
+    NettyTransport *-- NodeEndpoint
+    NettyTransport o-- "0..*" NodeEndpoint : peers
+    NettyTransport *-- RpcMessageHandler
+    NettyTransport *-- RpcResponseHandler
+    NettyTransport *-- CustomSerializer
+    TransportLayer *-- TransportLayer_RequestVoteHandler
+    TransportLayer *-- TransportLayer_HeartbeatHandler
+    TransportLayer *-- TransportLayer_AppendEntriesHandler
+}
+
+' RPC Module
+package "rpc (cn.itcraft.speedboat.rpc)" #Lavender {
+    abstract class RpcRequest {
+        + getRequestId() : String
+        # requestId : String
+    }
+
+    abstract class RpcResponse {
+        + getRequestId() : String
+        # requestId : String
+    }
+
+    class RequestVoteRequest {
+        + RequestVoteRequest()
+        + RequestVoteRequest(long, String, int)
+        + getTerm() : long
+        + getCandidateId() : String
+        + getVoteWeight() : int
+        - term : long
+        - candidateId : String
+        - voteWeight : int
+    }
+
+    class RequestVoteResponse {
+        + RequestVoteResponse()
+        + RequestVoteResponse(String, long, boolean)
+        + RequestVoteResponse(long, boolean)
+        + getTerm() : long
+        + isVoteGranted() : boolean
+        - term : long
+        - voteGranted : boolean
+    }
+
+    class AppendEntriesRequest {
+        + AppendEntriesRequest()
+        + AppendEntriesRequest(long, String, long, long, List~LogEntry~, long)
+        + heartbeat(long, String, long, long, long) : AppendEntriesRequest
+        + getTerm() : long
+        + getLeaderId() : String
+        + getPrevLogIndex() : long
+        + getPrevLogTerm() : long
+        + getEntries() : List~LogEntry~
+        + getLeaderCommit() : long
+        - term : long
+        - leaderId : String
+        - prevLogIndex : long
+        - prevLogTerm : long
+        - entries : List~LogEntry~
+        - leaderCommit : long
+    }
+
+    class AppendEntriesResponse {
+        + AppendEntriesResponse()
+        + AppendEntriesResponse(String, long, boolean, long)
+        + AppendEntriesResponse(long, boolean, long)
+        + getTerm() : long
+        + isSuccess() : boolean
+        + getMatchIndex() : long
+        - term : long
+        - success : boolean
+        - matchIndex : long
+    }
+
+    class HeartbeatRequest {
+        + HeartbeatRequest()
+        + HeartbeatRequest(long, String)
+        + getTerm() : long
+        + getLeaderId() : String
+        - term : long
+        - leaderId : String
+    }
+
+    class HeartbeatResponse {
+        + HeartbeatResponse()
+        + HeartbeatResponse(String, long, boolean)
+        + HeartbeatResponse(long, boolean)
+        + getTerm() : long
+        + isSuccess() : boolean
+        - term : long
+        - success : boolean
+    }
+
+    RequestVoteRequest --|> RpcRequest
+    AppendEntriesRequest --|> RpcRequest
+    HeartbeatRequest --|> RpcRequest
+    RequestVoteResponse --|> RpcResponse
+    AppendEntriesResponse --|> RpcResponse
+    HeartbeatResponse --|> RpcResponse
+}
+
+' Serialize Module
+package "serialize (cn.itcraft.speedboat.serialize)" #Wheat {
+    interface Serializer {
+        + serialize(Object) : byte[]
+        + deserialize(byte[], Class~T~) : T
+        + getTypeId() : int
+    }
+
+    class ProtostuffSerializer {
+        + serialize(Object) : byte[]
+        + deserialize(byte[], Class~T~) : T
+        + getTypeId() : int
+        - TYPE_ID : int = 2
+    }
+
+    class CustomSerializer {
+        + CustomSerializer(Serializer)
+        + wrap(Object) : byte[]
+        + unwrap(byte[], Class~T~) : T
+        - registerType(int, Class~?~) : void
+        - HEADER_LEN : int = 10
+        - payloadSerializer : Serializer
+        - typeToId : Map~Class~?~,Integer~
+        - idToType : Map~Integer,Class~?~~
+    }
+
+    class SerializationException {
+        + SerializationException(String)
+        + SerializationException(String, Throwable)
+    }
+
+    ProtostuffSerializer ..|> Serializer
+    CustomSerializer o-- Serializer : payloadSerializer
+    SerializationException --|> RuntimeException
+}
+
+' Lock Module
+package "lock (cn.itcraft.speedboat.lock)" #Thistle {
+    interface DistributedLock {
+        + tryLock() : LockHandle
+        + tryLock(long) : LockHandle
+        + unlock() : void
+        + isLocked() : boolean
+        + isHeldByCurrentNode() : boolean
+        + getLockName() : String
+        + getHolderNodeId() : String
+    }
+
+    interface LockHandle {
+        + isSuccess() : boolean
+        + getLockName() : String
+        + getNodeId() : String
+        + close() : void
+    }
+
+    class DistributedLockImpl {
+        + DistributedLockImpl(String, String, RaftNode, LockStateMachine)
+        + tryLock() : LockHandle
+        + tryLock(long) : LockHandle
+        + unlock() : void
+        + isLocked() : boolean
+        + isHeldByCurrentNode() : boolean
+        + shutdown() : void
+        - tryLockInternal() : boolean
+        - startRenewTask() : void
+        - stopRenewTask() : void
+        - lockName : String
+        - nodeId : String
+        - raftNode : RaftNode
+        - stateMachine : LockStateMachine
+        - renewExecutor : ScheduledExecutorService
+    }
+
+    class LockCommand {
+        + LockCommand()
+        + LockCommand(String, String, CommandType)
+        + lock(String, String) : LockCommand
+        + unlock(String, String) : LockCommand
+        + renew(String, String) : LockCommand
+        + getLockName() : String
+        + getNodeId() : String
+        + getCommandType() : LockCommand_CommandType
+        - lockName : String
+        - nodeId : String
+        - commandType : LockCommand_CommandType
+        - timestamp : long
+    }
+
+    enum LockCommand_CommandType {
+        LOCK
+        UNLOCK
+        RENEW
+    }
+
+    class LockEntry {
+        + LockEntry(String)
+        + isHeld() : boolean
+        + isHeldBy(String) : boolean
+        + isLeaseExpired() : boolean
+        + tryAcquire(String, long) : boolean
+        + release(String) : boolean
+        + renew(String, long) : boolean
+        - lockName : String
+        - nodeId : String
+        - holdCount : int
+        - leaseExpireTime : long
+    }
+
+    class LockStateMachine {
+        + LockStateMachine()
+        + apply(LogEntry) : void
+        + snapshot(String) : void
+        + restore(String) : void
+        + getLastAppliedIndex() : long
+        + isLockHeldBy(String, String) : boolean
+        + isLockAvailable(String, String) : boolean
+        - applyCommand(LockCommand) : void
+        - lockTable : ConcurrentHashMap~String,LockEntry~
+        - serializer : ProtostuffSerializer
+        - lastAppliedIndex : long
+    }
+
+    DistributedLockImpl ..|> DistributedLock
+    DistributedLockImpl o-- LockHandle
+    DistributedLockImpl o-- RaftNode
+    DistributedLockImpl o-- LockStateMachine
+    LockStateMachine ..|> StateMachine
+    LockStateMachine o-- "0..*" LockEntry
+    LockStateMachine o-- ProtostuffSerializer
+    LockStateMachine ..> LockCommand
+    LockCommand *-- LockCommand_CommandType
+    LockHandle <|-- AutoCloseable
+}
+
+' Membership Module
+package "membership (cn.itcraft.speedboat.membership)" #LightCoral {
+    class MembershipCoordinator {
+        + MembershipCoordinator(RaftNode)
+        + start() : void
+        + stop() : void
+        + isRunning() : boolean
+        + proposeAddMember(String, String) : boolean
+        + proposeRemoveMember(String) : boolean
+        - detectAndProposeChanges() : void
+        - processUnhealthyPeer(String) : void
+        - detectRegistryChanges(List~String~) : void
+        - raftNode : RaftNode
+        - config : MembershipConfig
+        - healthCheckStrategy : HealthCheckStrategy
+        - registryStrategy : RegistryStrategy
+        - changeValidationStrategy : ChangeValidationStrategy
+        - scheduler : ScheduledExecutorService
+    }
+
+    MembershipCoordinator o-- RaftNode
+    MembershipCoordinator o-- MembershipConfig
+    MembershipCoordinator o-- HealthCheckStrategy
+    MembershipCoordinator o-- RegistryStrategy
+    MembershipCoordinator o-- ChangeValidationStrategy
+}
+
+' StateMachine Module
+package "statemachine (cn.itcraft.speedboat.statemachine)" #LightSkyBlue {
+    interface StateMachine {
+        + apply(LogEntry) : void
+        + snapshot(String) : void
+        + restore(String) : void
+        + getLastAppliedIndex() : long
+    }
+}
+
+' Strategy Module - Group
+package "strategy.group (cn.itcraft.speedboat.strategy.group)" #Honeydew {
+    interface GroupStrategy {
+        + getElectionTimeout() : long
+        + getHeartbeatInterval() : long
+        + allowCrossGroupCommunication() : boolean
+        + getMinElectionTimeout() : long
+        + getMaxElectionTimeout() : long
+    }
+
+    class DefaultGroupStrategy {
+        + getElectionTimeout() : long
+        + getHeartbeatInterval() : long
+        + allowCrossGroupCommunication() : boolean
+        + getMinElectionTimeout() : long
+        + getMaxElectionTimeout() : long
+    }
+
+    class DatacenterGroupStrategy {
+        + getElectionTimeout() : long
+        + getHeartbeatInterval() : long
+        + allowCrossGroupCommunication() : boolean
+        + getMinElectionTimeout() : long
+        + getMaxElectionTimeout() : long
+    }
+
+    class GlobalGroupStrategy {
+        + getElectionTimeout() : long
+        + getHeartbeatInterval() : long
+        + allowCrossGroupCommunication() : boolean
+        + getMinElectionTimeout() : long
+        + getMaxElectionTimeout() : long
+    }
+
+    DefaultGroupStrategy ..|> GroupStrategy
+    DatacenterGroupStrategy ..|> GroupStrategy
+    GlobalGroupStrategy ..|> GroupStrategy
+}
+
+' Strategy Module - VoteWeight
+package "strategy.voteweight (cn.itcraft.speedboat.strategy.voteweight)" #MistyRose {
+    interface VoteWeightStrategy {
+        + calculateAdditionalWeight(VoteContext) : int
+    }
+
+    class DefaultVoteWeightStrategy {
+        + calculateAdditionalWeight(VoteContext) : int
+    }
+
+    class EvenNodeVoteWeightStrategy {
+        + calculateAdditionalWeight(VoteContext) : int
+    }
+
+    class DatacenterVoteWeightStrategy {
+        + calculateAdditionalWeight(VoteContext) : int
+    }
+
+    class CompositeVoteWeightStrategy {
+        + CompositeVoteWeightStrategy(VoteWeightStrategy...)
+        + calculateAdditionalWeight(VoteContext) : int
+        - strategies : List~VoteWeightStrategy~
+    }
+
+    DefaultVoteWeightStrategy ..|> VoteWeightStrategy
+    EvenNodeVoteWeightStrategy ..|> VoteWeightStrategy
+    DatacenterVoteWeightStrategy ..|> VoteWeightStrategy
+    CompositeVoteWeightStrategy ..|> VoteWeightStrategy
+    CompositeVoteWeightStrategy o-- "1..*" VoteWeightStrategy
+}
+
+' Strategy Module - Membership
+package "strategy.membership (cn.itcraft.speedboat.strategy.membership)" #LemonChiffon {
+    interface HealthCheckStrategy {
+        + checkHealth(Set~String~) : Set~String~
+        + checkUnhealthyPeers(List~String~) : List~String~
+        + isHealthy(String) : boolean
+        + start() : void
+        + stop() : void
+        + isRunning() : boolean
+    }
+
+    interface ChangeValidationStrategy {
+        + canProposeChange(RaftNode, MemberChangeEntry) : boolean
+        + shouldAcceptChange(RaftNode, MemberChangeEntry) : boolean
+        + isQuorumAvailable(RaftNode) : boolean
+        + validateAdd(String, List~String~) : boolean
+        + validateRemove(String, List~String~) : boolean
+    }
+
+    interface RegistryStrategy {
+        + getAllRegisteredNodes() : Map~String,String~
+        + getRegisteredPeers() : List~String~
+        + isRegistered(String) : boolean
+        + getAddress(String) : String
+        + isValid(String, String) : boolean
+        + start() : void
+        + stop() : void
+    }
+}
+
+package "strategy.membership.impl (cn.itcraft.speedboat.strategy.membership.impl)" #LemonChiffon {
+    class PassiveHealthCheckStrategy {
+        + checkHealth(Set~String~) : Set~String~
+        + start() : void
+        + stop() : void
+        + isRunning() : boolean
+        + markHealthy(String) : void
+        + markUnhealthy(String) : void
+        - knownHealthyNodes : Set~String~
+    }
+
+    class DefaultChangeValidationStrategy {
+        + canProposeChange(RaftNode, MemberChangeEntry) : boolean
+        + shouldAcceptChange(RaftNode, MemberChangeEntry) : boolean
+    }
+
+    class NoOpRegistryStrategy {
+        + getAllRegisteredNodes() : Map~String,String~
+        + isRegistered(String) : boolean
+        + getAddress(String) : String
+        + isValid(String, String) : boolean
+        + start() : void
+        + stop() : void
+    }
+
+    PassiveHealthCheckStrategy ..|> HealthCheckStrategy
+    DefaultChangeValidationStrategy ..|> ChangeValidationStrategy
+    NoOpRegistryStrategy ..|> RegistryStrategy
+}
+
+' Util Module
+package "util (cn.itcraft.speedboat.util)" #Gainsboro {
+    class NetworkUtils <<utility>> {
+        {static} + detectHostname() : String
+        {static} + detectLocalIp() : String
+        {static} + generateNodeId() : String
+        {static} + generateNodeId(String, String) : String
+        {static} + parsePort(String) : int
+        {static} + parseIp(String) : String
+        {static} + ipMatchesAddress(String, String) : boolean
+    }
+
+    class NamedThreadFactory {
+        + NamedThreadFactory(String, String, boolean)
+        + newThread(Runnable) : Thread
+        + forComponent(String, String) : NamedThreadFactory
+        + forComponentNonDaemon(String, String) : NamedThreadFactory
+        - namePrefix : String
+        - counter : AtomicInteger
+        - daemon : boolean
+    }
+}
+
+' =========================================================================
+' Cross-package relationships
+' =========================================================================
+Speedboat *-- NettyTransport
+Speedboat *-- RaftNode
+Speedboat *-- LockStateMachine
+Speedboat o-- "0..*" DistributedLock : lockCache
+Speedboat ..> SpeedboatConfigProvider
+RaftNode ..> TransportLayer
+RaftNode ..> MembershipConfig
+RaftNode ..> HealthCheckStrategy
+RaftNode ..> RegistryStrategy
+RaftNode ..> ChangeValidationStrategy
+RaftNode ..> StateMachine
+RaftNode ..> GroupStrategy
+RaftNode ..> VoteWeightStrategy
+RaftNode ..> RequestVoteRequest
+RaftNode ..> AppendEntriesRequest
+RaftNode ..> HeartbeatRequest
+RaftNode ..> MemberChangeEntry
+RaftGroup ..> GroupStrategy
+RaftGroup ..> SpeedboatConfig
+NettyTransport ..> RequestVoteRequest
+NettyTransport ..> AppendEntriesRequest
+NettyTransport ..> HeartbeatRequest
+NettyTransport ..> CustomSerializer
+RpcMessageHandler ..> RequestVoteRequest
+RpcMessageHandler ..> HeartbeatRequest
+RpcMessageHandler ..> AppendEntriesRequest
+AppendEntriesRequest ..> LogEntry
+LockStateMachine ..> LogEntry
+LockStateMachine ..> LockCommand
+LockStateMachine ..> ProtostuffSerializer
+DistributedLockImpl ..> ProtostuffSerializer
+DistributedLockImpl ..> NamedThreadFactory
+RaftNode ..> NodeState
+RaftNode ..> VoteContext
+Speedboat ..> NodeInfo
+Speedboat ..> NetworkUtils
+Speedboat ..> NodeEndpoint
+Speedboat ..> ElectionTimeout
+RaftGroup ..> ElectionTimeout
+RaftGroup ..> NodeEndpoint
+MembershipCoordinator ..> FailureRecord
+VoteWeightStrategy ..> VoteContext
+
+@enduml

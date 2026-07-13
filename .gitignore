@@ -1,0 +1,11 @@
+**/target/
+**/build/
+**/out/
+/.idea/
+*.iml
+~$*.*
+.svn
+jitwatch.out
+.gradle
+**.jar
+MEMORY.md
