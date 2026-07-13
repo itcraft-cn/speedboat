@@ -4,6 +4,19 @@ All notable changes to Speedboat will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.0.1] - 2026-07-13
+
+### Added
+
+- **README_cn.md**：中文版 README，方便中文用户快速上手
+- **README.md 英文版**：重写为英文版 README，面向国际用户
+
+### Changed
+
+- **README.md**：从中文改为英文，与 README_cn.md 形成中英文双文档体系
+
+---
+
 ## [1.0.0] - 2026-07-09
 
 ### Added
