@@ -111,7 +111,8 @@ Speedboat.stop();
 
 ## 文档
 
-- [使用手册](MANUAL.md) — 详细配置和 API 说明
+- [使用手册](MANUAL_cn.md) — 详细配置和 API 说明
+- [User Manual](MANUAL.md) — Detailed configuration and API reference (English)
 - [变更日志](CHANGELOG_cn.md) — 版本更新记录
 - [English](README.md) — English README
 

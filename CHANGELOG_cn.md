@@ -10,10 +10,15 @@
 
 - **README_cn.md**：中文版 README，方便中文用户快速上手
 - **README.md 英文版**：重写为英文版 README，面向国际用户
+- **CHANGELOG_cn.md**：中文版变更日志
+- **MANUAL_cn.md**：中文版使用手册
+- **MANUAL.md 英文版**：重写为英文版使用手册
 
 ### Changed
 
 - **README.md**：从中文改为英文，与 README_cn.md 形成中英文双文档体系
+- **README.md**：文档引用改为中英文对应（MANUAL.md / MANUAL_cn.md, CHANGELOG.md / CHANGELOG_cn.md）
+- **README_cn.md**：文档引用改为中英文对应（MANUAL_cn.md / MANUAL.md, CHANGELOG_cn.md / CHANGELOG.md）
 
 ---
 
