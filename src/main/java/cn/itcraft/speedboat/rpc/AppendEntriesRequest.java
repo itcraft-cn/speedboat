@@ -6,6 +6,12 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+/**
+ * AppendEntriesRequest 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class AppendEntriesRequest extends RpcRequest {
 
     private long term;

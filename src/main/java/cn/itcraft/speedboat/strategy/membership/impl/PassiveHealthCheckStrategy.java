@@ -9,6 +9,14 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * 被动健康检查策略，基于节点通信历史判断健康状态。
+ * 
+ * <p>通过记录成功通信的节点来推断健康状态，适用于内部通信频繁的场景。</p>
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class PassiveHealthCheckStrategy implements HealthCheckStrategy {
 
     private final Set<String> knownHealthyNodes = new HashSet<>();

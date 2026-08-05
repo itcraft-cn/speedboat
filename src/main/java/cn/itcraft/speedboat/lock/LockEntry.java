@@ -1,5 +1,11 @@
 package cn.itcraft.speedboat.lock;
 
+/**
+ * LockEntry 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class LockEntry {
 
     private final String lockName;

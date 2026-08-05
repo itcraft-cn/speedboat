@@ -2,6 +2,12 @@ package cn.itcraft.speedboat.raft;
 
 import java.util.concurrent.ThreadLocalRandom;
 
+/**
+ * ElectionTimeout 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class ElectionTimeout {
     
     private final long minMs;

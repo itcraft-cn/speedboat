@@ -1,5 +1,11 @@
 package cn.itcraft.speedboat.raft;
 
+/**
+ * Term 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class Term {
     
     private long current;

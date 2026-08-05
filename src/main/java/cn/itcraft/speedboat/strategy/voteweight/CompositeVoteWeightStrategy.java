@@ -5,6 +5,14 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
+/**
+ * 复合投票权重策略，组合多个权重策略的结果。
+ * 
+ * <p>将多个 {@link VoteWeightStrategy} 的权重计算结果累加，实现策略组合。</p>
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class CompositeVoteWeightStrategy implements VoteWeightStrategy {
     
     private final List<VoteWeightStrategy> strategies;

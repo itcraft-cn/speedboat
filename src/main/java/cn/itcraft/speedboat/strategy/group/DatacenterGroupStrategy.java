@@ -4,6 +4,12 @@ import cn.itcraft.speedboat.config.SpeedboatConsts;
 
 import java.util.concurrent.ThreadLocalRandom;
 
+/**
+ * DatacenterGroupStrategy 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class DatacenterGroupStrategy implements GroupStrategy {
     
     @Override

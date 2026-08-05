@@ -6,6 +6,14 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * 健康检查策略接口，定义节点健康状态检测的契约。
+ * 
+ * <p>用于检测集群中节点的可用性，支持主动探测和被动监控两种模式。</p>
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public interface HealthCheckStrategy {
 
     Set<String> checkHealth(Set<String> nodeIds);

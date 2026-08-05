@@ -4,6 +4,14 @@ import cn.itcraft.speedboat.raft.RaftNode;
 import cn.itcraft.speedboat.raft.MemberChangeEntry;
 import java.util.List;
 
+/**
+ * 变更验证策略接口，定义成员变更的验证规则和约束条件。
+ * 
+ * <p>用于确保成员变更的安全性，防止无效或危险的配置变更。</p>
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public interface ChangeValidationStrategy {
 
     boolean canProposeChange(RaftNode raftNode, MemberChangeEntry proposedEntry);

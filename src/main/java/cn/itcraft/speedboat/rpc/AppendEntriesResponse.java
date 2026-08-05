@@ -1,5 +1,11 @@
 package cn.itcraft.speedboat.rpc;
 
+/**
+ * AppendEntriesResponse 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class AppendEntriesResponse extends RpcResponse {
 
     private long term;

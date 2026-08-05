@@ -30,6 +30,56 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import cn.itcraft.speedboat.statemachine.StateMachine;
 
+/**
+ * Raft 共识算法节点核心实现。
+ * 
+ * <p>基于 Raft 论文 "In Search of an Understandable Consensus Algorithm" 实现，
+ * 支持 Leader 选举、日志复制和成员变更等核心功能。</p>
+ * 
+ * <p>节点状态机：</p>
+ * <ul>
+ *   <li><b>FOLLOWER</b>：跟随者，响应 Leader 的心跳和日志复制请求</li>
+ *   <li><b>CANDIDATE</b>：候选者，发起选举请求投票</li>
+ *   <li><b>LEADER</b>：领导者，处理客户端请求、复制日志、发送心跳</li>
+ * </ul>
+ * 
+ * <p>核心算法：</p>
+ * <ol>
+ *   <li><b>选举</b>：Follower 超时未收到心跳 → Candidate → 请求投票 → 获得多数票 → Leader</li>
+ *   <li><b>日志复制</b>：Leader 接收客户端命令 → 追加到本地日志 → AppendEntries RPC 复制到 Followers</li>
+ *   <li><b>安全性</b>：选举安全性（每个任期最多一个 Leader）、日志匹配特性</li>
+ *   <li><b>成员变更</b>：支持动态添加/移除节点，通过日志复制实现一致的状态变更</li>
+ * </ol>
+ * 
+ * <p>配置项：</p>
+ * <ul>
+ *   <li>选举超时：150-300ms（推荐值），防止分裂投票</li>
+ *   <li>心跳间隔：50ms（默认），保持 Leader 活跃性</li>
+ *   <li>最大日志大小：防止日志无限增长</li>
+ * </ul>
+ * 
+ * <p>使用示例：</p>
+ * <pre>{@code
+ * RaftNode node = RaftNode.builder()
+ *     .nodeId("node-1")
+ *     .peerIds(Arrays.asList("node-2", "node-3"))
+ *     .electionTimeout(new ElectionTimeout(150, 300))
+ *     .build();
+ * 
+ * node.start();
+ * 
+ * if (node.isLeader()) {
+ *     node.propose("command".getBytes());
+ * }
+ * }</pre>
+ * 
+ * @author speedboat
+ * @see ElectionTimeout
+ * @see LogEntry
+ * @see Term
+ * @see RaftGroup
+ * @since 1.0.0
+ */
 public class RaftNode {
 
     private static final Logger logger = LoggerFactory.getLogger(RaftNode.class);

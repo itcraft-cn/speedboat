@@ -9,6 +9,12 @@ import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * LockStateMachine 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class LockStateMachine implements StateMachine {
 
     private static final Logger logger = LoggerFactory.getLogger(LockStateMachine.class);

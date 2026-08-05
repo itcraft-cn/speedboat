@@ -1,5 +1,11 @@
 package cn.itcraft.speedboat.rpc;
 
+/**
+ * RequestVoteResponse 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class RequestVoteResponse extends RpcResponse {
 
     private long term;

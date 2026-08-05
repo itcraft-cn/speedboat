@@ -4,6 +4,14 @@ import cn.itcraft.speedboat.raft.RaftNode;
 import cn.itcraft.speedboat.raft.MemberChangeEntry;
 import cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy;
 
+/**
+ * 默认变更验证策略实现，提供基本的成员变更验证逻辑。
+ * 
+ * <p>实现 {@link ChangeValidationStrategy} 接口，包含 Leader 检查、仲裁可用性验证等基础规则。</p>
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class DefaultChangeValidationStrategy implements ChangeValidationStrategy {
 
     @Override

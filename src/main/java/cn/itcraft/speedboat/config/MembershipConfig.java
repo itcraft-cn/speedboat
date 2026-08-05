@@ -2,6 +2,14 @@ package cn.itcraft.speedboat.config;
 
 import java.util.Objects;
 
+/**
+ * 成员管理配置类，封装成员变更相关的所有配置参数。
+ * 
+ * <p>用于配置健康检查、故障检测、注册中心集成等成员管理功能的各项参数。</p>
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class MembershipConfig {
 
     public enum RegistryImpl {

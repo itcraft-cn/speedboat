@@ -5,6 +5,12 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.zip.CRC32;
 
+/**
+ * CustomSerializer 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class CustomSerializer {
     
     private static final int HEADER_LEN = 10;

@@ -7,6 +7,14 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 
 import java.util.concurrent.CompletableFuture;
 
+/**
+ * RPC 响应处理器，处理 RPC 响应消息。
+ * 
+ * <p>继承 {@link ChannelInboundHandlerAdapter}，负责反序列化响应并完成对应的 {@link CompletableFuture}。</p>
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 class RpcResponseHandler extends ChannelInboundHandlerAdapter {
     
     private final NettyTransport transport;

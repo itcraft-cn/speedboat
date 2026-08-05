@@ -2,6 +2,12 @@ package cn.itcraft.speedboat.lock;
 
 import java.io.Serializable;
 
+/**
+ * LockCommand 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class LockCommand implements Serializable {
 
     private static final long serialVersionUID = 1L;

@@ -1,5 +1,13 @@
 package cn.itcraft.speedboat.raft;
 
+/**
+ * 投票上下文类，封装投票决策所需的所有相关信息。
+ * 
+ * <p>用于 {@link VoteWeightStrategy} 计算投票权重时提供决策上下文。</p>
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class VoteContext {
     
     private final String candidateId;

@@ -5,6 +5,14 @@ import cn.itcraft.speedboat.serialize.CustomSerializer;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 
+/**
+ * RPC 消息处理器，处理 Netty 通道中的 RPC 消息。
+ * 
+ * <p>继承 {@link ChannelInboundHandlerAdapter}，负责反序列化和路由 RPC 请求。</p>
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 class RpcMessageHandler extends ChannelInboundHandlerAdapter {
     
     private final NettyTransport transport;

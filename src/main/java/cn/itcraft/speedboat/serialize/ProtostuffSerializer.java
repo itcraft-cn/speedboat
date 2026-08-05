@@ -5,6 +5,14 @@ import io.protostuff.ProtostuffIOUtil;
 import io.protostuff.Schema;
 import io.protostuff.runtime.RuntimeSchema;
 
+/**
+ * Protostuff 序列化器实现，基于 Protostuff 库的高性能对象序列化。
+ * 
+ * <p>实现 {@link Serializer} 接口，使用 Protostuff 运行时 Schema 进行序列化。</p>
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class ProtostuffSerializer implements Serializer {
     
     private static final int TYPE_ID = 2;

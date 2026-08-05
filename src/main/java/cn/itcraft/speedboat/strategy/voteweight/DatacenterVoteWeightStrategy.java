@@ -3,6 +3,12 @@ package cn.itcraft.speedboat.strategy.voteweight;
 import cn.itcraft.speedboat.raft.VoteContext;
 import java.util.Objects;
 
+/**
+ * DatacenterVoteWeightStrategy 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class DatacenterVoteWeightStrategy implements VoteWeightStrategy {
     
     private final String localDatacenter;

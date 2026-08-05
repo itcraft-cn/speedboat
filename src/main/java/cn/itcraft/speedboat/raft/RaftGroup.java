@@ -13,10 +13,44 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Raft 组管理器
+ * Raft 组管理器，负责管理一个 Raft 组的完整生命周期。
  * 
- * <p>管理单个 Raft 组的生命周期，包含多个 RaftNode 和相关的配置。</p>
- * <p>支持级联架构，可以设置父子组关系。</p>
+ * <p>RaftGroup 是 Raft 集群的抽象表示，包含多个 {@link RaftNode} 实例，提供集群级别的操作接口。
+ * 主要用于单进程模拟集群场景，也支持跨机房级联架构。</p>
+ * 
+ * <p>核心功能：</p>
+ * <ul>
+ *   <li><b>集群管理</b>：创建、启动、停止组内所有 RaftNode</li>
+ *   <li><b>选举协调</b>：跟踪组内 Leader 节点，提供主节点查询接口</li>
+ *   <li><b>级联支持</b>：支持父子组关系，实现跨机房双层选举架构</li>
+ *   <li><b>配置封装</b>：封装 {@link SpeedboatConfig} 和 {@link GroupStrategy}，简化集群配置</li>
+ * </ul>
+ * 
+ * <p>架构模式：</p>
+ * <ol>
+ *   <li><b>单机房扁平模式</b>：单个 RaftGroup 管理同一机房内的所有节点</li>
+ *   <li><b>跨机房级联模式</b>：多个 RaftGroup 形成父子关系，机房内选举 → 机房间选举</li>
+ * </ol>
+ * 
+ * <p>使用场景：</p>
+ * <ul>
+ *   <li><b>测试/模拟</b>：在单 JVM 内模拟完整 Raft 集群，便于单元测试和集成测试</li>
+ *   <li><b>单进程多节点</b>：特殊场景下需要单进程运行多个 Raft 节点</li>
+ *   <li><b>级联架构基类</b>：为跨机房选举提供基础抽象</li>
+ * </ul>
+ * 
+ * <p>注意事项：</p>
+ * <ul>
+ *   <li>RaftGroup 在单进程内模拟集群，不适用于真实分布式部署</li>
+ *   <li>真实分布式场景应使用 {@link RaftNode} 直接构建，每个进程一个节点</li>
+ *   <li>父子组关系通过 {@link GroupStrategy} 实现，默认使用 {@link DefaultGroupStrategy}</li>
+ * </ul>
+ * 
+ * @author speedboat
+ * @see RaftNode
+ * @see GroupStrategy
+ * @see SpeedboatConfig
+ * @since 1.0.0
  */
 public class RaftGroup {
 

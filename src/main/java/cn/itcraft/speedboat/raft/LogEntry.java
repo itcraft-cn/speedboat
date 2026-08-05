@@ -1,5 +1,13 @@
 package cn.itcraft.speedboat.raft;
 
+/**
+ * Raft 日志条目类，表示日志复制中的单个日志项。
+ * 
+ * <p>包含日志索引、任期、Leader ID、条目类型和序列化数据。</p>
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class LogEntry {
 
     public enum EntryType {

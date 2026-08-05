@@ -4,6 +4,12 @@ import cn.itcraft.speedboat.config.SpeedboatConsts;
 
 import java.util.concurrent.ThreadLocalRandom;
 
+/**
+ * GlobalGroupStrategy 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class GlobalGroupStrategy implements GroupStrategy {
     
     @Override

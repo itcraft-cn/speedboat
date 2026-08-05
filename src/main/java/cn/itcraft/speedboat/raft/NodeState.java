@@ -4,6 +4,12 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
+/**
+ * NodeState 枚举。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public enum NodeState {
     
     LEADER,

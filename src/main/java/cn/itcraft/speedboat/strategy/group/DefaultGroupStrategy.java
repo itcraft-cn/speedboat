@@ -3,6 +3,12 @@ package cn.itcraft.speedboat.strategy.group;
 import cn.itcraft.speedboat.config.SpeedboatConsts;
 import java.util.concurrent.ThreadLocalRandom;
 
+/**
+ * DefaultGroupStrategy 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class DefaultGroupStrategy implements GroupStrategy {
     
     @Override

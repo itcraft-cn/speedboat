@@ -1,5 +1,11 @@
 package cn.itcraft.speedboat.transport;
 
+/**
+ * NodeEndpoint 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class NodeEndpoint {
     
     private final String nodeId;

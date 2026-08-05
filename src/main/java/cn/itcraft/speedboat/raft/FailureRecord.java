@@ -3,6 +3,12 @@ package cn.itcraft.speedboat.raft;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * FailureRecord 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class FailureRecord {
 
     private final String nodeId;

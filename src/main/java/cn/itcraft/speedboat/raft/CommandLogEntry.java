@@ -1,5 +1,11 @@
 package cn.itcraft.speedboat.raft;
 
+/**
+ * CommandLogEntry 类。
+ * 
+ * @author speedboat
+ * @since 1.0.0
+ */
 public class CommandLogEntry extends LogEntry {
 
     public CommandLogEntry(long index, long term, String leaderId, byte[] data) {
