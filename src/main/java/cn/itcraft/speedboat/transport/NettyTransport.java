@@ -11,87 +11,44 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.bytes.ByteArrayDecoder;
-import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import io.netty.util.concurrent.GlobalEventExecutor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 /**
- * Netty 4.x 实现的网络传输层，提供 Raft 节点间的 RPC 通信能力。
- * 
- * <p>基于 TCP 协议实现可靠的请求-响应通信，支持选举投票、日志复制、心跳等 Raft 核心 RPC。</p>
- * 
- * <p>架构设计：</p>
- * <ul>
- *   <li><b>客户端/服务端一体化</b>：每个节点既是服务端（接收请求）也是客户端（发送请求）</li>
- *   <li><b>连接池管理</b>：维护到所有对等节点的长连接，支持连接复用</li>
- *   <li><b>异步非阻塞</b>：基于 Netty 的 NIO 事件驱动模型，高并发低延迟</li>
- *   <li><b>序列化抽象</b>：通过 {@link CustomSerializer} 支持多种序列化协议</li>
- *   <li><b>请求匹配</b>：使用 requestId 映射请求-响应，支持超时和错误处理</li>
- * </ul>
- * 
- * <p>核心 RPC 支持：</p>
- * <ol>
- *   <li><b>选举 RPC</b>：{@link RequestVoteRequest} / {@link RequestVoteResponse}</li>
- *   <li><b>日志复制 RPC</b>：{@link AppendEntriesRequest} / {@link AppendEntriesResponse}</li>
- *   <li><b>心跳 RPC</b>：{@link HeartbeatRequest} / {@link HeartbeatResponse}</li>
- * </ol>
- * 
- * <p>网络模型：</p>
- * <ul>
- *   <li><b>服务端端口</b>：绑定本地端口，监听对等节点连接请求</li>
- *   <li><b>客户端连接</b>：主动连接到配置的对等节点</li>
- *   <li><b>编解码器</b>：使用 Netty 的 {@link ByteArrayDecoder} / {@link ByteArrayEncoder} 处理原始字节流</li>
- *   <li><b>线程模型</b>：BossGroup（接受连接） + WorkerGroup（处理 I/O）</li>
- * </ul>
- * 
- * <p>性能优化：</p>
- * <ul>
- *   <li><b>心跳批量发送</b>：使用 {@link ChannelGroup} 批量广播心跳消息</li>
- *   <li><b>连接复用</b>：避免每次 RPC 创建新连接的开销</li>
- *   <li><b>超时控制</b>：默认 5 秒超时，防止资源泄漏</li>
- *   <li><b>错误恢复</b>：连接断开时自动重连机制</li>
- * </ul>
- * 
- * <p>已知限制：</p>
- * <ul>
- *   <li>当前版本使用 Mock 响应（第108行），需实现完整的请求-响应匹配机制</li>
- *   <li>不支持 SSL/TLS 加密通信</li>
- *   <li>不支持压缩</li>
- * </ul>
- * 
- * @author speedboat
- * @see TransportLayer
- * @see RpcMessageHandler
- * @see NodeEndpoint
- * @since 1.0.0
+ * 基于 Netty 的网络传输层。
+ *
+ * <p>连接管理借鉴 ABChecker 模式：懒连接 + 发送失败置空重建。</p>
  */
 public class NettyTransport implements TransportLayer {
-    
+
+    private static final Logger logger = LoggerFactory.getLogger(NettyTransport.class);
     private static final long DEFAULT_TIMEOUT_MS = 5000;
-    
+    private static final int CONNECT_TIMEOUT_MS = 1000;
+
     private final NodeEndpoint localEndpoint;
     private final List<NodeEndpoint> peers;
     private final CustomSerializer serializer;
     private final EventLoopGroup bossGroup;
     private final EventLoopGroup workerGroup;
-    private final Map<String, Channel> channels;
+    /** 每个 peer 维护一个 Channel，null 表示未连接或需要重连 */
+    private final ConcurrentHashMap<String, Channel> channels;
     private final ChannelGroup channelGroup;
-    
+
     @SuppressWarnings("unchecked")
     private final Map<String, CompletableFuture<RpcResponse>> pendingRequests = new ConcurrentHashMap<>();
-    
+
     private RequestVoteHandler requestVoteHandler;
     private HeartbeatHandler heartbeatHandler;
     private AppendEntriesHandler appendEntriesHandler;
-    
+
     public NettyTransport(NodeEndpoint localEndpoint, List<NodeEndpoint> peers, CustomSerializer serializer) {
         this.localEndpoint = localEndpoint;
         this.peers = peers;
@@ -101,10 +58,30 @@ public class NettyTransport implements TransportLayer {
         this.channels = new ConcurrentHashMap<>();
         this.channelGroup = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
     }
-    
+
+    // ==================== 广播方法 ====================
+
+    public void broadcastHeartbeat(HeartbeatRequest request) {
+        for (NodeEndpoint peer : peers) {
+            if (!peer.getNodeId().equals(localEndpoint.getNodeId())) {
+                sendHeartbeat(peer.getNodeId(), request);
+            }
+        }
+    }
+
+    public void broadcastRequestVote(RequestVoteRequest request) {
+        for (NodeEndpoint peer : peers) {
+            if (!peer.getNodeId().equals(localEndpoint.getNodeId())) {
+                sendRequestVote(peer.getNodeId(), request);
+            }
+        }
+    }
+
+    // ==================== 生命周期 ====================
+
     public void start() {
-        ServerBootstrap serverBootstrap = new ServerBootstrap();
-        serverBootstrap.group(bossGroup, workerGroup)
+        ServerBootstrap sb = new ServerBootstrap();
+        sb.group(bossGroup, workerGroup)
             .channel(NioServerSocketChannel.class)
             .childHandler(new ChannelInitializer<SocketChannel>() {
                 @Override
@@ -115,185 +92,206 @@ public class NettyTransport implements TransportLayer {
                         .addLast(new RpcMessageHandler(NettyTransport.this, serializer));
                 }
             });
-        
         try {
-            ChannelFuture future = serverBootstrap.bind(localEndpoint.getPort()).sync();
+            ChannelFuture f = sb.bind(localEndpoint.getPort()).sync();
+            logger.info("Server bound to port {}", localEndpoint.getPort());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        
-        connectToPeers();
+        // 不做 connectToPeers，改为懒连接：首次发送时才连接
     }
-    
-    private void connectToPeers() {
-        Bootstrap bootstrap = new Bootstrap();
-        bootstrap.group(workerGroup)
-            .channel(NioSocketChannel.class)
-            .handler(new ChannelInitializer<SocketChannel>() {
-                @Override
-                protected void initChannel(SocketChannel ch) {
-                    ch.pipeline()
-                        .addLast(new LengthFieldBasedFrameDecoder(1024, 0, 4, 0, 4))
-                        .addLast(new ByteArrayEncoder())
-                        .addLast(new RpcResponseHandler(NettyTransport.this, serializer));
-                }
-            });
-        
-        List<ChannelFuture> connectFutures = new ArrayList<>();
-        
-        for (NodeEndpoint peer : peers) {
-            if (!peer.getNodeId().equals(localEndpoint.getNodeId())) {
-                ChannelFuture future = bootstrap.connect(peer.getHost(), peer.getPort());
-                connectFutures.add(future);
-                future.addListener((ChannelFutureListener) f -> {
-                    if (f.isSuccess()) {
-                        Channel channel = f.channel();
-                        channels.put(peer.getNodeId(), channel);
-                        channelGroup.add(channel);
-                    }
-                });
-            }
-        }
-        
-        try {
-            for (ChannelFuture future : connectFutures) {
-                future.await(3000, TimeUnit.MILLISECONDS);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
-    
-    @Override
-    public CompletableFuture<RequestVoteResponse> sendRequestVote(String targetNodeId, RequestVoteRequest request) {
-        Channel channel = channels.get(targetNodeId);
-        if (channel == null || !channel.isActive()) {
-            return CompletableFuture.completedFuture(
-                new RequestVoteResponse(request.getRequestId(), 0, false));
-        }
-        
-        CompletableFuture<RequestVoteResponse> future = new CompletableFuture<>();
-        pendingRequests.put(request.getRequestId(), (CompletableFuture<RpcResponse>) (CompletableFuture<?>) future);
-        
-        try {
-            byte[] data = serializer.wrap(request);
-            channel.writeAndFlush(data);
-            
-            workerGroup.schedule(() -> {
-                CompletableFuture<RpcResponse> pending = pendingRequests.remove(request.getRequestId());
-                if (pending != null && !pending.isDone()) {
-                    pending.complete(new RequestVoteResponse(request.getRequestId(), 0, false));
-                }
-            }, DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        } catch (Exception e) {
-            pendingRequests.remove(request.getRequestId());
-            future.completeExceptionally(e);
-        }
-        return future;
-    }
-    
-    @Override
-    public CompletableFuture<HeartbeatResponse> sendHeartbeat(String targetNodeId, HeartbeatRequest request) {
-        Channel channel = channels.get(targetNodeId);
-        if (channel == null || !channel.isActive()) {
-            return CompletableFuture.completedFuture(
-                new HeartbeatResponse(request.getRequestId(), 0, false));
-        }
-        
-        CompletableFuture<HeartbeatResponse> future = new CompletableFuture<>();
-        pendingRequests.put(request.getRequestId(), (CompletableFuture<RpcResponse>) (CompletableFuture<?>) future);
-        
-        try {
-            byte[] data = serializer.wrap(request);
-            channel.writeAndFlush(data);
-            
-            workerGroup.schedule(() -> {
-                CompletableFuture<RpcResponse> pending = pendingRequests.remove(request.getRequestId());
-                if (pending != null && !pending.isDone()) {
-                    pending.complete(new HeartbeatResponse(request.getRequestId(), 0, false));
-                }
-            }, DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        } catch (Exception e) {
-            pendingRequests.remove(request.getRequestId());
-            future.completeExceptionally(e);
-        }
-        return future;
-    }
-    
-    public void broadcastRequestVote(RequestVoteRequest request) {
-        if (channels.isEmpty()) {
-            return;
-        }
-        for (String nodeId : channels.keySet()) {
-            sendRequestVote(nodeId, request);
-        }
-    }
-    
-    public List<CompletableFuture<HeartbeatResponse>> broadcastHeartbeat(HeartbeatRequest request) {
-        if (channels.isEmpty()) {
-            return new ArrayList<>();
-        }
-        List<CompletableFuture<HeartbeatResponse>> futures = new ArrayList<>();
-        
-        for (String nodeId : channels.keySet()) {
-            futures.add(sendHeartbeat(nodeId, request));
-        }
-        
-        return futures;
-    }
-    
-    @Override
-    public void setRequestVoteHandler(RequestVoteHandler handler) {
-        this.requestVoteHandler = handler;
-    }
-    
-    @Override
-    public void setHeartbeatHandler(HeartbeatHandler handler) {
-        this.heartbeatHandler = handler;
-    }
-    
-    @Override
-    public CompletableFuture<AppendEntriesResponse> sendAppendEntries(String targetNodeId, AppendEntriesRequest request) {
-        Channel channel = channels.get(targetNodeId);
-        if (channel == null || !channel.isActive()) {
-            return CompletableFuture.completedFuture(
-                new AppendEntriesResponse(request.getRequestId(), 0, false, 0));
-        }
-        
-        CompletableFuture<AppendEntriesResponse> future = new CompletableFuture<>();
-        pendingRequests.put(request.getRequestId(), (CompletableFuture<RpcResponse>) (CompletableFuture<?>) future);
-        
-        try {
-            byte[] data = serializer.wrap(request);
-            channel.writeAndFlush(data);
-            
-            workerGroup.schedule(() -> {
-                CompletableFuture<RpcResponse> pending = pendingRequests.remove(request.getRequestId());
-                if (pending != null && !pending.isDone()) {
-                    pending.complete(new AppendEntriesResponse(request.getRequestId(), 0, false, 0));
-                }
-            }, DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        } catch (Exception e) {
-            pendingRequests.remove(request.getRequestId());
-            future.completeExceptionally(e);
-        }
-        return future;
-    }
-    
-    @Override
-    public void setAppendEntriesHandler(AppendEntriesHandler handler) {
-        this.appendEntriesHandler = handler;
-    }
-    
+
     public void shutdown() {
         channels.values().forEach(Channel::close);
+        channelGroup.close();
         workerGroup.shutdownGracefully();
         bossGroup.shutdownGracefully();
     }
-    
+
+    // ==================== 连接管理（借鉴 ABChecker） ====================
+
+    /**
+     * 懒获取连接：有则用，无则建；发送失败则置空，下次重建。
+     *
+     * <p>参考 ABCheckSockLoop.checkChannel() 的模式：</p>
+     * <pre>
+     *   if (channel == null) {
+     *       channel = SocketChannel.open();
+     *       channel.connect(otherHostPort);
+     *   }
+     * </pre>
+     */
+    private Channel getChannel(String targetNodeId) {
+        Channel ch = channels.get(targetNodeId);
+        if (ch != null && ch.isActive()) {
+            return ch;
+        }
+        if (ch != null) {
+            logger.info("Channel for {} stale: active={}, open={}, writable={}, registered={}", 
+                targetNodeId, ch.isActive(), ch.isOpen(), ch.isWritable(), ch.isRegistered());
+            channels.remove(targetNodeId);
+        }
+        return connectTo(targetNodeId);
+    }
+
+    /**
+     * 建立到指定 peer 的连接。失败返回 null，下次发送时自动重试。
+     */
+    private synchronized Channel connectTo(String targetNodeId) {
+        // 双重检查：可能其他线程已建立连接
+        Channel existing = channels.get(targetNodeId);
+        if (existing != null && existing.isActive()) {
+            return existing;
+        }
+
+        NodeEndpoint ep = findEndpoint(targetNodeId);
+        if (ep == null) {
+            logger.warn("No endpoint found for {}", targetNodeId);
+            return null;
+        }
+
+        try {
+            Bootstrap b = new Bootstrap();
+            b.group(workerGroup)
+                .channel(NioSocketChannel.class)
+                .handler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel ch) {
+                        ch.pipeline()
+                            .addLast(new LengthFieldBasedFrameDecoder(1024, 0, 4, 0, 4))
+                            .addLast(new ByteArrayEncoder())
+                            .addLast(new RpcResponseHandler(NettyTransport.this, serializer));
+                    }
+                });
+
+            ChannelFuture f = b.connect(ep.getHost(), ep.getPort());
+            boolean ok = f.await(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            if (ok && f.isSuccess()) {
+                Channel channel = f.channel();
+                channels.put(targetNodeId, channel);
+                channelGroup.add(channel);
+                logger.info("Connected to {} at {}:{}", targetNodeId, ep.getHost(), ep.getPort());
+                return channel;
+            }
+        } catch (Exception e) {
+            logger.debug("Connect to {} failed: {}", targetNodeId, e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * 发送失败时置空 channel，下次自动重连。
+     */
+    private void invalidateChannel(String targetNodeId) {
+        channels.remove(targetNodeId);
+    }
+
+    private NodeEndpoint findEndpoint(String nodeId) {
+        for (NodeEndpoint ep : peers) {
+            if (ep.getNodeId().equals(nodeId)) {
+                return ep;
+            }
+        }
+        return null;
+    }
+
+    // ==================== RPC 发送 ====================
+
+    @Override
+    public CompletableFuture<RequestVoteResponse> sendRequestVote(String targetNodeId, RequestVoteRequest request) {
+        Channel ch = getChannel(targetNodeId);
+        if (ch == null) {
+            return CompletableFuture.completedFuture(
+                new RequestVoteResponse(request.getRequestId(), 0, false));
+        }
+        CompletableFuture<RequestVoteResponse> future = new CompletableFuture<>();
+        pendingRequests.put(request.getRequestId(), (CompletableFuture<RpcResponse>) (CompletableFuture<?>) future);
+        try {
+            ch.writeAndFlush(serializer.wrap(request));
+            scheduleRequestVoteTimeout(request.getRequestId());
+        } catch (Exception e) {
+            pendingRequests.remove(request.getRequestId());
+            future.complete(new RequestVoteResponse(request.getRequestId(), 0, false));
+        }
+        return future;
+    }
+
+    @Override
+    public CompletableFuture<HeartbeatResponse> sendHeartbeat(String targetNodeId, HeartbeatRequest request) {
+        Channel ch = getChannel(targetNodeId);
+        if (ch == null) {
+            return CompletableFuture.completedFuture(
+                new HeartbeatResponse(request.getRequestId(), 0, false));
+        }
+        CompletableFuture<HeartbeatResponse> future = new CompletableFuture<>();
+        pendingRequests.put(request.getRequestId(), (CompletableFuture<RpcResponse>) (CompletableFuture<?>) future);
+        try {
+            ch.writeAndFlush(serializer.wrap(request));
+            scheduleHeartbeatTimeout(request.getRequestId());
+        } catch (Exception e) {
+            pendingRequests.remove(request.getRequestId());
+            future.complete(new HeartbeatResponse(request.getRequestId(), 0, false));
+        }
+        return future;
+    }
+
+    @Override
+    public CompletableFuture<AppendEntriesResponse> sendAppendEntries(String targetNodeId, AppendEntriesRequest request) {
+        Channel ch = getChannel(targetNodeId);
+        if (ch == null) {
+            return CompletableFuture.completedFuture(
+                new AppendEntriesResponse(request.getRequestId(), 0, false, 0));
+        }
+        CompletableFuture<AppendEntriesResponse> future = new CompletableFuture<>();
+        pendingRequests.put(request.getRequestId(), (CompletableFuture<RpcResponse>) (CompletableFuture<?>) future);
+        try {
+            ch.writeAndFlush(serializer.wrap(request));
+            scheduleAppendEntriesTimeout(request.getRequestId());
+        } catch (Exception e) {
+            pendingRequests.remove(request.getRequestId());
+            future.complete(new AppendEntriesResponse(request.getRequestId(), 0, false, 0));
+        }
+        return future;
+    }
+
+    private void scheduleRequestVoteTimeout(String requestId) {
+        workerGroup.schedule(() -> {
+            CompletableFuture<RpcResponse> pending = pendingRequests.remove(requestId);
+            if (pending != null && !pending.isDone()) {
+                pending.complete(new RequestVoteResponse(requestId, 0, false));
+            }
+        }, DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private void scheduleHeartbeatTimeout(String requestId) {
+        workerGroup.schedule(() -> {
+            CompletableFuture<RpcResponse> pending = pendingRequests.remove(requestId);
+            if (pending != null && !pending.isDone()) {
+                pending.complete(new HeartbeatResponse(requestId, 0, false));
+            }
+        }, DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private void scheduleAppendEntriesTimeout(String requestId) {
+        workerGroup.schedule(() -> {
+            CompletableFuture<RpcResponse> pending = pendingRequests.remove(requestId);
+            if (pending != null && !pending.isDone()) {
+                pending.complete(new AppendEntriesResponse(requestId, 0, false, 0));
+            }
+        }, DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    // ==================== Handler 注册 ====================
+
+    @Override
+    public void setRequestVoteHandler(RequestVoteHandler handler) { this.requestVoteHandler = handler; }
+    @Override
+    public void setHeartbeatHandler(HeartbeatHandler handler) { this.heartbeatHandler = handler; }
+    @Override
+    public void setAppendEntriesHandler(AppendEntriesHandler handler) { this.appendEntriesHandler = handler; }
+
     RequestVoteHandler getRequestVoteHandler() { return requestVoteHandler; }
     HeartbeatHandler getHeartbeatHandler() { return heartbeatHandler; }
     AppendEntriesHandler getAppendEntriesHandler() { return appendEntriesHandler; }
-    
     Map<String, CompletableFuture<RpcResponse>> getPendingRequests() { return pendingRequests; }
 }

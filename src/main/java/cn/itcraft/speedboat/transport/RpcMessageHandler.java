@@ -2,8 +2,11 @@ package cn.itcraft.speedboat.transport;
 
 import cn.itcraft.speedboat.rpc.*;
 import cn.itcraft.speedboat.serialize.CustomSerializer;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * RPC 消息处理器，处理 Netty 通道中的 RPC 消息。
@@ -15,6 +18,7 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
  */
 class RpcMessageHandler extends ChannelInboundHandlerAdapter {
     
+    private static final Logger logger = LoggerFactory.getLogger(RpcMessageHandler.class);
     private final NettyTransport transport;
     private final CustomSerializer serializer;
     
@@ -25,7 +29,15 @@ class RpcMessageHandler extends ChannelInboundHandlerAdapter {
     
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
-        byte[] data = (byte[]) msg;
+        byte[] data;
+        if (msg instanceof ByteBuf) {
+            ByteBuf buf = (ByteBuf) msg;
+            data = new byte[buf.readableBytes()];
+            buf.readBytes(data);
+            buf.release();
+        } else {
+            data = (byte[]) msg;
+        }
         
         try {
             Object obj = serializer.unwrap(data, Object.class);
@@ -50,12 +62,14 @@ class RpcMessageHandler extends ChannelInboundHandlerAdapter {
                 ctx.writeAndFlush(serializer.wrap(responseWithId));
             }
         } catch (Exception e) {
+            logger.error("RpcMessageHandler channelRead error: {}", e.toString(), e);
             ctx.close();
         }
     }
     
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        logger.error("RpcMessageHandler exceptionCaught: {}", cause.toString(), cause);
         ctx.close();
     }
 }

@@ -2,8 +2,11 @@ package cn.itcraft.speedboat.transport;
 
 import cn.itcraft.speedboat.rpc.*;
 import cn.itcraft.speedboat.serialize.CustomSerializer;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -17,6 +20,7 @@ import java.util.concurrent.CompletableFuture;
  */
 class RpcResponseHandler extends ChannelInboundHandlerAdapter {
     
+    private static final Logger logger = LoggerFactory.getLogger(RpcResponseHandler.class);
     private final NettyTransport transport;
     private final CustomSerializer serializer;
     
@@ -27,7 +31,15 @@ class RpcResponseHandler extends ChannelInboundHandlerAdapter {
     
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
-        byte[] data = (byte[]) msg;
+        byte[] data;
+        if (msg instanceof ByteBuf) {
+            ByteBuf buf = (ByteBuf) msg;
+            data = new byte[buf.readableBytes()];
+            buf.readBytes(data);
+            buf.release();
+        } else {
+            data = (byte[]) msg;
+        }
         
         try {
             Object obj = serializer.unwrap(data, Object.class);
@@ -46,12 +58,14 @@ class RpcResponseHandler extends ChannelInboundHandlerAdapter {
                 }
             }
         } catch (Exception e) {
+            logger.error("RpcResponseHandler error: {}", e.toString(), e);
             ctx.close();
         }
     }
     
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        logger.error("RpcResponseHandler exceptionCaught: {}", cause.toString(), cause);
         ctx.close();
     }
 }
