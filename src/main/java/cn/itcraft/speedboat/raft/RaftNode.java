@@ -60,10 +60,20 @@ import cn.itcraft.speedboat.statemachine.StateMachine;
  * 
  * <p>使用示例：</p>
  * <pre>{@code
+ * // 单机房扁平模式
  * RaftNode node = RaftNode.builder()
  *     .nodeId("node-1")
  *     .peerIds(Arrays.asList("node-2", "node-3"))
  *     .electionTimeout(new ElectionTimeout(150, 300))
+ *     .groupStrategy(new DefaultGroupStrategy())
+ *     .build();
+ * 
+ * // 跨机房级联模式（需要配置 GroupStrategy）
+ * RaftNode node = RaftNode.builder()
+ *     .nodeId("node-1")
+ *     .peerIds(Arrays.asList("node-2", "node-3"))
+ *     .electionTimeout(new ElectionTimeout(1000, 2000))
+ *     .groupStrategy(new DatacenterGroupStrategy())
  *     .build();
  * 
  * node.start();
@@ -516,8 +526,22 @@ public class RaftNode {
                     }
                 }
                 
-                int majority = (peerIds.size() + 1) / 2 + 1;
-                if (matchCount >= majority) {
+                int totalWeight = calculateRequiredWeight();
+                int currentWeight = calculateTotalVoteWeight();
+                int matchedWeight = 1;
+                
+                for (String peerId : peerIds) {
+                    if (matchIndex.containsKey(peerId) && matchIndex.get(peerId) >= n) {
+                        if (voteWeightStrategy != null) {
+                            VoteContext context = VoteContext.forCandidate(peerId, term.getCurrent());
+                            matchedWeight += 1 + voteWeightStrategy.calculateAdditionalWeight(context);
+                        } else {
+                            matchedWeight += 1;
+                        }
+                    }
+                }
+                
+                if (matchedWeight >= totalWeight) {
                     commitIndex = n;
                     applyCommittedEntries();
                     logger.info("Leader {} advanced commitIndex to {}", nodeId, commitIndex);
@@ -683,7 +707,9 @@ public class RaftNode {
      * Calculates votes needed to win election (majority).
      * 
      * @return minimum votes needed (N/2 + 1)
+     * @deprecated use calculateRequiredWeight() for weighted voting
      */
+    @Deprecated
     private int calculateVotesNeeded() {
         int totalNodes = peerIds.size() + 1;
         return (totalNodes / 2) + 1;
