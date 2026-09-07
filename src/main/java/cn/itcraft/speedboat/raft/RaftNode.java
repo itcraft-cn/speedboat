@@ -110,6 +110,8 @@ public class RaftNode {
     private TransportLayer transportLayer;
 
     private final List<String> peerIds;
+    /** 每个 peer 的机房标识，用于权重策略计算。未配置时默认空字符串（视为同机房） */
+    private final Map<String, String> peerDatacenters;
     private final Map<String, Boolean> votesReceived;
 
     private volatile boolean running;
@@ -145,6 +147,7 @@ public class RaftNode {
         this.groupStrategy = builder.groupStrategy;
         this.transportLayer = builder.transportLayer;
         this.peerIds = builder.peerIds != null ? new ArrayList<>(builder.peerIds) : new ArrayList<>();
+        this.peerDatacenters = new ConcurrentHashMap<>();
         this.votesReceived = new ConcurrentHashMap<>();
         this.lastHeartbeatNanos = System.nanoTime();
         this.log = new CopyOnWriteArrayList<>();
@@ -560,7 +563,7 @@ public class RaftNode {
                 for (String peerId : peerIds) {
                     if (matchIndex.containsKey(peerId) && matchIndex.get(peerId) >= n) {
                         if (voteWeightStrategy != null) {
-                            VoteContext context = VoteContext.forDatacenter(peerId, datacenter, term.getCurrent());
+                            VoteContext context = VoteContext.forDatacenter(peerId, getPeerDatacenter(peerId), term.getCurrent());
                             matchedWeight += 1 + voteWeightStrategy.calculateAdditionalWeight(context);
                         } else {
                             matchedWeight += 1;
@@ -723,7 +726,7 @@ public class RaftNode {
             if (votesReceived.containsKey(peerId)) {
                 int peerWeight = 1;
                 if (voteWeightStrategy != null) {
-                    VoteContext context = VoteContext.forDatacenter(peerId, datacenter, term.getCurrent());
+                    VoteContext context = VoteContext.forDatacenter(peerId, getPeerDatacenter(peerId), term.getCurrent());
                     peerWeight = 1 + voteWeightStrategy.calculateAdditionalWeight(context);
                 }
                 receivedWeight += peerWeight;
@@ -745,7 +748,7 @@ public class RaftNode {
         for (String peerId : peerIds) {
             int peerWeight = 1;
             if (voteWeightStrategy != null) {
-                VoteContext context = VoteContext.forDatacenter(peerId, datacenter, term.getCurrent());
+                VoteContext context = VoteContext.forDatacenter(peerId, getPeerDatacenter(peerId), term.getCurrent());
                 peerWeight = 1 + voteWeightStrategy.calculateAdditionalWeight(context);
             }
             totalWeight += peerWeight;
@@ -812,6 +815,29 @@ public class RaftNode {
     
     public List<String> getPeerIds() {
         return new ArrayList<>(peerIds);
+    }
+
+    /**
+     * 设置指定 peer 的机房标识。
+     *
+     * <p>权重策略（如 {@code DatacenterVoteWeightStrategy}）依赖此信息计算跨机房权重。
+     * 未设置的 peer 默认视为空字符串（与本节点同机房）。</p>
+     *
+     * @param peerId     peer 节点 ID
+     * @param datacenter peer 所在机房标识
+     */
+    public void setPeerDatacenter(String peerId, String datacenter) {
+        peerDatacenters.put(peerId, datacenter != null ? datacenter : "");
+    }
+
+    /**
+     * 获取指定 peer 的机房标识。
+     *
+     * @param peerId peer 节点 ID
+     * @return peer 的机房标识，未设置时返回空字符串
+     */
+    String getPeerDatacenter(String peerId) {
+        return peerDatacenters.getOrDefault(peerId, "");
     }
 
     public cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig() {
