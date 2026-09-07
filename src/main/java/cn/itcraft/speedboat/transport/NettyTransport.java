@@ -221,12 +221,18 @@ public class NettyTransport implements TransportLayer {
     }
     
     public void broadcastRequestVote(RequestVoteRequest request) {
+        if (channels.isEmpty()) {
+            return;
+        }
         for (String nodeId : channels.keySet()) {
             sendRequestVote(nodeId, request);
         }
     }
     
     public List<CompletableFuture<HeartbeatResponse>> broadcastHeartbeat(HeartbeatRequest request) {
+        if (channels.isEmpty()) {
+            return new ArrayList<>();
+        }
         List<CompletableFuture<HeartbeatResponse>> futures = new ArrayList<>();
         
         for (String nodeId : channels.keySet()) {
