@@ -242,7 +242,7 @@ public class RaftNode {
 
     public synchronized RequestVoteResponse handleRequestVote(RequestVoteRequest request) {
         if (term.isMonotonicViolation(request.getTerm())) {
-            logger.debug("Rejecting vote request from {} with lower term {}", 
+            logger.info("Rejecting vote request from {} with lower term {}", 
                 request.getCandidateId(), request.getTerm());
             return new RequestVoteResponse(term.getCurrent(), false);
         }
@@ -268,7 +268,7 @@ public class RaftNode {
             return new RequestVoteResponse(term.getCurrent(), true);
         }
         
-        logger.debug("Node {} rejected vote for {} (votedFor: {}, currentTerm: {})", 
+        logger.info("Node {} rejected vote for {} (votedFor: {}, currentTerm: {})", 
             nodeId, request.getCandidateId(), votedFor, term.getCurrent());
         return new RequestVoteResponse(term.getCurrent(), false);
     }
@@ -283,7 +283,7 @@ public class RaftNode {
 
     public synchronized AppendEntriesResponse handleAppendEntries(AppendEntriesRequest request) {
         if (request.getTerm() < term.getCurrent()) {
-            logger.debug("Rejecting AppendEntries from {} with lower term {}", 
+            logger.info("Rejecting AppendEntries from {} with lower term {}", 
                 request.getLeaderId(), request.getTerm());
             return new AppendEntriesResponse(term.getCurrent(), false, getLastLogIndex());
         }
@@ -302,9 +302,12 @@ public class RaftNode {
         resetElectionTimeout();
         lastHeartbeatNanos = System.nanoTime();
 
+        logger.info("Follower {} received appendEntries from leader {}, entries={}, prevLogIndex={}, leaderCommit={}", 
+            nodeId, request.getLeaderId(), request.getEntries().size(), request.getPrevLogIndex(), request.getLeaderCommit());
+
         if (request.getPrevLogIndex() > 0) {
             if (getLastLogIndex() < request.getPrevLogIndex()) {
-                logger.debug("Follower {} log too short: {} < prevLogIndex {}", 
+                logger.info("Follower {} log too short: {} < prevLogIndex {}", 
                     nodeId, getLastLogIndex(), request.getPrevLogIndex());
                 return new AppendEntriesResponse(term.getCurrent(), false, getLastLogIndex());
             }
@@ -321,7 +324,7 @@ public class RaftNode {
                         }
                     }
                 }
-                logger.debug("Follower {} log term mismatch at index {}", nodeId, request.getPrevLogIndex());
+                logger.info("Follower {} log term mismatch at index {}", nodeId, request.getPrevLogIndex());
                 return new AppendEntriesResponse(term.getCurrent(), false, Math.max(0, conflictIndex));
             }
         }
@@ -342,13 +345,16 @@ public class RaftNode {
             log.addAll(newLog);
             truncateLogIfNeeded();
 
-            logger.debug("Follower {} appended {} entries, log size now {}", 
+            logger.info("Follower {} appended {} entries, log size now {}", 
                 nodeId, request.getEntries().size(), log.size());
         }
 
         if (request.getLeaderCommit() > commitIndex) {
+            long oldCommitIndex = commitIndex;
             commitIndex = Math.min(request.getLeaderCommit(), getLastLogIndex());
             applyCommittedEntries();
+            logger.info("Node {} commitIndex updated: {} -> {}, lastApplied={}", 
+                nodeId, oldCommitIndex, commitIndex, lastApplied);
         }
 
         return new AppendEntriesResponse(term.getCurrent(), true, getLastLogIndex());
@@ -392,7 +398,7 @@ public class RaftNode {
                     if (response.isVoteGranted() && currentState == NodeState.CANDIDATE) {
                         synchronized (votesReceived) {
                             votesReceived.put(peerId, true);
-                            checkElectionResult(calculateTotalVoteWeight(), requiredWeight);
+                            checkElectionResult(calculateReceivedVoteWeight(), requiredWeight);
                         }
                     } else if (response.getTerm() > term.getCurrent()) {
                         term.updateIfHigher(response.getTerm());
@@ -414,7 +420,7 @@ public class RaftNode {
             return;
         }
         
-        logger.debug("Node {} has weight {}, needs {}", nodeId, currentWeight, requiredWeight);
+        logger.info("Node {} has weight {}, needs {}", nodeId, currentWeight, requiredWeight);
         
         if (currentWeight >= requiredWeight) {
             becomeLeader();
@@ -429,17 +435,24 @@ public class RaftNode {
         transitionTo(NodeState.LEADER);
         leaderId = nodeId;
         
+        appendLeaderEntry();
+        
+        // Become leader时，设置matchIndex：自己的matchIndex为logSize，peer的matchIndex为0
+        long logSize = getLastLogIndex();
         for (String peerId : peerIds) {
-            nextIndex.put(peerId, getLastLogIndex() + 1);
+            nextIndex.put(peerId, logSize + 1);
             matchIndex.put(peerId, 0L);
         }
+        matchIndex.put(nodeId, logSize);
         
-        appendLeaderEntry();
+        // Become leader时，立即提交自己提出的entry（Raft协议要求）
+        commitIndex = logSize;
+        applyCommittedEntries();
         
         sendAppendEntries();
         startHeartbeat();
         
-        logger.info("Node {} became leader for term {}", nodeId, term.getCurrent());
+        logger.info("Node {} became leader for term {}, commitIndex set to {}", nodeId, term.getCurrent(), commitIndex);
     }
 
     private void appendLeaderEntry() {
@@ -447,7 +460,7 @@ public class RaftNode {
         LogEntry entry = new LogEntry(newIndex, term.getCurrent(), nodeId);
         log.add(entry);
         truncateLogIfNeeded();
-        logger.debug("Leader {} appended entry at index {} term {}", nodeId, newIndex, term.getCurrent());
+        logger.info("Leader {} appended entry at index {} term {}", nodeId, newIndex, term.getCurrent());
     }
 
     public void sendHeartbeat() {
@@ -456,14 +469,18 @@ public class RaftNode {
 
     public void sendAppendEntries() {
         if (currentState != NodeState.LEADER || transportLayer == null) {
+            logger.info("Node {} not leader ({}) or transportLayer null ({}), cannot send append entries", 
+                nodeId, currentState == NodeState.LEADER, transportLayer != null);
             return;
         }
         
+        logger.info("Leader {} sending append entries to {} peers, logSize={}, commitIndex={}", 
+            nodeId, peerIds.size(), log.size(), commitIndex);
         for (String peerId : peerIds) {
             sendAppendEntriesToPeer(peerId);
         }
         
-        logger.debug("Leader {} sent append entries to {} peers", nodeId, peerIds.size());
+        logger.info("Leader {} sent append entries to {} peers", nodeId, peerIds.size());
     }
 
     private void sendAppendEntriesToPeer(String peerId) {
@@ -485,15 +502,22 @@ public class RaftNode {
             }
         }
         
+        logger.info("Leader {} sending to peer {}: nextIdx={}, logSize={}, entriesToSend={}, commitIndex={}", 
+            nodeId, peerId, nextIdx, log.size(), entriesToSend.size(), commitIndex);
+        
         AppendEntriesRequest request = new AppendEntriesRequest(
             term.getCurrent(), nodeId, prevLogIndex, prevLogTerm, entriesToSend, commitIndex
         );
         
+        logger.info("Leader {} calling transportLayer.sendAppendEntries to peer {}, transportLayer={}", nodeId, peerId, transportLayer.getClass().getName());
         transportLayer.sendAppendEntries(peerId, request)
             .thenAccept(response -> handleAppendEntriesResponse(peerId, response));
     }
 
     private synchronized void handleAppendEntriesResponse(String peerId, AppendEntriesResponse response) {
+        logger.info("Leader {} received appendEntries response from {}: success={}, matchIndex={}", 
+            nodeId, peerId, response.isSuccess(), response.getMatchIndex());
+        
         if (response.getTerm() > term.getCurrent()) {
             term.updateIfHigher(response.getTerm());
             transitionTo(NodeState.FOLLOWER);
@@ -501,21 +525,26 @@ public class RaftNode {
         }
         
         if (currentState != NodeState.LEADER) {
+            logger.info("Node {} is not leader anymore, current state={}", nodeId, currentState);
             return;
         }
         
         if (response.isSuccess()) {
             matchIndex.put(peerId, response.getMatchIndex());
             nextIndex.put(peerId, response.getMatchIndex() + 1);
+            logger.info("Leader {} matchIndex for {} updated to {}, matchIndex={}", 
+                nodeId, peerId, response.getMatchIndex(), matchIndex);
             advanceCommitIndex();
         } else {
             long newNextIndex = Math.max(1, response.getMatchIndex() + 1);
             nextIndex.put(peerId, newNextIndex);
-            logger.debug("Leader {} decrementing nextIndex for {} to {}", nodeId, peerId, newNextIndex);
+            logger.info("Leader {} decrementing nextIndex for {} to {}", nodeId, peerId, newNextIndex);
         }
     }
 
     private void advanceCommitIndex() {
+        logger.info("Leader {} advanceCommitIndex: lastLogIndex={}, commitIndex={}", 
+            nodeId, getLastLogIndex(), commitIndex);
         for (long n = getLastLogIndex(); n > commitIndex; n--) {
             LogEntry entry = getEntryAt(n);
             if (entry != null && entry.getTerm() == term.getCurrent()) {
@@ -544,8 +573,12 @@ public class RaftNode {
                 if (matchedWeight >= totalWeight) {
                     commitIndex = n;
                     applyCommittedEntries();
-                    logger.info("Leader {} advanced commitIndex to {}", nodeId, commitIndex);
+                    logger.info("Leader {} advanced commitIndex to {}, matchedWeight={}, totalWeight={}", 
+                        nodeId, commitIndex, matchedWeight, totalWeight);
                     break;
+                } else {
+                    logger.info("Leader {} cannot advance commitIndex to {}, matchedWeight={}, totalWeight={}, matchIndex={}", 
+                        nodeId, n, matchedWeight, totalWeight, matchIndex);
                 }
             }
         }
@@ -565,7 +598,7 @@ public class RaftNode {
                 } else {
                     leaderId = entry.getLeaderId();
                 }
-                logger.debug("Node {} applied entry at index {}: type={}", 
+                logger.info("Node {} applied entry at index {}: type={}", 
                     nodeId, lastApplied, entry.getEntryType());
             }
         }
@@ -578,7 +611,7 @@ public class RaftNode {
                 break;
             }
             log.remove(0);
-            logger.debug("Truncated log entry at index {}", oldest.getIndex());
+            logger.info("Truncated log entry at index {}, log size now {}", oldest.getIndex(), log.size());
         }
     }
 
@@ -681,23 +714,43 @@ public class RaftNode {
     }
 
     /**
-     * Calculates required weight to win election based on peer votes.
+     * Calculates total received vote weight including self and granted peer votes.
      * 
-     * @return minimum weight needed (sum of peer weights + 1)
+     * @return total received vote weight
+     */
+    private int calculateReceivedVoteWeight() {
+        int receivedWeight = 1;
+        
+        for (String peerId : peerIds) {
+            if (votesReceived.containsKey(peerId)) {
+                int peerWeight = 1;
+                if (voteWeightStrategy != null) {
+                    VoteContext context = VoteContext.forCandidate(peerId, term.getCurrent());
+                    peerWeight = 1 + voteWeightStrategy.calculateAdditionalWeight(context);
+                }
+                receivedWeight += peerWeight;
+            }
+        }
+        
+        return receivedWeight;
+    }
+
+    /**
+     * Calculates required weight to win election based on total peer weight.
+     * Majority is calculated from total weight regardless of who has voted.
+     * 
+     * @return minimum weight needed (majority of total weight)
      */
     private int calculateRequiredWeight() {
         int totalWeight = 1;
         
         for (String peerId : peerIds) {
-            if (votesReceived.containsKey(peerId)) {
-                if (voteWeightStrategy != null) {
-                    VoteContext context = VoteContext.forCandidate(peerId, term.getCurrent());
-                    int peerWeight = 1 + voteWeightStrategy.calculateAdditionalWeight(context);
-                    totalWeight += peerWeight;
-                } else {
-                    totalWeight += 1;
-                }
+            int peerWeight = 1;
+            if (voteWeightStrategy != null) {
+                VoteContext context = VoteContext.forCandidate(peerId, term.getCurrent());
+                peerWeight = 1 + voteWeightStrategy.calculateAdditionalWeight(context);
             }
+            totalWeight += peerWeight;
         }
         
         return (totalWeight / 2) + 1;
@@ -806,10 +859,14 @@ public class RaftNode {
         CommandLogEntry entry = CommandLogEntry.create(newIndex, term.getCurrent(), nodeId, data);
         log.add(entry);
         truncateLogIfNeeded();
+        
+        logger.info("Leader {} added entry at index {}, log size now {}", nodeId, newIndex, log.size());
 
+        logger.info("Leader {} proposing command at index {}, sending append entries", nodeId, newIndex);
         sendAppendEntries();
+        logger.info("Leader {} sent append entries for command at index {}", nodeId, newIndex);
 
-        logger.debug("Leader {} proposed command at index {}", nodeId, newIndex);
+        logger.info("Leader {} proposed command at index {}", nodeId, newIndex);
         return true;
     }
 

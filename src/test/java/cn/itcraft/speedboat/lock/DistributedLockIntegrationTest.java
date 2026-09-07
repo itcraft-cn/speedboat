@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -23,7 +24,6 @@ class DistributedLockIntegrationTest {
 
     private List<TestNode> nodes;
     private List<LockStateMachine> stateMachines;
-    private String leaderNodeId;
 
     @BeforeEach
     void setUp() throws InterruptedException {
@@ -56,16 +56,24 @@ class DistributedLockIntegrationTest {
 
         TimeUnit.MILLISECONDS.sleep(500);
 
-        leaderNodeId = null;
+        String currentLeaderNodeId = getCurrentLeaderNodeId();
+        logger.info("setUp completed, leader={}", currentLeaderNodeId);
+        assertNotNull(currentLeaderNodeId, "Leader should be elected within 500ms");
+
+        for (LockStateMachine sm : stateMachines) {
+            sm.getLockTable().clear();
+        }
+        logger.info("setUp: cleared all lock tables");
+    }
+
+    private String getCurrentLeaderNodeId() {
         for (TestNode node : nodes) {
             if (node.isLeader()) {
-                leaderNodeId = node.getNodeId();
-                logger.info("Leader elected: {}", leaderNodeId);
-                break;
+                logger.info("Leader elected: {} (Thread: {})", node.getNodeId(), Thread.currentThread().getName());
+                return node.getNodeId();
             }
         }
-
-        assertNotNull(leaderNodeId, "Leader should be elected within 500ms");
+        return null;
     }
 
     @AfterEach
@@ -77,22 +85,23 @@ class DistributedLockIntegrationTest {
 
     @Test
     void testLeaderCanAcquireLock() {
-        TestNode leaderNode = findNodeById(leaderNodeId);
-        LockStateMachine leaderStateMachine = findStateMachineByNodeId(leaderNodeId);
+        String currentLeaderNodeId = getCurrentLeaderNodeId();
+        TestNode leaderNode = findNodeById(currentLeaderNodeId);
+        LockStateMachine leaderStateMachine = findStateMachineByNodeId(currentLeaderNodeId);
 
         DistributedLock lock = new DistributedLockImpl(
-            "test-lock", leaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
+            "test-lock", currentLeaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
         );
 
         LockHandle handle = lock.tryLock(2000);
 
         assertTrue(handle.isSuccess(), "Leader should be able to acquire lock");
         assertEquals("test-lock", handle.getLockName());
-        assertEquals(leaderNodeId, handle.getNodeId());
+        assertEquals(currentLeaderNodeId, handle.getNodeId());
 
         assertTrue(lock.isLocked());
         assertTrue(lock.isHeldByCurrentNode());
-        assertEquals(leaderNodeId, lock.getHolderNodeId());
+        assertEquals(currentLeaderNodeId, lock.getHolderNodeId());
 
         handle.close();
 
@@ -101,11 +110,12 @@ class DistributedLockIntegrationTest {
 
     @Test
     void testTryWithResources() {
-        TestNode leaderNode = findNodeById(leaderNodeId);
-        LockStateMachine leaderStateMachine = findStateMachineByNodeId(leaderNodeId);
+        String currentLeaderNodeId = getCurrentLeaderNodeId();
+        TestNode leaderNode = findNodeById(currentLeaderNodeId);
+        LockStateMachine leaderStateMachine = findStateMachineByNodeId(currentLeaderNodeId);
 
         DistributedLock lock = new DistributedLockImpl(
-            "test-lock-2", leaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
+            "test-lock-2", currentLeaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
         );
 
         try (LockHandle handle = lock.tryLock(2000)) {
@@ -118,14 +128,15 @@ class DistributedLockIntegrationTest {
 
     @Test
     void testMultipleLocks() {
-        TestNode leaderNode = findNodeById(leaderNodeId);
-        LockStateMachine leaderStateMachine = findStateMachineByNodeId(leaderNodeId);
+        String currentLeaderNodeId = getCurrentLeaderNodeId();
+        TestNode leaderNode = findNodeById(currentLeaderNodeId);
+        LockStateMachine leaderStateMachine = findStateMachineByNodeId(currentLeaderNodeId);
 
         DistributedLock lock1 = new DistributedLockImpl(
-            "lock-1", leaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
+            "lock-1", currentLeaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
         );
         DistributedLock lock2 = new DistributedLockImpl(
-            "lock-2", leaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
+            "lock-2", currentLeaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
         );
 
         LockHandle handle1 = lock1.tryLock(2000);
@@ -145,11 +156,12 @@ class DistributedLockIntegrationTest {
 
     @Test
     void testReentrantLock() {
-        TestNode leaderNode = findNodeById(leaderNodeId);
-        LockStateMachine leaderStateMachine = findStateMachineByNodeId(leaderNodeId);
+        String currentLeaderNodeId = getCurrentLeaderNodeId();
+        TestNode leaderNode = findNodeById(currentLeaderNodeId);
+        LockStateMachine leaderStateMachine = findStateMachineByNodeId(currentLeaderNodeId);
 
         DistributedLock lock = new DistributedLockImpl(
-            "reentrant-lock", leaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
+            "reentrant-lock", currentLeaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
         );
 
         try (LockHandle handle1 = lock.tryLock(2000)) {
@@ -169,11 +181,12 @@ class DistributedLockIntegrationTest {
 
     @Test
     void testUnlockTwice() {
-        TestNode leaderNode = findNodeById(leaderNodeId);
-        LockStateMachine leaderStateMachine = findStateMachineByNodeId(leaderNodeId);
+        String currentLeaderNodeId = getCurrentLeaderNodeId();
+        TestNode leaderNode = findNodeById(currentLeaderNodeId);
+        LockStateMachine leaderStateMachine = findStateMachineByNodeId(currentLeaderNodeId);
 
         DistributedLock lock = new DistributedLockImpl(
-            "test-lock-3", leaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
+            "test-lock-3", currentLeaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
         );
 
         LockHandle handle = lock.tryLock(2000);
@@ -202,5 +215,126 @@ class DistributedLockIntegrationTest {
             }
         }
         throw new IllegalArgumentException("Node not found: " + nodeId);
+    }
+
+    @Test
+    void testLockTransferAfterLeaderFailure() throws InterruptedException {
+        String currentLeaderNodeId = getCurrentLeaderNodeId();
+        TestNode oldLeaderNode = findNodeById(currentLeaderNodeId);
+        LockStateMachine oldLeaderStateMachine = findStateMachineByNodeId(currentLeaderNodeId);
+        logger.info("testLockTransferAfterLeaderFailure: currentLeaderNodeId={}", currentLeaderNodeId);
+        logger.info("oldLeaderStateMachine lock table: {}", oldLeaderStateMachine.getLockCount());
+
+        DistributedLock lock = new DistributedLockImpl(
+            "transfer-lock", currentLeaderNodeId, oldLeaderNode.getRaftNode(), oldLeaderStateMachine
+        );
+
+        LockHandle handle = lock.tryLock(2000);
+        logger.info("Lock tryLock result: success={}, locked={}, holder={}", 
+            handle.isSuccess(), lock.isLocked(), lock.getHolderNodeId());
+        assertTrue(handle.isSuccess(), "Leader应能获取锁");
+        assertTrue(lock.isLocked(), "锁应被持有");
+        assertEquals(currentLeaderNodeId, lock.getHolderNodeId(), "锁持有者应为原Leader");
+
+        handle.close();
+        assertFalse(lock.isLocked(), "锁应被释放");
+
+        List<TestNode> otherNodes = new ArrayList<>();
+        for (TestNode node : nodes) {
+            if (!node.getNodeId().equals(currentLeaderNodeId)) {
+                otherNodes.add(node);
+            }
+        }
+
+        for (TestNode node : otherNodes) {
+            node.disconnectFrom(currentLeaderNodeId);
+        }
+
+        oldLeaderNode.shutdown();
+
+        CountDownLatch newLeaderElected = new CountDownLatch(1);
+        Thread monitorThread = new Thread(() -> {
+            while (newLeaderElected.getCount() > 0) {
+                for (TestNode node : nodes) {
+                    if (node.isLeader() && !node.getNodeId().equals(currentLeaderNodeId)) {
+                        newLeaderElected.countDown();
+                        return;
+                    }
+                }
+                try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+            }
+        });
+        monitorThread.start();
+
+        boolean newElected = newLeaderElected.await(5, TimeUnit.SECONDS);
+        monitorThread.interrupt();
+        monitorThread.join(100);
+
+        assertTrue(newElected, "应在5秒内选出新Leader");
+
+        TestNode newLeaderNode = null;
+        String newLeaderId = null;
+        LockStateMachine newLeaderStateMachine = null;
+        for (TestNode node : nodes) {
+            if (node.isLeader() && !node.getNodeId().equals(currentLeaderNodeId)) {
+                newLeaderNode = node;
+                newLeaderId = node.getNodeId();
+                newLeaderStateMachine = findStateMachineByNodeId(newLeaderId);
+                break;
+            }
+        }
+
+        assertNotNull(newLeaderNode, "应有新Leader");
+        assertNotNull(newLeaderId, "应有新Leader ID");
+        assertNotNull(newLeaderStateMachine, "应有新Leader状态机");
+
+        DistributedLock newLock = new DistributedLockImpl(
+            "transfer-lock", newLeaderId, newLeaderNode.getRaftNode(), newLeaderStateMachine
+        );
+
+        LockHandle newHandle = newLock.tryLock(2000);
+        assertTrue(newHandle.isSuccess(), "新Leader应能获取锁");
+        assertTrue(newLock.isLocked(), "锁应被新Leader持有");
+        assertEquals(newLeaderId, newLock.getHolderNodeId(), "锁持有者应为新Leader");
+
+        handle.close();
+        newLock.unlock();
+    }
+
+    @Test
+    void testLockStateConsistencyAfterPartition() throws InterruptedException {
+        String currentLeaderNodeId = getCurrentLeaderNodeId();
+        List<String> allNodeIds = Arrays.asList("node1", "node2", "node3");
+
+        for (String nodeId : allNodeIds) {
+            if (!nodeId.equals(currentLeaderNodeId)) {
+                TestNode node = findNodeById(nodeId);
+                node.disconnectFrom(currentLeaderNodeId);
+            }
+        }
+
+        Thread.sleep(2000);
+
+        TestNode leaderNode = findNodeById(currentLeaderNodeId);
+        LockStateMachine leaderStateMachine = findStateMachineByNodeId(currentLeaderNodeId);
+
+        DistributedLock lock = new DistributedLockImpl(
+            "partition-lock", currentLeaderNodeId, leaderNode.getRaftNode(), leaderStateMachine
+        );
+
+        LockHandle handle = lock.tryLock(2000);
+        assertTrue(handle.isSuccess(), "Leader应在分区后仍能获取锁");
+
+        int lockedCount = 0;
+        for (TestNode node : nodes) {
+            LockStateMachine sm = findStateMachineByNodeId(node.getNodeId());
+            if (sm.isLockHeldBy("partition-lock", currentLeaderNodeId)) {
+                lockedCount++;
+            }
+        }
+
+        assertTrue(lockedCount >= 2, "锁状态应在多数派节点保持一致");
+
+        handle.close();
     }
 }

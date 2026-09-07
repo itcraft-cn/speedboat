@@ -122,8 +122,13 @@ public class DistributedLockImpl implements DistributedLock {
     public LockHandle tryLock(long timeoutMs) {
         long startTime = System.currentTimeMillis();
         long deadline = startTime + timeoutMs;
+        int attempt = 0;
 
         while (System.currentTimeMillis() < deadline) {
+            attempt++;
+            logger.info("tryLock attempt {}: isLeader={}, lockName={}, nodeId={}", 
+                attempt, raftNode.isLeader(), lockName, nodeId);
+                
             if (tryLockInternal()) {
                 startRenewTask();
                 logger.info("Lock acquired: {} by {}", lockName, nodeId);
@@ -138,13 +143,16 @@ public class DistributedLockImpl implements DistributedLock {
             }
         }
 
-        logger.debug("Lock acquire failed: {} by {} (timeout {}ms)", lockName, nodeId, timeoutMs);
+        logger.info("Lock acquire failed: {} by {} (timeout {}ms, attempts={})", lockName, nodeId, timeoutMs, attempt);
         return new LockHandleImpl(false, lockName, nodeId, this);
     }
 
     private boolean tryLockInternal() {
+        logger.info("tryLockInternal: isLeader={}, lockName={}, nodeId={}", 
+            raftNode.isLeader(), lockName, nodeId);
+        
         if (!raftNode.isLeader()) {
-            logger.debug("Not leader, cannot acquire lock directly");
+            logger.info("Not leader, cannot acquire lock directly");
             return false;
         }
 
@@ -152,21 +160,36 @@ public class DistributedLockImpl implements DistributedLock {
             LockCommand command = LockCommand.lock(lockName, nodeId);
             byte[] data = serializeCommand(command);
 
+            // 在 propose 之前记录目标索引，propose 后 lastApplied 可能已经推进
+            long targetIndex = raftNode.getLastApplied() + 1;
+            
             if (raftNode.propose(data)) {
-                return waitForApply(1000);
+                logger.info("Lock command proposed, waiting for apply, targetIndex={}", targetIndex);
+                return waitForApply(1000, targetIndex);
+            } else {
+                logger.error("Failed to propose lock command, current node may not be leader");
             }
+        } else {
+            logger.error("Lock not available, entry={}", stateMachine.getLockEntry(lockName));
         }
 
         return false;
     }
 
-    private boolean waitForApply(long timeoutMs) {
+    private boolean waitForApply(long timeoutMs, long targetIndex) {
         long startTime = System.nanoTime();
-        long commitIndex = raftNode.getCommitIndex();
+        logger.info("waitForApply: targetIndex={}, currentLastApplied={}, commitIndex={}, lockName={}, nodeId={}", 
+            targetIndex, raftNode.getLastApplied(), raftNode.getCommitIndex(), lockName, nodeId);
         
         while ((System.nanoTime() - startTime) / 1_000_000 < timeoutMs) {
-            if (stateMachine.isLockHeldBy(lockName, nodeId) && 
-                raftNode.getLastApplied() >= commitIndex) {
+            long currentApplied = raftNode.getLastApplied();
+            long currentCommit = raftNode.getCommitIndex();
+            boolean heldBy = stateMachine.isLockHeldBy(lockName, nodeId);
+            logger.debug("waitForApply check: targetIndex={}, currentApplied={}, currentCommit={}, heldBy={}, lockEntry={}", 
+                targetIndex, currentApplied, currentCommit, heldBy, stateMachine.getLockEntry(lockName));
+                
+            if (heldBy && currentApplied >= targetIndex) {
+                logger.info("waitForApply success: targetIndex={}, currentApplied={}", targetIndex, currentApplied);
                 return true;
             }
             try {
@@ -176,6 +199,8 @@ public class DistributedLockImpl implements DistributedLock {
                 break;
             }
         }
+        logger.info("waitForApply timeout: targetIndex={}, finalApplied={}, finalCommit={}", 
+            targetIndex, raftNode.getLastApplied(), raftNode.getCommitIndex());
         return false;
     }
 

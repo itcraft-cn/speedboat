@@ -816,4 +816,232 @@ class IntegrationTest {
         leader.getRaftNode().getTerm().updateIfHigher(initialTerm);
         assertEquals(initialTerm + 10, leader.getCurrentTerm(), "Term不应降低");
     }
+
+    @Test
+    @DisplayName("场景十一：网络分区测试（2:1 split）")
+    void testNetworkPartitionTwoToOne() throws InterruptedException {
+        List<String> nodeIds = Arrays.asList("node-1", "node-2", "node-3");
+        GroupStrategy groupStrategy = new DefaultGroupStrategy();
+        VoteWeightStrategy voteWeightStrategy = null;
+        ElectionTimeout timeout = new ElectionTimeout(150, 300);
+
+        for (String nodeId : nodeIds) {
+            List<String> peerIds = new ArrayList<>(nodeIds);
+            peerIds.remove(nodeId);
+            TestNode testNode = new TestNode(nodeId, peerIds, timeout, voteWeightStrategy, groupStrategy);
+            testNodes.add(testNode);
+        }
+
+        for (TestNode node : testNodes) {
+            node.connectToAll(testNodes);
+        }
+
+        for (TestNode node : testNodes) {
+            node.start();
+        }
+
+        CountDownLatch leaderElected = new CountDownLatch(1);
+        Thread waitThread = new Thread(() -> {
+            while (leaderElected.getCount() > 0) {
+                for (TestNode node : testNodes) {
+                    if (node.isLeader()) {
+                        leaderElected.countDown();
+                        return;
+                    }
+                }
+                try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+            }
+        });
+        waitThread.start();
+        assertTrue(leaderElected.await(5, TimeUnit.SECONDS), "初始选举应在5秒内完成");
+        waitThread.interrupt();
+        waitThread.join(100);
+
+        TestNode leader = null;
+        TestNode follower = null;
+        for (TestNode node : testNodes) {
+            if (node.isLeader()) {
+                leader = node;
+            } else if (follower == null) {
+                follower = node;
+            }
+        }
+        assertNotNull(leader, "应有Leader");
+        assertNotNull(follower, "应有Follower");
+
+        final String leaderId = leader.getNodeId();
+        final String followerId = follower.getNodeId();
+
+        leader.disconnectFrom(followerId);
+        follower.disconnectFrom(leaderId);
+
+        Thread.sleep(4000);
+
+        assertTrue(leader.isLeader(), "Leader在分区后应维持状态");
+        
+        int leaderCount = 0;
+        for (TestNode node : testNodes) {
+            if (node.isLeader()) leaderCount++;
+        }
+        assertEquals(1, leaderCount, "应有且仅有1个Leader");
+    }
+
+    @Test
+    @DisplayName("场景十二：网络分区测试（Leader孤立）")
+    void testNetworkPartitionLeaderIsolated() throws InterruptedException {
+        List<String> nodeIds = Arrays.asList("node-1", "node-2", "node-3");
+        GroupStrategy groupStrategy = new DefaultGroupStrategy();
+        VoteWeightStrategy voteWeightStrategy = null;
+        ElectionTimeout timeout = new ElectionTimeout(150, 300);
+
+        for (String nodeId : nodeIds) {
+            List<String> peerIds = new ArrayList<>(nodeIds);
+            peerIds.remove(nodeId);
+            TestNode testNode = new TestNode(nodeId, peerIds, timeout, voteWeightStrategy, groupStrategy);
+            testNodes.add(testNode);
+        }
+
+        for (TestNode node : testNodes) {
+            node.connectToAll(testNodes);
+        }
+
+        for (TestNode node : testNodes) {
+            node.start();
+        }
+
+        CountDownLatch leaderElected = new CountDownLatch(1);
+        Thread waitThread = new Thread(() -> {
+            while (leaderElected.getCount() > 0) {
+                for (TestNode node : testNodes) {
+                    if (node.isLeader()) {
+                        leaderElected.countDown();
+                        return;
+                    }
+                }
+                try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+            }
+        });
+        waitThread.start();
+        assertTrue(leaderElected.await(5, TimeUnit.SECONDS), "初始选举应在5秒内完成");
+        waitThread.interrupt();
+        waitThread.join(100);
+
+        TestNode leader = null;
+        List<TestNode> followers = new ArrayList<>();
+        for (TestNode node : testNodes) {
+            if (node.isLeader()) {
+                leader = node;
+            } else {
+                followers.add(node);
+            }
+        }
+        assertNotNull(leader, "应有Leader");
+        assertEquals(2, followers.size(), "应有2个Follower");
+
+        final String leaderId = leader.getNodeId();
+
+        for (TestNode follower : followers) {
+            follower.disconnectFrom(leaderId);
+        }
+
+        leader.shutdown();
+
+        CountDownLatch newLeaderElected = new CountDownLatch(1);
+        Thread monitorThread = new Thread(() -> {
+            while (newLeaderElected.getCount() > 0) {
+                for (TestNode node : testNodes) {
+                    if (node.isLeader() && !node.getNodeId().equals(leaderId)) {
+                        newLeaderElected.countDown();
+                        return;
+                    }
+                }
+                try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+            }
+        });
+        monitorThread.start();
+
+        boolean newElected = newLeaderElected.await(5, TimeUnit.SECONDS);
+        monitorThread.interrupt();
+        monitorThread.join(100);
+
+        assertTrue(newElected, "剩余2节点应在5秒内选出新Leader");
+
+        int leaderCount = 0;
+        for (TestNode node : testNodes) {
+            if (node.isLeader() && !node.getNodeId().equals(leaderId)) {
+                leaderCount++;
+            }
+        }
+        assertEquals(1, leaderCount, "剩余2节点应有且仅有1个Leader");
+    }
+
+    @Test
+    @DisplayName("场景十三：网络恢复测试")
+    void testNetworkRecovery() throws InterruptedException {
+        List<String> nodeIds = Arrays.asList("node-1", "node-2", "node-3");
+        GroupStrategy groupStrategy = new DefaultGroupStrategy();
+        VoteWeightStrategy voteWeightStrategy = null;
+        ElectionTimeout timeout = new ElectionTimeout(150, 300);
+
+        for (String nodeId : nodeIds) {
+            List<String> peerIds = new ArrayList<>(nodeIds);
+            peerIds.remove(nodeId);
+            TestNode testNode = new TestNode(nodeId, peerIds, timeout, voteWeightStrategy, groupStrategy);
+            testNodes.add(testNode);
+        }
+
+        for (TestNode node : testNodes) {
+            node.connectToAll(testNodes);
+        }
+
+        for (TestNode node : testNodes) {
+            node.start();
+        }
+
+        CountDownLatch leaderElected = new CountDownLatch(1);
+        Thread waitThread = new Thread(() -> {
+            while (leaderElected.getCount() > 0) {
+                for (TestNode node : testNodes) {
+                    if (node.isLeader()) {
+                        leaderElected.countDown();
+                        return;
+                    }
+                }
+                try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+            }
+        });
+        waitThread.start();
+        assertTrue(leaderElected.await(5, TimeUnit.SECONDS), "初始选举应在5秒内完成");
+        waitThread.interrupt();
+        waitThread.join(100);
+
+        TestNode leader = null;
+        TestNode follower = null;
+        for (TestNode node : testNodes) {
+            if (node.isLeader()) {
+                leader = node;
+            } else {
+                follower = node;
+            }
+        }
+        assertNotNull(leader, "应有Leader");
+        assertNotNull(follower, "应有Follower");
+
+        final String followerId = follower.getNodeId();
+        follower.disconnectFrom(leader.getNodeId());
+
+        Thread.sleep(2000);
+
+        leader.disconnectFrom(followerId);
+        follower.disconnectFrom(leader.getNodeId());
+
+        Thread.sleep(2000);
+
+        follower.connectTo(leader);
+        leader.connectTo(follower);
+
+        Thread.sleep(2000);
+
+        assertTrue(follower.isFollower(), "恢复后Follower应为Follower状态");
+    }
 }

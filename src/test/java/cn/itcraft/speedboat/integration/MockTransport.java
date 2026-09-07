@@ -8,16 +8,36 @@ import cn.itcraft.speedboat.rpc.HeartbeatRequest;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.transport.TransportLayer;
 
+import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public class MockTransport implements TransportLayer {
 
+    private static final Logger logger = LoggerFactory.getLogger(MockTransport.class);
+
+    private final String nodeId;
     private final Map<String, MockTransport> nodeTransports = new ConcurrentHashMap<>();
+    private final Map<String, Object> nodeRaftNodes = new ConcurrentHashMap<>();
     private RequestVoteHandler requestVoteHandler;
     private HeartbeatHandler heartbeatHandler;
     private AppendEntriesHandler appendEntriesHandler;
+
+    public MockTransport() {
+        this.nodeId = null;
+    }
+    
+    public MockTransport(String nodeId) {
+        this.nodeId = nodeId;
+    }
+    
+    public String getNodeId() {
+        return nodeId;
+    }
 
     public void registerNode(String nodeId, MockTransport transport) {
         nodeTransports.put(nodeId, transport);
@@ -25,6 +45,7 @@ public class MockTransport implements TransportLayer {
 
     public void unregisterNode(String nodeId) {
         nodeTransports.remove(nodeId);
+        nodeRaftNodes.remove(nodeId);
     }
 
     @Override
@@ -44,6 +65,19 @@ public class MockTransport implements TransportLayer {
             HeartbeatResponse response = peerTransport.getHeartbeatHandler().handle(request);
             return CompletableFuture.completedFuture(response);
         }
+        
+        // 如果没有 handler，尝试通过反射调用 peer 的 RaftNode.handleHeartbeat
+        Object raftNode = nodeRaftNodes.get(peerId);
+        if (raftNode != null) {
+            try {
+                Method method = raftNode.getClass().getMethod("handleHeartbeat", HeartbeatRequest.class);
+                HeartbeatResponse response = (HeartbeatResponse) method.invoke(raftNode, request);
+                return CompletableFuture.completedFuture(response);
+            } catch (Exception e) {
+                return CompletableFuture.completedFuture(new HeartbeatResponse(request.getTerm(), false));
+            }
+        }
+        
         return CompletableFuture.completedFuture(new HeartbeatResponse(request.getTerm(), false));
     }
 
@@ -54,6 +88,26 @@ public class MockTransport implements TransportLayer {
             AppendEntriesResponse response = peerTransport.getAppendEntriesHandler().handle(request);
             return CompletableFuture.completedFuture(response);
         }
+        
+        // 如果没有 handler，尝试通过反射调用 peer 的 RaftNode.handleAppendEntries
+        logger.info("MockTransport.sendAppendEntries: peerId={}, nodeId={}, nodeRaftNodes={}, nodeTransports={}", 
+            peerId, nodeId, nodeRaftNodes.keySet(), nodeTransports.keySet());
+        Object raftNode = nodeRaftNodes.get(peerId);
+        if (raftNode != null) {
+            try {
+                Method method = raftNode.getClass().getMethod("handleAppendEntries", AppendEntriesRequest.class);
+                AppendEntriesResponse response = (AppendEntriesResponse) method.invoke(raftNode, request);
+                logger.info("MockTransport.reflective call: peerId={}, nodeId={}, requestTerm={}, responseSuccess={}, responseMatchIndex={}", 
+                    peerId, nodeId, request.getTerm(), response.isSuccess(), response.getMatchIndex());
+                return CompletableFuture.completedFuture(response);
+            } catch (Exception e) {
+                System.err.println("MockTransport.sendAppendEntries反射调用失败: peerId=" + peerId + ", nodeId=" + nodeId + ", error=" + e.getClass().getName());
+                e.printStackTrace();
+                return CompletableFuture.completedFuture(new AppendEntriesResponse(request.getTerm(), false, 0));
+            }
+        }
+        
+        logger.warn("MockTransport.sendAppendEntries: raftNode not found for nodeId={}", nodeId);
         return CompletableFuture.completedFuture(new AppendEntriesResponse(request.getTerm(), false, 0));
     }
 
@@ -89,5 +143,9 @@ public class MockTransport implements TransportLayer {
         requestVoteHandler = null;
         heartbeatHandler = null;
         appendEntriesHandler = null;
+    }
+    
+    public void registerRaftNode(String nodeId, Object raftNode) {
+        nodeRaftNodes.put(nodeId, raftNode);
     }
 }

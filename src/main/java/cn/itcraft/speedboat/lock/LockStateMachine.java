@@ -105,7 +105,8 @@ public class LockStateMachine implements StateMachine {
             return true;
         }
 
-        return entry.isHeldBy(nodeId);
+        // 锁未被任何人持有（已释放）时，也可用；或已被当前请求者持有时，可重入
+        return !entry.isHeld() || entry.isHeldBy(nodeId);
     }
 
     public LockEntry getLockEntry(String lockName) {
@@ -129,5 +130,9 @@ public class LockStateMachine implements StateMachine {
     @Override
     public long getLastAppliedIndex() {
         return lastAppliedIndex;
+    }
+
+    ConcurrentHashMap<String, LockEntry> getLockTable() {
+        return lockTable;
     }
 }

@@ -22,7 +22,7 @@ public class TestNode {
                     GroupStrategy groupStrategy) {
         this.nodeId = nodeId;
         this.peerIds = new ArrayList<>(peerIds);
-        this.transport = new MockTransport();
+        this.transport = new MockTransport(nodeId);
         
         this.raftNode = new RaftNode.Builder()
             .nodeId(nodeId)
@@ -32,6 +32,9 @@ public class TestNode {
             .groupStrategy(groupStrategy)
             .transportLayer(transport)
             .build();
+        
+        // 注册 RaftNode 到自己的 MockTransport，key 是自己的 nodeId
+        transport.registerRaftNode(nodeId, raftNode);
     }
 
     public void start() {
@@ -81,6 +84,7 @@ public class TestNode {
 
     public void connectTo(TestNode otherNode) {
         transport.registerNode(otherNode.getNodeId(), otherNode.getTransport());
+        transport.registerRaftNode(otherNode.getNodeId(), otherNode.getRaftNode());
     }
 
     public void disconnectFrom(String nodeId) {
@@ -91,6 +95,10 @@ public class TestNode {
         for (TestNode node : nodes) {
             if (!node.getNodeId().equals(nodeId)) {
                 transport.registerNode(node.getNodeId(), node.getTransport());
+                // 注册当前节点的 RaftNode 到目标 transport，key 是当前节点的 nodeId（peer 的视角）
+                node.getTransport().registerRaftNode(nodeId, raftNode);
+                // 注册 peer 的 RaftNode 到当前 transport，key 是 peer 的 nodeId（当前节点的视角）
+                transport.registerRaftNode(node.getNodeId(), node.getRaftNode());
             }
         }
     }
