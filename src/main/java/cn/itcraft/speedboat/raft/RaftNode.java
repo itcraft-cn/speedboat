@@ -361,7 +361,7 @@ public class RaftNode {
         return new AppendEntriesResponse(term.getCurrent(), true, getLastLogIndex());
     }
 
-    public void startElection() {
+    public synchronized void startElection() {
         if (currentState != NodeState.FOLLOWER && currentState != NodeState.CANDIDATE) {
             return;
         }
