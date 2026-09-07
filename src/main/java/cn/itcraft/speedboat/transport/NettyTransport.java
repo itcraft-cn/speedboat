@@ -13,6 +13,7 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.bytes.ByteArrayDecoder;
 import io.netty.handler.codec.bytes.ByteArrayEncoder;
+import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.util.concurrent.GlobalEventExecutor;
 
 import java.util.ArrayList;
@@ -109,7 +110,7 @@ public class NettyTransport implements TransportLayer {
                 @Override
                 protected void initChannel(SocketChannel ch) {
                     ch.pipeline()
-                        .addLast(new ByteArrayDecoder())
+                        .addLast(new LengthFieldBasedFrameDecoder(1024, 0, 4, 0, 4))
                         .addLast(new ByteArrayEncoder())
                         .addLast(new RpcMessageHandler(NettyTransport.this, serializer));
                 }
@@ -132,7 +133,7 @@ public class NettyTransport implements TransportLayer {
                 @Override
                 protected void initChannel(SocketChannel ch) {
                     ch.pipeline()
-                        .addLast(new ByteArrayDecoder())
+                        .addLast(new LengthFieldBasedFrameDecoder(1024, 0, 4, 0, 4))
                         .addLast(new ByteArrayEncoder())
                         .addLast(new RpcResponseHandler(NettyTransport.this, serializer));
                 }

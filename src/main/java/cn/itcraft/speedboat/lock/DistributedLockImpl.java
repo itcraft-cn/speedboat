@@ -161,9 +161,12 @@ public class DistributedLockImpl implements DistributedLock {
     }
 
     private boolean waitForApply(long timeoutMs) {
-        long startTime = System.currentTimeMillis();
-        while (System.currentTimeMillis() - startTime < timeoutMs) {
-            if (stateMachine.isLockHeldBy(lockName, nodeId)) {
+        long startTime = System.nanoTime();
+        long commitIndex = raftNode.getCommitIndex();
+        
+        while ((System.nanoTime() - startTime) / 1_000_000 < timeoutMs) {
+            if (stateMachine.isLockHeldBy(lockName, nodeId) && 
+                raftNode.getLastApplied() >= commitIndex) {
                 return true;
             }
             try {

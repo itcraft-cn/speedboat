@@ -352,28 +352,25 @@ public class RaftNode {
         transitionTo(NodeState.CANDIDATE);
         votesReceived.put(nodeId, true);
         
-        int voteWeight = calculateTotalVoteWeight();
-        int votesNeeded = calculateVotesNeeded();
+        int currentWeight = calculateTotalVoteWeight();
+        int requiredWeight = calculateRequiredWeight();
         
-        logger.info("Node {} starting election for term {}, vote weight: {}, votes needed: {}", 
-            nodeId, term.getCurrent(), voteWeight, votesNeeded);
+        logger.info("Node {} starting election for term {}, current weight: {}, required weight: {}", 
+            nodeId, term.getCurrent(), currentWeight, requiredWeight);
         
-        if (voteWeight >= votesNeeded) {
+        if (currentWeight >= requiredWeight) {
             becomeLeader();
             return;
         }
         
-        requestVotesFromPeers(votesNeeded);
+        requestVotesFromPeers(currentWeight, requiredWeight);
     }
 
-    private void requestVotesFromPeers(int votesNeeded) {
+    private void requestVotesFromPeers(int currentWeight, int requiredWeight) {
         if (transportLayer == null || peerIds.isEmpty()) {
-            checkElectionResult(votesNeeded);
+            checkElectionResult(currentWeight, requiredWeight);
             return;
         }
-        
-        int totalVotes = votesReceived.size();
-        int currentVotes = totalVotes;
         
         for (String peerId : peerIds) {
             RequestVoteRequest request = new RequestVoteRequest(
@@ -385,7 +382,7 @@ public class RaftNode {
                     if (response.isVoteGranted() && currentState == NodeState.CANDIDATE) {
                         synchronized (votesReceived) {
                             votesReceived.put(peerId, true);
-                            checkElectionResult(votesNeeded);
+                            checkElectionResult(calculateTotalVoteWeight(), requiredWeight);
                         }
                     } else if (response.getTerm() > term.getCurrent()) {
                         term.updateIfHigher(response.getTerm());
@@ -402,15 +399,14 @@ public class RaftNode {
         }, electionTimeout.getNext(), TimeUnit.MILLISECONDS);
     }
 
-    private synchronized void checkElectionResult(int votesNeeded) {
+    private synchronized void checkElectionResult(int currentWeight, int requiredWeight) {
         if (currentState != NodeState.CANDIDATE) {
             return;
         }
         
-        int currentVotes = votesReceived.size();
-        logger.debug("Node {} has {} votes, needs {}", nodeId, currentVotes, votesNeeded);
+        logger.debug("Node {} has weight {}, needs {}", nodeId, currentWeight, requiredWeight);
         
-        if (currentVotes >= votesNeeded) {
+        if (currentWeight >= requiredWeight) {
             becomeLeader();
         }
     }
@@ -658,6 +654,29 @@ public class RaftNode {
         }
         
         return baseWeight + additionalWeight;
+    }
+
+    /**
+     * Calculates required weight to win election based on peer votes.
+     * 
+     * @return minimum weight needed (sum of peer weights + 1)
+     */
+    private int calculateRequiredWeight() {
+        int totalWeight = 1;
+        
+        for (String peerId : peerIds) {
+            if (votesReceived.containsKey(peerId)) {
+                if (voteWeightStrategy != null) {
+                    VoteContext context = VoteContext.forCandidate(peerId, term.getCurrent());
+                    int peerWeight = 1 + voteWeightStrategy.calculateAdditionalWeight(context);
+                    totalWeight += peerWeight;
+                } else {
+                    totalWeight += 1;
+                }
+            }
+        }
+        
+        return (totalWeight / 2) + 1;
     }
 
     /**
