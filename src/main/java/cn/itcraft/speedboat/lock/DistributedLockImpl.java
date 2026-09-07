@@ -160,12 +160,10 @@ public class DistributedLockImpl implements DistributedLock {
             LockCommand command = LockCommand.lock(lockName, nodeId);
             byte[] data = serializeCommand(command);
 
-            // 在 propose 之前记录目标索引，propose 后 lastApplied 可能已经推进
-            long targetIndex = raftNode.getLastApplied() + 1;
-            
-            if (raftNode.propose(data)) {
-                logger.info("Lock command proposed, waiting for apply, targetIndex={}", targetIndex);
-                return waitForApply(1000, targetIndex);
+            long entryIndex = raftNode.propose(data);
+            if (entryIndex > 0) {
+                logger.info("Lock command proposed at index {}, waiting for apply", entryIndex);
+                return waitForApply(1000, entryIndex);
             } else {
                 logger.error("Failed to propose lock command, current node may not be leader");
             }
@@ -251,7 +249,8 @@ public class DistributedLockImpl implements DistributedLock {
         LockCommand command = LockCommand.unlock(lockName, nodeId);
         byte[] data = serializeCommand(command);
 
-        if (raftNode.propose(data)) {
+        long entryIndex = raftNode.propose(data);
+        if (entryIndex > 0) {
             logger.info("Lock released: {} by {}", lockName, nodeId);
         }
 

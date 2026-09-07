@@ -95,6 +95,7 @@ public class RaftNode {
     private static final Logger logger = LoggerFactory.getLogger(RaftNode.class);
 
     private final String nodeId;
+    private final String datacenter;
     private volatile NodeState currentState;
     private final Term term;
     private volatile String votedFor;
@@ -133,6 +134,7 @@ public class RaftNode {
 
     private RaftNode(Builder builder) {
         this.nodeId = builder.nodeId;
+        this.datacenter = builder.datacenter != null ? builder.datacenter : "";
         this.currentState = NodeState.FOLLOWER;
         this.term = new Term();
         this.votedFor = null;
@@ -309,23 +311,19 @@ public class RaftNode {
             if (getLastLogIndex() < request.getPrevLogIndex()) {
                 logger.info("Follower {} log too short: {} < prevLogIndex {}", 
                     nodeId, getLastLogIndex(), request.getPrevLogIndex());
+                // 返回 lastLogIndex，Leader 据此设置 nextIndex = matchIndex + 1，逐步回退
                 return new AppendEntriesResponse(term.getCurrent(), false, getLastLogIndex());
             }
 
             LogEntry prevEntry = getEntryAt(request.getPrevLogIndex());
             if (prevEntry == null || prevEntry.getTerm() != request.getPrevLogTerm()) {
-                long conflictIndex = request.getPrevLogIndex() - 1;
-                if (prevEntry != null) {
-                    for (long i = request.getPrevLogIndex(); i >= 1; i--) {
-                        LogEntry e = getEntryAt(i);
-                        if (e != null && e.getTerm() == request.getPrevLogTerm()) {
-                            conflictIndex = i;
-                            break;
-                        }
-                    }
-                }
-                logger.info("Follower {} log term mismatch at index {}", nodeId, request.getPrevLogIndex());
-                return new AppendEntriesResponse(term.getCurrent(), false, Math.max(0, conflictIndex));
+                logger.info("Follower {} log term mismatch at index {}, localTerm={}, expectedTerm={}",
+                    nodeId, request.getPrevLogIndex(),
+                    prevEntry != null ? prevEntry.getTerm() : "null",
+                    request.getPrevLogTerm());
+                // 返回 lastLogIndex，Leader 逐步回退 nextIndex 直到找到一致点
+                // 这是标准 Raft 的做法，保证收敛；优化的快速回退需要额外协议支持
+                return new AppendEntriesResponse(term.getCurrent(), false, getLastLogIndex());
             }
         }
 
@@ -562,7 +560,7 @@ public class RaftNode {
                 for (String peerId : peerIds) {
                     if (matchIndex.containsKey(peerId) && matchIndex.get(peerId) >= n) {
                         if (voteWeightStrategy != null) {
-                            VoteContext context = VoteContext.forCandidate(peerId, term.getCurrent());
+                            VoteContext context = VoteContext.forDatacenter(peerId, datacenter, term.getCurrent());
                             matchedWeight += 1 + voteWeightStrategy.calculateAdditionalWeight(context);
                         } else {
                             matchedWeight += 1;
@@ -689,7 +687,7 @@ public class RaftNode {
         int additionalWeight = 0;
         
         if (voteWeightStrategy != null) {
-            VoteContext context = VoteContext.forCandidate(request.getCandidateId(), request.getTerm());
+            VoteContext context = VoteContext.forDatacenter(request.getCandidateId(), datacenter, request.getTerm());
             additionalWeight = voteWeightStrategy.calculateAdditionalWeight(context);
         }
         
@@ -706,7 +704,7 @@ public class RaftNode {
         int additionalWeight = 0;
         
         if (voteWeightStrategy != null) {
-            VoteContext context = VoteContext.forCandidate(nodeId, term.getCurrent());
+            VoteContext context = VoteContext.forDatacenter(nodeId, datacenter, term.getCurrent());
             additionalWeight = voteWeightStrategy.calculateAdditionalWeight(context);
         }
         
@@ -725,7 +723,7 @@ public class RaftNode {
             if (votesReceived.containsKey(peerId)) {
                 int peerWeight = 1;
                 if (voteWeightStrategy != null) {
-                    VoteContext context = VoteContext.forCandidate(peerId, term.getCurrent());
+                    VoteContext context = VoteContext.forDatacenter(peerId, datacenter, term.getCurrent());
                     peerWeight = 1 + voteWeightStrategy.calculateAdditionalWeight(context);
                 }
                 receivedWeight += peerWeight;
@@ -747,7 +745,7 @@ public class RaftNode {
         for (String peerId : peerIds) {
             int peerWeight = 1;
             if (voteWeightStrategy != null) {
-                VoteContext context = VoteContext.forCandidate(peerId, term.getCurrent());
+                VoteContext context = VoteContext.forDatacenter(peerId, datacenter, term.getCurrent());
                 peerWeight = 1 + voteWeightStrategy.calculateAdditionalWeight(context);
             }
             totalWeight += peerWeight;
@@ -844,15 +842,24 @@ public class RaftNode {
         this.stateMachine = stateMachine;
     }
 
-    public boolean propose(byte[] data) {
+    /**
+     * 提交一条命令到 Raft 日志。
+     *
+     * <p>调用者应使用返回的日志索引配合 {@code waitForApply} 确认命令已被状态机应用。
+     * 返回 -1 表示当前节点不是 Leader 或数据为空，命令未写入日志。</p>
+     *
+     * @param data 序列化后的命令数据
+     * @return 命令在日志中的索引（≥1），或 -1 表示失败
+     */
+    public long propose(byte[] data) {
         if (!isLeader()) {
             logger.warn("Only leader can propose commands");
-            return false;
+            return -1;
         }
 
         if (data == null || data.length == 0) {
             logger.warn("Cannot propose empty data");
-            return false;
+            return -1;
         }
 
         long newIndex = getLastLogIndex() + 1;
@@ -862,12 +869,10 @@ public class RaftNode {
         
         logger.info("Leader {} added entry at index {}, log size now {}", nodeId, newIndex, log.size());
 
-        logger.info("Leader {} proposing command at index {}, sending append entries", nodeId, newIndex);
         sendAppendEntries();
-        logger.info("Leader {} sent append entries for command at index {}", nodeId, newIndex);
 
         logger.info("Leader {} proposed command at index {}", nodeId, newIndex);
-        return true;
+        return newIndex;
     }
 
     private long getLastLogIndex() {
@@ -1125,6 +1130,7 @@ public class RaftNode {
 
     public static class Builder {
         private String nodeId;
+        private String datacenter;
         private List<String> peerIds;
         private ElectionTimeout electionTimeout;
         private VoteWeightStrategy voteWeightStrategy;
@@ -1139,6 +1145,11 @@ public class RaftNode {
 
         public Builder nodeId(String nodeId) {
             this.nodeId = nodeId;
+            return this;
+        }
+
+        public Builder datacenter(String datacenter) {
+            this.datacenter = datacenter;
             return this;
         }
 
