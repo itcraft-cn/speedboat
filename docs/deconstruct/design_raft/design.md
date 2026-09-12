@@ -53,14 +53,14 @@ Builder 模式——通过 `RaftNode.Builder` 构建，支持链式配置所有�
 
 ### 选举流程
 
-**startElection()**：
+**startElection()**：`synchronized` 方法（防止并发触发导致双重选举/脑裂）。
 1. 仅当 FOLLOWER/CANDIDATE 时触发，转换到 CANDIDATE
 2. 自投票：`votesReceived.put(nodeId, true)`
-3. 计算 `totalVoteWeight`（基础 1 + 策略附加权重）和 `votesNeeded`（N/2+1）
-4. 若自身权重已满足多数，直接 `becomeLeader()`
-5. 否则调用 `requestVotesFromPeers(votesNeeded)`
+3. 计算 `currentWeight`（自身基础 1 + 策略附加权重）与 `requiredWeight`（全体节点总权重的一半 + 1）
+4. 若自身权重已满足要求，直接 `becomeLeader()`
+5. 否则调用 `requestVotesFromPeers(currentWeight, requiredWeight)`
 
-**requestVotesFromPeers()**：遍历所有 peer，发送 `RequestVoteRequest`（含 term、candidateId、voteWeight），异步处理响应。收到投票时 `synchronized(votesReceived)` 记录并检查是否达到多数。同时以 `electionTimeout.getNext()` 为周期设置超时重试。
+**requestVotesFromPeers()**：遍历所有 peer，发送 `RequestVoteRequest`（含 term、candidateId、voteWeight），异步处理响应。收到投票时 `synchronized(votesReceived)` 记录并调用 `checkElectionResult(calculateReceivedVoteWeight(), requiredWeight)` 检查**累计权重**是否达标。同时以 `electionTimeout.getNext()` 为周期设置超时重选。
 
 **becomeLeader()**：仅当 CANDIDATE 时执行。转换到 LEADER，设置 `leaderId = nodeId`，初始化所有 peer 的 `nextIndex` 和 `matchIndex`，追加 LEADER_INFO 条目到日志，发送 AppendEntries，启动心跳。
 
@@ -72,7 +72,9 @@ Builder 模式——通过 `RaftNode.Builder` 构建，支持链式配置所有�
 
 **handleAppendEntriesResponse()**：`synchronized` 方法。成功则更新 matchIndex/nextIndex 并调用 `advanceCommitIndex()`；失败且 `response.getTerm() > term.getCurrent()` 则降级为 FOLLOWER；失败且 term 不变则递减 nextIndex。
 
-**advanceCommitIndex()**：从 `getLastLogIndex()` 向 `commitIndex` 扫描，找到首条在当前任期内且被多数节点复制（matchCount >= N/2+1）的日志，更新 commitIndex 并调用 `applyCommittedEntries()`。
+**advanceCommitIndex()**：从 `getLastLogIndex()` 向 `commitIndex` 扫描，找到首条在当前任期内且**复制权重达标**的日志，更新 commitIndex 并调用 `applyCommittedEntries()`。
+
+> 权重语义（2026-09 修复后）：`matchedWeight` 从 1（Leader 自身）起算，每个 `matchIndex >= n` 的 peer 按其 VoteContext 计算 `1 + additionalWeight` 累加；`totalWeight` 取 `calculateRequiredWeight()`（全体总权重一半 + 1）。`matchedWeight >= totalWeight` 时推进提交。这与选举权重语义保持一致，支持偶数节点与跨机房权重场景。
 
 **applyCommittedEntries()**：从 lastApplied+1 到 commitIndex，按 EntryType 分发：
 - `COMMAND`：委托给 `stateMachine.apply(entry)`

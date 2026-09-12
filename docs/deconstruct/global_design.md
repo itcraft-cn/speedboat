@@ -1,5 +1,20 @@
 # Speedboat 全局设计文档
 
+## 0. 修订记录（2026-09-13 复核）
+
+> 本节记录 2026-07 首次解构后代码演进带来的设计变更，详细修复清单见 CHANGELOG.md。
+
+| 变更点 | 说明 |
+|--------|------|
+| 选举权重化 | `checkElectionResult` 改为 `calculateReceivedVoteWeight`（累计权重判定），`calculateRequiredWeight` 为总权重一半 +1 |
+| 提交权重化 | `advanceCommitIndex` 由"多数节点数"改为"复制权重达标"（matchedWeight >= requiredWeight），与选举语义一致 |
+| 脑裂防护 | `startElection()` 加 `synchronized`，防止并发触发双重选举 |
+| 帧编解码 | `CustomSerializer` 帧格式 length(4)+crc32(4)+ser(1)+msgType(1)+payload；`LengthFieldBasedFrameDecoder(max=1024,0,4,0,4)` 修复 ByteBuf/byte[] 类型错配 |
+| 懒连接 | `NettyTransport` 改为懒连接 + 失效重建（ABChecker 模式），启动不再全量预连接 |
+| 锁竞态修复 | `DistributedLockImpl.waitForApply` 要求 `isLockHeldBy && lastApplied >= targetIndex` 双条件，消除锁转移竞态 |
+| NPE 防护 | `broadcastRequestVote/broadcastHeartbeat` 增加 `channels.isEmpty()` 检查 |
+| 成员变更 | MemberChangeEntry 双条目类型（ADD/REMOVE）、FailureRecord 故障阈值确认机制 |
+
 ## 1. 系统概述
 
 **Speedboat** 是一个基于 Raft 协议的分布式锁控系统，专为主从控制场景设计，目标实现亚秒级/亚毫秒级的主从切换，支持偶数节点和跨机房容错。

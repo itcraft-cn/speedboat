@@ -49,32 +49,34 @@
 
 1. 创建 `ServerBootstrap`，配置 bossGroup/workerGroup
 2. 使用 `NioServerSocketChannel`，绑定 `localEndpoint.getPort()`
-3. Pipeline：`ByteArrayDecoder` → `ByteArrayEncoder` → `RpcMessageHandler`
+3. Pipeline：`LengthFieldBasedFrameDecoder(max=1024, lenField=4, strip=4)` → `ByteArrayEncoder` → `RpcMessageHandler`
 4. 同步等待绑定完成（`bind().sync()`）
-5. 调用 `connectToPeers()` 建立客户端连接
+5. **不做启动期 connectToPeers，改为懒连接**：首次发送时才建立连接（借鉴 ABChecker 模式）
 
-**客户端连接** (`connectToPeers()`)：
+**客户端连接**（懒连接 `getChannel()` → `connectTo()`）：
 
-1. 创建 `Bootstrap`，配置 workerGroup，使用 `NioSocketChannel`
-2. Pipeline：`ByteArrayDecoder` → `ByteArrayEncoder` → `RpcResponseHandler`
-3. 遍历所有 peer（排除自身），异步连接
-4. 连接成功后将 Channel 存入 `channels` 和 `channelGroup`
-5. 每个连接等待最多 3 秒
+1. `getChannel()`：查 `channels` 缓存，命中且 `isActive()` 直接复用；失效则移除后重建
+2. `connectTo()`：`synchronized` 双重检查，避免并发重复建连
+3. 创建 `Bootstrap`，Pipeline：`LengthFieldBasedFrameDecoder` → `ByteArrayEncoder` → `RpcResponseHandler`
+4. 连接等待上限 `CONNECT_TIMEOUT_MS = 1000ms`；失败返回 null，下次发送时自动重试
+5. 连接成功后将 Channel 存入 `channels` 和 `channelGroup`
+
+**发送失败处理**：`invalidateChannel()` 将失效 Channel 从 `channels` 移除，下次发送自动重建（自愈式连接管理）。
 
 **请求-响应流程**：
 
 所有三个发送方法（`sendRequestVote`、`sendHeartbeat`、`sendAppendEntries`）遵循相同模式：
 
-1. 查找目标节点 Channel，若不存在或未激活，返回已完成 Future（失败结果）
+1. 通过懒连接获取目标 Channel，若获取失败，返回已完成 Future（失败结果）
 2. 创建 `CompletableFuture`，以 `requestId` 为键存入 `pendingRequests`
-3. 通过 `serializer.wrap()` 序列化请求，通过 `channel.writeAndFlush()` 发送
+3. 通过 `serializer.wrap()` 序列化请求（帧格式：length(4B)+crc32(4B)+serType(1B)+msgType(1B)+payload），通过 `channel.writeAndFlush()` 发送
 4. 设置 `DEFAULT_TIMEOUT_MS`（5000ms）超时任务：超时后从 `pendingRequests` 移除并完成 Future（失败结果）
-5. 异常时移除 pending request 并以异常完成 Future
+5. 异常时移除 pending request 并以失败完成 Future
 
 **广播方法**：
 
-- `broadcastRequestVote(RequestVoteRequest)`：遍历所有已连接 Channel 发送投票请求
-- `broadcastHeartbeat(HeartbeatRequest)`：遍历所有已连接 Channel 发送心跳，返回 Future 列表
+- `broadcastRequestVote(RequestVoteRequest)`：遍历 peers（排除自身）发送投票请求
+- `broadcastHeartbeat(HeartbeatRequest)`：遍历 peers（排除自身）发送心跳，含 `channels.isEmpty()` NPE 防护
 
 **关闭** (`shutdown()`)：关闭所有 Channel，优雅关闭 workerGroup 和 bossGroup。
 

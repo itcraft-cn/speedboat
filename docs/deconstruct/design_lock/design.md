@@ -70,7 +70,9 @@
 2. 检查 `stateMachine.isLockAvailable(lockName, nodeId)`，不可用返回 false
 3. 构造 `LockCommand.lock(lockName, nodeId)` 并序列化
 4. 调用 `raftNode.propose(data)` 提交日志
-5. 调用 `waitForApply(1000)` 等待状态机应用（最多 1 秒）
+5. 调用 `waitForApply(1000, entryIndex)` 等待状态机应用（最多 1 秒）
+
+**waitForApply 判定条件（2026-09 修复后）**：`stateMachine.isLockHeldBy(lockName, nodeId)` **且** `raftNode.getLastApplied() >= targetIndex` 同时满足才算获取成功。仅凭"锁被持有"可能读到其他节点的旧锁状态，必须配合日志应用位置确认是自己的 LOCK 命令已生效，消除锁转移竞态。
 
 **租约续期**：
 - 续期间隔：`DEFAULT_LEASE_TIMEOUT_MS / 2`（即 15 秒）
