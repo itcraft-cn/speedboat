@@ -1,0 +1,13 @@
+Simian Similarity Analyzer 4.2.1 - https://simian.quandarypeak.com
+Copyright (c) 2026 Quandary Peak Research. All rights reserved.
+Apache License 2.0
+{failOnDuplication=true, ignoreCharacterCase=true, ignoreCurlyBraces=true, ignoreIdentifierCase=true, ignoreModifiers=true, ignoreStringCase=true, language=Java, threshold=10}
+Found 14 duplicate lines with fingerprint ba83b88104d318fdc438d1bc5ee820a0 in the following files:
+ Between lines 28 and 45 in /disk2/helly_data/code/java/speedboat/src/main/java/cn/itcraft/speedboat/transport/RpcResponseHandler.java
+ Between lines 26 and 43 in /disk2/helly_data/code/java/speedboat/src/main/java/cn/itcraft/speedboat/transport/RpcMessageHandler.java
+Found 17 duplicate lines with fingerprint 116ea889791c7f1cb82a1dcd11de3ac3 in the following files:
+ Between lines 15 and 39 in /disk2/helly_data/code/java/speedboat/src/main/java/cn/itcraft/speedboat/strategy/group/DatacenterGroupStrategy.java
+ Between lines 14 and 38 in /disk2/helly_data/code/java/speedboat/src/main/java/cn/itcraft/speedboat/strategy/group/DefaultGroupStrategy.java
+Found 62 duplicate lines in 4 blocks in 4 files
+Processed a total of 2972 significant (6550 raw) lines in 61 files
+Processing time: 0.062sec

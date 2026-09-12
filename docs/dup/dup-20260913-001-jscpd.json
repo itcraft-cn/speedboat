@@ -1,0 +1,249 @@
+{
+  "duplicates": [
+    {
+      "firstFile": {
+        "end": 164,
+        "endLoc": {
+          "column": 23,
+          "line": 164,
+          "position": 5700
+        },
+        "name": "java/cn/itcraft/speedboat/Speedboat.java",
+        "start": 151,
+        "startLoc": {
+          "column": 44,
+          "line": 151,
+          "position": 5060
+        }
+      },
+      "format": "java",
+      "fragment": "        for (String peerAddr : peerAddresses) {\n            String peerIp = NetworkUtils.parseIp(peerAddr);\n            int peerPort = NetworkUtils.parsePort(peerAddr);\n            String peerNodeId = NetworkUtils.generateNodeId(\"peer\", peerIp);\n            \n            peerEndpoints.add(new NodeEndpoint(peerNodeId, peerIp, peerPort));\n            peerIds.add(peerNodeId);\n        }\n        \n        NodeEndpoint localEndpoint = new NodeEndpoint(nodeId, localIp, localPort);\n        CustomSerializer serializer = new CustomSerializer(new ProtostuffSerializer());\n        nettyTransport = new NettyTransport(localEndpoint, peerEndpoints, serializer);\n        \n        ElectionTimeout electionTimeout = new ElectionTimeout(",
+      "lines": 14,
+      "secondFile": {
+        "end": 212,
+        "endLoc": {
+          "column": 23,
+          "line": 212,
+          "position": 7644
+        },
+        "name": "java/cn/itcraft/speedboat/Speedboat.java",
+        "start": 199,
+        "startLoc": {
+          "column": 51,
+          "line": 199,
+          "position": 7004
+        }
+      },
+      "tokens": 95
+    },
+    {
+      "firstFile": {
+        "end": 60,
+        "endLoc": {
+          "column": 56,
+          "line": 60,
+          "position": 1601
+        },
+        "name": "java/cn/itcraft/speedboat/config/PropertiesConfigProvider.java",
+        "start": 26,
+        "startLoc": {
+          "column": 9,
+          "line": 26,
+          "position": 667
+        }
+      },
+      "format": "java",
+      "fragment": " * }</pre>\n *\n * <p>Properties 文件格式：</p>\n * <pre>\n * # 机房ID（可选）\n * datacenter=hangzhou001\n * \n * # 集群节点列表（必需）\n * # 格式：nodes.{机房索引}.{节点索引}=ip:port\n * nodes.0.0=192.168.10.1:3000\n * nodes.0.1=192.168.10.2:3000\n * nodes.0.2=192.168.10.3:3000\n * nodes.1.0=10.3.1.1:3000\n * nodes.1.1=10.3.1.2:3000\n * nodes.1.2=10.3.1.3:3000\n * \n * # 可选：机房内选举超时\n * election.intra.timeout.min=1000\n * election.intra.timeout.max=2000\n * \n * # 可选：机房间选举超时\n * election.cross.timeout.min=3000\n * election.cross.timeout.max=5000\n * </pre>\n *\n * @author speedboat\n * @since 1.0.0\n */\npublic class PropertiesConfigProvider implements SpeedboatConfigProvider {\n    \n    private static final Logger logger = LoggerFactory.getLogger(PropertiesConfigProvider.class);\n    \n    private final Properties properties;\n    \n    public PropertiesConfigProvider(String configFile) {",
+      "lines": 35,
+      "secondFile": {
+        "end": 37,
+        "endLoc": {
+          "column": 6,
+          "line": 37,
+          "position": 959
+        },
+        "name": "java/cn/itcraft/speedboat/config/SpeedboatConfigProvider.java",
+        "start": 9,
+        "startLoc": {
+          "column": 68,
+          "line": 9,
+          "position": 256
+        }
+      },
+      "tokens": 549
+    },
+    {
+      "firstFile": {
+        "end": 41,
+        "endLoc": {
+          "column": 1,
+          "line": 41,
+          "position": 1038
+        },
+        "name": "java/cn/itcraft/speedboat/strategy/group/DatacenterGroupStrategy.java",
+        "start": 13,
+        "startLoc": {
+          "column": 37,
+          "line": 13,
+          "position": 267
+        }
+      },
+      "format": "java",
+      "fragment": "public class DatacenterGroupStrategy implements GroupStrategy {\n    \n    @Override\n    public long getElectionTimeout() {\n        return SpeedboatConsts.MIN_ELECTION_TIMEOUT_MS + \n               ThreadLocalRandom.current().nextLong(\n                   SpeedboatConsts.MAX_ELECTION_TIMEOUT_MS - SpeedboatConsts.MIN_ELECTION_TIMEOUT_MS);\n    }\n    \n    @Override\n    public long getHeartbeatInterval() {\n        return SpeedboatConsts.HEARTBEAT_INTERVAL_MS;\n    }\n    \n    @Override\n    public boolean allowCrossGroupCommunication() {\n        return false;\n    }\n    \n    @Override\n    public long getMinElectionTimeout() {\n        return SpeedboatConsts.MIN_ELECTION_TIMEOUT_MS;\n    }\n    \n    @Override\n    public long getMaxElectionTimeout() {\n        return SpeedboatConsts.MAX_ELECTION_TIMEOUT_MS;\n    }\n}",
+      "lines": 29,
+      "secondFile": {
+        "end": 40,
+        "endLoc": {
+          "column": 1,
+          "line": 40,
+          "position": 1031
+        },
+        "name": "java/cn/itcraft/speedboat/strategy/group/DefaultGroupStrategy.java",
+        "start": 12,
+        "startLoc": {
+          "column": 34,
+          "line": 12,
+          "position": 260
+        }
+      },
+      "tokens": 89
+    },
+    {
+      "firstFile": {
+        "end": 11,
+        "endLoc": {
+          "column": 2,
+          "line": 11,
+          "position": 325
+        },
+        "name": "java/cn/itcraft/speedboat/transport/RpcMessageHandler.java",
+        "start": 1,
+        "startLoc": {
+          "column": 0,
+          "line": 1,
+          "position": 0
+        }
+      },
+      "format": "java",
+      "fragment": "package cn.itcraft.speedboat.transport;\n\nimport cn.itcraft.speedboat.rpc.*;\nimport cn.itcraft.speedboat.serialize.CustomSerializer;\nimport io.netty.buffer.ByteBuf;\nimport io.netty.channel.ChannelHandlerContext;\nimport io.netty.channel.ChannelInboundHandlerAdapter;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\n\n/**",
+      "lines": 11,
+      "secondFile": {
+        "end": 11,
+        "endLoc": {
+          "column": 6,
+          "line": 11,
+          "position": 329
+        },
+        "name": "java/cn/itcraft/speedboat/transport/RpcResponseHandler.java",
+        "start": 1,
+        "startLoc": {
+          "column": 0,
+          "line": 1,
+          "position": 0
+        }
+      },
+      "tokens": 72
+    },
+    {
+      "firstFile": {
+        "end": 45,
+        "endLoc": {
+          "column": 30,
+          "line": 45,
+          "position": 1441
+        },
+        "name": "java/cn/itcraft/speedboat/transport/RpcMessageHandler.java",
+        "start": 25,
+        "startLoc": {
+          "column": 21,
+          "line": 25,
+          "position": 815
+        }
+      },
+      "format": "java",
+      "fragment": "    RpcMessageHandler(NettyTransport transport, CustomSerializer serializer) {\n        this.transport = transport;\n        this.serializer = serializer;\n    }\n    \n    @Override\n    public void channelRead(ChannelHandlerContext ctx, Object msg) {\n        byte[] data;\n        if (msg instanceof ByteBuf) {\n            ByteBuf buf = (ByteBuf) msg;\n            data = new byte[buf.readableBytes()];\n            buf.readBytes(data);\n            buf.release();\n        } else {\n            data = (byte[]) msg;\n        }\n        \n        try {\n            Object obj = serializer.unwrap(data, Object.class);\n            \n            if (obj instanceof RequestVoteRequest && transport.getRequestVoteHandler() != null) {",
+      "lines": 21,
+      "secondFile": {
+        "end": 47,
+        "endLoc": {
+          "column": 30,
+          "line": 47,
+          "position": 1509
+        },
+        "name": "java/cn/itcraft/speedboat/transport/RpcResponseHandler.java",
+        "start": 27,
+        "startLoc": {
+          "column": 22,
+          "line": 27,
+          "position": 883
+        }
+      },
+      "tokens": 112
+    },
+    {
+      "firstFile": {
+        "end": 137,
+        "endLoc": {
+          "column": 11,
+          "line": 137,
+          "position": 4369
+        },
+        "name": "java/cn/itcraft/speedboat/util/NetworkUtils.java",
+        "start": 127,
+        "startLoc": {
+          "column": 31,
+          "line": 127,
+          "position": 3994
+        }
+      },
+      "format": "java",
+      "fragment": "    public static int parsePort(String address) {\n        if (address == null || !address.contains(\":\")) {\n            throw new IllegalArgumentException(\"Invalid address format: \" + address);\n        }\n        \n        String[] parts = address.split(\":\");\n        if (parts.length != 2) {\n            throw new IllegalArgumentException(\"Invalid address format: \" + address);\n        }\n        \n        try {",
+      "lines": 11,
+      "secondFile": {
+        "end": 160,
+        "endLoc": {
+          "column": 14,
+          "line": 160,
+          "position": 5105
+        },
+        "name": "java/cn/itcraft/speedboat/util/NetworkUtils.java",
+        "start": 150,
+        "startLoc": {
+          "column": 32,
+          "line": 150,
+          "position": 4727
+        }
+      },
+      "tokens": 64
+    }
+  ],
+  "statistics": {
+    "detectionDate": "2026-09-12T17:16:37.076Z",
+    "formats": {
+      "java": {
+        "clones": 6,
+        "duplicatedLines": 115,
+        "duplicatedTokens": 981,
+        "lines": 6550,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 1.7557251908396947,
+        "percentageTokens": 1.7776247599028738,
+        "sources": 61,
+        "tokens": 55186
+      }
+    },
+    "total": {
+      "clones": 6,
+      "duplicatedLines": 115,
+      "duplicatedTokens": 981,
+      "lines": 6550,
+      "newClones": 0,
+      "newDuplicatedLines": 0,
+      "percentage": 1.7557251908396947,
+      "percentageTokens": 1.7776247599028738,
+      "sources": 61,
+      "tokens": 55186
+    }
+  }
+}
