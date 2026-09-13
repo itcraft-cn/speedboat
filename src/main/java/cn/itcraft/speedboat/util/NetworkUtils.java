@@ -41,16 +41,30 @@ public class NetworkUtils {
     
     /**
      * 检测本机非回环 IP 地址
-     * 
-     * <p>优先返回：</p>
-     * <ul>
-     *   <li>非回环、非链路本地、已激活的 IPv4 地址</li>
-     *   <li>如果有多网卡，返回第一个符合条件的</li>
-     * </ul>
+     *
+     * <p>本地 IP 解析优先级：</p>
+     * <ol>
+     *   <li>系统属性 {@code speedboat.local.ip}（显式指定，单机多进程模拟多服务器
+     *       或容器/多网卡宿主场景使用）</li>
+     *   <li>环境变量 {@code SPEEDBOAT_LOCAL_IP}</li>
+     *   <li>非回环、非链路本地、已激活的 IPv4 地址（第一个符合条件的）</li>
+     * </ol>
+     *
+     * <p>测试场景下全回环集群仍需可用：若开启 {@code speedboat.allowLocalTest}
+     * 且显式指定了本地 IP 为回环地址，则允许直接使用该回环 IP 而不回退到 fallback。</p>
      *
      * @return IP 地址，检测失败返回 "127.0.0.1"
      */
     public static String detectLocalIp() {
+        String overrideIp = System.getProperty("speedboat.local.ip");
+        if (overrideIp == null || overrideIp.isEmpty()) {
+            overrideIp = System.getenv("SPEEDBOAT_LOCAL_IP");
+        }
+        if (overrideIp != null && !overrideIp.isEmpty()) {
+            logger.info("Local IP overridden by explicit config: {}", overrideIp);
+            return overrideIp;
+        }
+
         try {
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
             while (interfaces != null && interfaces.hasMoreElements()) {
