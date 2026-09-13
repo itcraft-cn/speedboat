@@ -89,12 +89,15 @@ public class NetworkUtils {
     
     /**
      * 自动生成 nodeId
-     * 
+     *
      * <p>格式：hostname-ip-random4位</p>
      * <p>示例：server01-192.168.10.1-0012</p>
      *
      * @return nodeId
+     * @deprecated 随机后缀会导致 Raft 身份跨重启漂移（votedFor/leaderId 失稳）。
+     *             生产路径请使用确定性生成 {@link #generateNodeId(String address)}。
      */
+    @Deprecated
     public static String generateNodeId() {
         String hostname = detectHostname();
         String ip = detectLocalIp();
@@ -107,15 +110,34 @@ public class NetworkUtils {
     /**
      * 根据 hostname 和 IP 生成 nodeId
      *
+     * <p>身份确定性要求：同一进程多次运行必须生成相同的 nodeId，否则会破坏 Raft
+     * 的安全前提（votedFor/leaderId/成员身份的稳定性）。禁止在常规身份中掺入随机后缀。</p>
+     *
      * @param hostname 主机名
      * @param ip IP 地址
      * @return nodeId
      */
     public static String generateNodeId(String hostname, String ip) {
-        String random = String.format("%04d", RANDOM.nextInt(10000));
-        return hostname + "-" + ip + "-" + random;
+        return hostname + "-" + ip;
     }
-    
+
+    /**
+     * 根据地址（ip:port）生成确定性 nodeId。
+     *
+     * <p>格式：{@code node-<ip>-<port>}。这是自节点与 peer 节点生成身份的
+     * 统一入口——任何进程对同一个 {@code ip:port} 都能推导出完全一致的
+     * nodeId，保证集群内一个节点只有一个身份。优先使用本方法，
+     * 而不是 {@link #generateNodeId(String, String)}（peers 侧无法获知 hostname）。</p>
+     *
+     * @param address 节点地址（格式 "ip:port"）
+     * @return 确定性 nodeId
+     */
+    public static String generateNodeId(String address) {
+        String ip = parseIp(address);
+        int port = parsePort(address);
+        return "node-" + ip + "-" + port;
+    }
+
     /**
      * 从地址字符串解析端口
      * 

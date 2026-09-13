@@ -106,14 +106,14 @@ public class Speedboat {
         this.crossDatacenterMode = allNodes.size() > 1;
         
         this.localIp = NetworkUtils.detectLocalIp();
-        String hostname = NetworkUtils.detectHostname();
         
         NodeMatchResult matchResult = matchLocalNode(allNodes, localIp);
         this.localPort = matchResult.port;
         this.datacenterIndex = matchResult.datacenterIndex;
         this.datacenterId = resolveDatacenterId(config, datacenterIndex);
         
-        this.nodeId = NetworkUtils.generateNodeId(hostname, localIp);
+        // 身份确定性：自节点与 peer 节点均由 ip:port 推导，同一节点在所有进程内获得同一身份
+        this.nodeId = NetworkUtils.generateNodeId(localIp + ":" + localPort);
         
         this.lockStateMachine = new LockStateMachine();
         
@@ -151,7 +151,8 @@ public class Speedboat {
         for (String peerAddr : peerAddresses) {
             String peerIp = NetworkUtils.parseIp(peerAddr);
             int peerPort = NetworkUtils.parsePort(peerAddr);
-            String peerNodeId = NetworkUtils.generateNodeId("peer", peerIp);
+            // 身份确定性：peer 与自身使用同一生成规则（ip:port 推导），跨进程身份一致
+            String peerNodeId = NetworkUtils.generateNodeId(peerAddr);
             
             peerEndpoints.add(new NodeEndpoint(peerNodeId, peerIp, peerPort));
             peerIds.add(peerNodeId);
@@ -199,7 +200,8 @@ public class Speedboat {
         for (String peerAddr : localDcPeerAddresses) {
             String peerIp = NetworkUtils.parseIp(peerAddr);
             int peerPort = NetworkUtils.parsePort(peerAddr);
-            String peerNodeId = NetworkUtils.generateNodeId("peer", peerIp);
+            // 身份确定性：peer 与自身使用同一生成规则（ip:port 推导），跨进程身份一致
+            String peerNodeId = NetworkUtils.generateNodeId(peerAddr);
             
             peerEndpoints.add(new NodeEndpoint(peerNodeId, peerIp, peerPort));
             peerIds.add(peerNodeId);
