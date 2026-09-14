@@ -123,6 +123,36 @@ election.cross.timeout.max=5000
 | `election.intra.timeout.max` | ❌ | 2000 | Intra-DC election timeout max (ms) |
 | `election.cross.timeout.min` | ❌ | 3000 | Cross-DC election timeout min (ms) |
 | `election.cross.timeout.max` | ❌ | 5000 | Cross-DC election timeout max (ms) |
+| `vote.weight.strategy` | ❌ | none | Weighted election: `prefer` / `even` / `none` |
+| `vote.weight.prefer` | ⚠️ for prefer | - | Node ID (format `node-<ip>-<port>`) that gets the extra weight |
+| `vote.weight.prefer.weight` | ❌ | 3 | Extra weight given to the preferred node |
+
+### ⚠️ Vote Weight: cluster-wide consistency constraint
+
+The vote-weight table is a **cluster-wide topology fact**, not a per-node
+view. "Give node X weight 3" means **every node's config must express the
+same fact** — the same `vote.weight.prefer`, the same
+`vote.weight.prefer.weight`, or none at all.
+
+**Why**: each node computes candidate weights and the required quorum
+independently and then exchanges votes. If node A believes the weight table
+is `(4,1,1,1)` while node B believes `(1,1,1,1)`, the two sides compute
+different `total/required` numbers and can declare **different winners in the
+same election term** — resulting in duelling leaders.
+
+**Real-cluster verification** (4 nodes, weights `(3,1,1,1)` on all four
+machines → total 6, required 4):
+
+- Three ordinary nodes alone = 3 < 4 → can never form a quorum
+- Weighted node (4 after base 1 + extra 3) + any one ordinary = 5 ≥ 4 ✓
+- Consequence: **every leader in this topology is elected only via a quorum
+  that includes the weighted node**, which is exactly the intended routing
+  behavior of weighted election.
+
+Verified on a real 4-host intranet cluster (kill-leader failover ×3, extreme
+2-node quorum, and full recovery); see the raft `required weight` in the
+logs for end-to-end evidence.
+
 
 ### Node Index Convention
 

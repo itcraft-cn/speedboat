@@ -84,6 +84,22 @@ election.cross.timeout.min=3000
 election.cross.timeout.max=5000
 ```
 
+### Vote Weight (optional)
+
+```properties
+# Weighted election: give node "node-192.168.10.1:3000" extra weight
+vote.weight.strategy=prefer
+vote.weight.prefer=node-192.168.10.1:3000
+vote.weight.prefer.weight=3
+```
+
+⚠️ **The weight table is a cluster-wide topology fact.** Every node's config must
+contain the *same* `vote.weight.*` values. A mismatched table means each node
+computes a different required-quorum for the same election → split view of who
+won → duelling leaders. Verified on real 4-node cluster: weights (3,1,1,1) →
+total 6, required 4 — three ordinary nodes alone can never win; the weighted
+node must participate in every quorum.
+
 ## API
 
 ```java

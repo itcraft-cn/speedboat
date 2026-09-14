@@ -123,6 +123,27 @@ election.cross.timeout.max=5000
 | `election.intra.timeout.max` | ❌ | 2000 | 机房内选举超时上限（ms） |
 | `election.cross.timeout.min` | ❌ | 3000 | 机房间选举超时下限（ms） |
 | `election.cross.timeout.max` | ❌ | 5000 | 机房间选举超时上限（ms） |
+| `vote.weight.strategy` | ❌ | none | 投票权重策略：`prefer` / `even` / `none` |
+| `vote.weight.prefer` | ⚠️ prefer 必填 | - | 享受额外权重的节点 ID（格式 `node-<ip>-<port>`） |
+| `vote.weight.prefer.weight` | ❌ | 3 | 该节点获得的额外权重 |
+
+### ⚠️ 投票权重：全网一致性约束
+
+权重表是**集群级拓扑事实**，不是本机视角。"给节点 X 权重 3"的含义是：
+**每一台机器的配置都要表达同一个事实** —— 相同的 `vote.weight.prefer`、
+相同的 `vote.weight.prefer.weight`（或全部不配置）。
+
+**为什么**：每个节点独立计算候选者权重与 required 多数派，再交换选票。
+若 A 机认为权重表是 `(4,1,1,1)` 而 B 机认为 `(1,1,1,1)`，两端会算出
+**不同的 total/required**，同一 term 内可能宣布**不同的胜者** —— 双主。
+
+**实机验证**（4 节点、全机器权重表 `(3,1,1,1)` → total 6 / required 4）：
+
+- 三个普通节点 = 3 < 4 → 单独永远构不成多数派
+- 权重节点（1+3=4）+ 任一普通 = 5 ≥ 4 ✓
+- 结论：**该拓扑下任何 leader 都必须由"包含加权节点"的多数派选出**，
+  这正是加权选举的路由语义。
+
 
 ### 节点索引规则
 

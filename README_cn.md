@@ -84,6 +84,21 @@ election.cross.timeout.min=3000
 election.cross.timeout.max=5000
 ```
 
+### 投票权重（可选）
+
+```properties
+# 加权选举：给节点 "node-192.168.10.1:3000" 附加权重
+vote.weight.strategy=prefer
+vote.weight.prefer=node-192.168.10.1:3000
+vote.weight.prefer.weight=3
+```
+
+⚠️ **权重表是集群级拓扑事实**：每台节点的配置必须持有
+**相同** 的 `vote.weight.*`。表不同步会导致各节点计算出
+不同的 required 多数派 → 同一 term 宣布不同胜者 → 双主。
+实机 4 节点验证：权重 (3,1,1,1) → total 6 / required 4，
+三个普通节点永不能单独取胜，加权节点必须参与每次多数派。
+
 ## API
 
 ```java
