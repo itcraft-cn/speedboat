@@ -12,6 +12,8 @@ import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
 import cn.itcraft.speedboat.strategy.group.GroupStrategy;
+import cn.itcraft.speedboat.raft.report.RaftNodeReport;
+import cn.itcraft.speedboat.statemachine.StateMachine;
 import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
 import cn.itcraft.speedboat.transport.NettyTransport;
 import cn.itcraft.speedboat.transport.TransportLayer;
@@ -30,7 +32,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import cn.itcraft.speedboat.statemachine.StateMachine;
 
 /**
  * {@link RaftNode} 接口的唯一实现（Phase B API/Impl 分层）。
@@ -166,6 +167,13 @@ public class RaftNodeImpl implements RaftNode {
      * 接口前置：将来接入磁盘 WAL 时不需要改算法代码。
      */
     cn.itcraft.speedboat.persistence.RaftStore raftStore;
+    /**
+     * 状态报告监听器（Phase E 可观测性；可能为 null）。
+     * 事件触发 + 周期兜底双通道发布（对标 MicroRaft RaftNodeReport 机制）。
+     */
+    private cn.itcraft.speedboat.raft.report.RaftNodeReportListener reportListener;
+    /** 周期性状态快照发布间隔（毫秒），对标 MicroRaft raftNodeReportPublishPeriodSecs */
+    private static final long REPORT_PERIOD_MILLIS = 10_000L;
     // ==================== Phase C：预投票 & check-quorum ====================
     /** 预投票探测中标记（raft 单线程读写） */
     private volatile boolean prevoting;
@@ -221,6 +229,7 @@ public class RaftNodeImpl implements RaftNode {
         this.executor = builder.executor != null ? builder.executor : new DefaultRaftNodeExecutor();
         // 持久化缺省 NopRaftStore（内存模式，覆盖既有一致行为），可注入选中实现
         this.raftStore = builder.raftStore != null ? builder.raftStore : cn.itcraft.speedboat.persistence.NopRaftStore.getInstance();
+        this.reportListener = builder.reportListener;
     }
 
     public void start() {
@@ -260,6 +269,11 @@ public class RaftNodeImpl implements RaftNode {
         if (membershipConfig.isMembershipChangeEnabled()) {
             startMembershipChangeDetection();
         }
+
+        // Phase E 周期兜底快照：每 10s 由 raft 线程发布一次状态视图
+        executor.scheduleAtFixedRate(
+            () -> publishReport(RaftNodeReport.ReportReason.PERIODIC),
+            REPORT_PERIOD_MILLIS, REPORT_PERIOD_MILLIS);
 
         logger.info("Node {} started as {} on raft thread [{}]", nodeId, currentState, executor.isRaftThread());
     }
@@ -372,6 +386,7 @@ public class RaftNodeImpl implements RaftNode {
             resetElectionTimeout();
         }
         
+        publishReport(RaftNodeReport.ReportReason.ROLE_CHANGE);
         logger.info("Node {} transitioned from {} to {}", nodeId, oldState, newState);
     }
 
@@ -999,6 +1014,34 @@ public class RaftNodeImpl implements RaftNode {
         // 需要查看 RaftGroup 的创建方式
         // 暂时返回 null，后续 Phase 3 会实现
         return null;
+    }
+
+    /** 成员全集（含自身，observer 视角应见完整成员列表） */
+    private List<String> clusterMemberIds() {
+        List<String> all = new ArrayList<>(peerIds);
+        if (!all.contains(nodeId)) {
+            all.add(nodeId);
+        }
+        return all;
+    }
+
+    /**
+     * 构建并发布一次状态快照（raft 单线程内收集，快照值不可变）。
+     * 无 listener 时为 no-op；监听器异常只告警不影响算法。
+     */
+    private void publishReport(RaftNodeReport.ReportReason reason) {
+        if (reportListener == null) {
+            return;
+        }
+        try {
+            RaftNodeReport report = new RaftNodeReport(
+                nodeId, currentState, term.getCurrent(), votedFor, leaderId,
+                commitIndex, lastApplied, (int) getLastLogIndex(),
+                clusterMemberIds(), new java.util.HashMap<>(matchIndex));
+            reportListener.onReport(report);
+        } catch (Exception e) {
+            logger.warn("Report listener failed: {}", e.toString(), e);
+        }
     }
 
     public void resetElectionTimeout() {

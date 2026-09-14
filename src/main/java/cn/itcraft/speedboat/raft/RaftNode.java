@@ -203,6 +203,7 @@ public interface RaftNode {
         cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy changeValidationStrategy;
         StateMachine stateMachine;
         cn.itcraft.speedboat.persistence.RaftStore raftStore;
+        cn.itcraft.speedboat.raft.report.RaftNodeReportListener reportListener;
 
         public Builder nodeId(String nodeId) {
             this.nodeId = nodeId;
@@ -284,6 +285,15 @@ public interface RaftNode {
          */
         public Builder raftStore(cn.itcraft.speedboat.persistence.RaftStore raftStore) {
             this.raftStore = raftStore;
+            return this;
+        }
+
+        /**
+         * 注册状态报告监听器（Phase E 可观测性）。
+         * 核心算法零依赖 metrics 库：Micrometer 等通过本接口外挂接入。
+         */
+        public Builder reportListener(cn.itcraft.speedboat.raft.report.RaftNodeReportListener listener) {
+            this.reportListener = listener;
             return this;
         }
 
