@@ -173,6 +173,7 @@ public class Speedboat {
             .electionTimeout(electionTimeout)
             .transportLayer(nettyTransport)
             .stateMachine(lockStateMachine)
+            .voteWeightStrategy(config.getVoteWeightStrategy())
             .build();
         
         logger.info("Starting NettyTransport...");

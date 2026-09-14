@@ -78,6 +78,17 @@ public interface SpeedboatConfigProvider {
      * <p>默认实现返回静态成员（自动剔除关闭）；配置文件可通过
      * {@code membership.auto.removal=true|false} 显式开启自动剔除。</p>
      */
+    /**
+     * 获取投票权重策略（Phase 权重选举）。
+     *
+     * <p>返回 null 时所有节点权重为 1（标准机制）。
+     * 配置文件支持 {@code vote.weight.strategy=prefer|even|none} +
+     * {@code vote.weight.prefer=<nodeId>}。</p>
+     */
+    default cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy getVoteWeightStrategy() {
+        return null;
+    }
+
     default cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig() {
         return new cn.itcraft.speedboat.config.MembershipConfig();
     }

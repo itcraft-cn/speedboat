@@ -128,6 +128,31 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
     }
     
     @Override
+    public cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy getVoteWeightStrategy() {
+        String mode = properties.getProperty("vote.weight.strategy");
+        if (mode == null) {
+            return null;
+        }
+        String modeVal = mode.trim().toLowerCase();
+        if ("none".equals(modeVal)) {
+            return null;
+        }
+        if ("prefer".equals(modeVal)) {
+            String prefer = properties.getProperty("vote.weight.prefer");
+            if (prefer == null || prefer.trim().isEmpty()) {
+                throw new IllegalArgumentException("vote.weight.strategy=prefer requires vote.weight.prefer=<nodeId>");
+            }
+            String weight = properties.getProperty("vote.weight.prefer.weight", "3");
+            int extra = Integer.parseInt(weight.trim());
+            return new cn.itcraft.speedboat.strategy.voteweight.PreferNodeVoteWeightStrategy(prefer.trim(), extra);
+        }
+        if ("even".equals(modeVal)) {
+            return new cn.itcraft.speedboat.strategy.voteweight.EvenNodeVoteWeightStrategy();
+        }
+        throw new IllegalArgumentException("Unknown vote.weight.strategy: " + modeVal);
+    }
+
+    @Override
     public cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig() {
         String autoRemoval = properties.getProperty("membership.auto.removal");
         if (autoRemoval == null) {
