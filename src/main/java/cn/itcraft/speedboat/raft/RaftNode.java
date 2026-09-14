@@ -202,6 +202,7 @@ public interface RaftNode {
         cn.itcraft.speedboat.strategy.membership.RegistryStrategy registryStrategy;
         cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy changeValidationStrategy;
         StateMachine stateMachine;
+        cn.itcraft.speedboat.persistence.RaftStore raftStore;
 
         public Builder nodeId(String nodeId) {
             this.nodeId = nodeId;
@@ -274,6 +275,15 @@ public interface RaftNode {
 
         public Builder stateMachine(StateMachine stateMachine) {
             this.stateMachine = stateMachine;
+            return this;
+        }
+
+        /**
+         * 注入持久化存储（缺省 NopRaftStore 内存模式）。
+         * 接口前置：生产 WAL / SQLite 引擎按 persistence/RaftStore 契约接入。
+         */
+        public Builder raftStore(cn.itcraft.speedboat.persistence.RaftStore raftStore) {
+            this.raftStore = raftStore;
             return this;
         }
 

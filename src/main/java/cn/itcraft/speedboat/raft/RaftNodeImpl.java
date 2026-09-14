@@ -100,11 +100,15 @@ public class RaftNodeImpl implements RaftNode {
 
     private static final Logger logger = LoggerFactory.getLogger(RaftNodeImpl.class);
 
+    // ==================== 持久性等级标注（对标 MicroRaft [PERSISTENT] 自文档化）====================
+    // 【PERSISTENT】节点标识 / 机房（启动期不可变）
     private final String nodeId;
     private final String datacenter;
     private volatile NodeState currentState;
+    // 【PERSISTENT】term / votedFor / leaderId（prior to visibility 经 raftStore.persistAndFlushTerm 落盘）
     private final Term term;
     private volatile String votedFor;
+    // 【PERSISTENT】term 内已投票保护（link 为 term 条件一部分；真正持久化以 raftStore 覆盖）
     private volatile long votedForTerm;
     private volatile String leaderId;
 
@@ -134,6 +138,7 @@ public class RaftNodeImpl implements RaftNode {
     private Future<?> heartbeatFuture;
     private Future<?> membershipChangeFuture;
 
+    // 【PERSISTENT】日志主体（append & rebuild 均经 raftStore.persistLogEntries）
     private final List<LogEntry> log;
     /**
      * 日志索引 → 条目的 O(1) 映射。
@@ -145,6 +150,7 @@ public class RaftNodeImpl implements RaftNode {
     private final java.util.concurrent.ConcurrentHashMap<Long, LogEntry> logIndexMap = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile long commitIndex;
     private volatile long lastApplied;
+    // 【NOT-PERSISTENT】nextIndex/matchIndex 属 leader 活性状态，重启后重新探测
     private final Map<String, Long> nextIndex;
     private final Map<String, Long> matchIndex;
     private final int maxLogSize;
@@ -155,6 +161,11 @@ public class RaftNodeImpl implements RaftNode {
     private final cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy changeValidationStrategy;
     private final java.util.concurrent.ConcurrentHashMap<String, FailureRecord> failureRecords;
     private StateMachine stateMachine;
+    /**
+     * 持久化存储（缺省 {@link cn.itcraft.speedboat.persistence.NopRaftStore} 内存模式）。
+     * 接口前置：将来接入磁盘 WAL 时不需要改算法代码。
+     */
+    cn.itcraft.speedboat.persistence.RaftStore raftStore;
     // ==================== Phase C：预投票 & check-quorum ====================
     /** 预投票探测中标记（raft 单线程读写） */
     private volatile boolean prevoting;
@@ -208,6 +219,8 @@ public class RaftNodeImpl implements RaftNode {
         this.stateMachine = builder.stateMachine;
         // Actor 执行器：默认单线程调度实现，可注入自定义实现（如 JCTools MPSC 版）
         this.executor = builder.executor != null ? builder.executor : new DefaultRaftNodeExecutor();
+        // 持久化缺省 NopRaftStore（内存模式，覆盖既有一致行为），可注入选中实现
+        this.raftStore = builder.raftStore != null ? builder.raftStore : cn.itcraft.speedboat.persistence.NopRaftStore.getInstance();
     }
 
     public void start() {
@@ -216,6 +229,16 @@ public class RaftNodeImpl implements RaftNode {
         }
         running = true;
         executor.start();
+
+        // 持久化接口前置：启动时尝试恢复任期状态（NopRaftStore 时为 null，行为不变）
+        cn.itcraft.speedboat.persistence.RaftTermRecord restored = raftStore.restoreTerm();
+        if (restored != null) {
+            term.updateIfHigher(restored.getTerm());
+            votedFor = restored.getVotedFor();
+            votedForTerm = restored.getVotedFor() != null ? restored.getTerm() : -1;
+            logger.info("Node {} restored term {} votedFor {} from store {}",
+                nodeId, restored.getTerm(), restored.getVotedFor(), raftStore.getClass().getName());
+        }
 
         if (transportLayer != null) {
             // 入站消息全异步化：请求投递到 raft 单线程（SC），
@@ -383,6 +406,7 @@ public class RaftNodeImpl implements RaftNode {
         if (canVote && request.getTerm() >= term.getCurrent()) {
             votedFor = request.getCandidateId();
             votedForTerm = term.getCurrent();
+            persistTermState(term.getCurrent(), votedFor, leaderId);
             resetElectionTimeout();
             logger.info("Node {} voted for {} in term {}", nodeId, request.getCandidateId(), request.getTerm());
             return new RequestVoteResponse(term.getCurrent(), true);
@@ -420,6 +444,7 @@ public class RaftNodeImpl implements RaftNode {
             term.updateIfHigher(request.getTerm());
             votedFor = null;
             votedForTerm = -1;
+            persistTermState(term.getCurrent(), votedFor, leaderId);
         }
 
         if (currentState != NodeState.FOLLOWER) {
@@ -472,6 +497,7 @@ public class RaftNodeImpl implements RaftNode {
             for (LogEntry existing : log) {
                 logIndexMap.put(existing.getIndex(), existing);
             }
+            raftStore.persistLogEntries(newLog);
             truncateLogIfNeeded();
 
             logger.debug("Follower {} appended {} entries, log size now {}", 
@@ -501,7 +527,8 @@ public class RaftNodeImpl implements RaftNode {
             return;
         }
         
-        transitionTo(NodeState.CANDIDATE);
+        doTransitionTo(NodeState.CANDIDATE);
+        persistTermState(term.getCurrent(), votedFor, leaderId);
         votesReceived.put(nodeId, true);
         
         int currentWeight = calculateTotalVoteWeight();
@@ -602,14 +629,16 @@ public class RaftNodeImpl implements RaftNode {
             return;
         }
 
-        // 明确拒绝：仅当应答任期高于本地任期（真实更高级别的现象）时收敛 term 并中止探测；
+        // 明确拒绝且应答任期高于本地任期：仅中止本轮探测并降级，
+        // 不做 term 爬升（拒绝响应的 term 属接收方视角，盲目收敛会在假性冲突下
+        // 造成 term 无限爬升；任期推进均依赖正式选举/心跳路径）
         // 占位失败（term=0）属"无响应"语义——忽略，靠探测超时兜底进入正式选举
         if (response.getTerm() > term.getCurrent()) {
-            term.updateIfHigher(response.getTerm());
             doTransitionTo(NodeState.FOLLOWER);
             prevoting = false;
         }
     }
+
 
     private long probeTerm() {
         return term.getCurrent() + 1;
@@ -744,7 +773,7 @@ public class RaftNodeImpl implements RaftNode {
         applyCommittedEntries();
         
         sendAppendEntries();
-        startHeartbeat();
+        // 心跳由 doTransitionTo(LEADER) 分支统一武装，避免重复调度泄漏
         
         logger.info("Node {} became leader for term {}, commitIndex set to {}", nodeId, term.getCurrent(), commitIndex);
     }
@@ -754,6 +783,7 @@ public class RaftNodeImpl implements RaftNode {
         LogEntry entry = new LogEntry(newIndex, term.getCurrent(), nodeId);
         log.add(entry);
         logIndexMap.put(newIndex, entry);
+        raftStore.persistLogEntries(java.util.Collections.singletonList(entry));
         truncateLogIfNeeded();
         logger.info("Leader {} appended entry at index {} term {}", nodeId, newIndex, term.getCurrent());
     }
@@ -871,9 +901,15 @@ public class RaftNodeImpl implements RaftNode {
                 nodeId, peerId, response.getMatchIndex(), matchIndex);
             advanceCommitIndex();
         } else {
-            long newNextIndex = Math.max(1, response.getMatchIndex() + 1);
+            // 失配回退（Raft §5.3）：hint=matchIndex+1 为下界；每轮至少回退 1。
+            // 仅取 hint 会在“同索引不同 term”的分割日志（两任 leader 写同一 index）下
+            // 恒等于当前 nextIndex，prevLog 探测死循环、日志永不收敛。
+            long current = nextIndex.getOrDefault(peerId, 1L);
+            long hint = response.getMatchIndex() + 1;
+            long newNextIndex = Math.max(1, Math.min(hint, current - 1));
             nextIndex.put(peerId, newNextIndex);
-            logger.debug("Leader {} decrementing nextIndex for {} to {}", nodeId, peerId, newNextIndex);
+            logger.debug("Leader {} decrementing nextIndex for {} to {} (hint={}, current={})",
+                nodeId, peerId, newNextIndex, hint, current);
         }
     }
 
@@ -985,6 +1021,21 @@ public class RaftNodeImpl implements RaftNode {
      * 选举超时到期后的判定（raft 单线程内执行）：
      * 心跳真超时则发起选举，否则重新武装下一次检测（self-rescheduling）。
      */
+    /**
+     * 任期状态持久化（term/votedFor/leader 级别原子落盘）。
+     *
+     * <p>调用时机参照 MicroRaft 的"先持久化后可见"原则：
+     * 任期被提升/投票授予后、内存可见性发布前调用。</p>
+     */
+    private void persistTermState(long termVal, String votedForVal, String leaderVal) {
+        try {
+            raftStore.persistAndFlushTerm(termVal, votedForVal, leaderVal);
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                String.format("Node %s persist term state failed on store %s", nodeId, raftStore.getClass().getName()), e);
+        }
+    }
+
     private void runElectionTimeout(long timeoutMs) {
         if (running && currentState != NodeState.LEADER) {
             long elapsedNanos = System.nanoTime() - lastHeartbeatNanos;
@@ -1003,6 +1054,9 @@ public class RaftNodeImpl implements RaftNode {
         if (!running) {
             return;
         }
+        // 幂等武装：先取消既有心跳再调度，防止候选/登基双路径重复调度产生
+        // "孤儿心跳"（旧 Future 被覆盖引用后永远无法取消，stepdown 后仍持续发包）
+        cancelHeartbeat();
 
         long heartbeatInterval = groupStrategy != null && groupStrategy.getHeartbeatInterval() > 0
             ? groupStrategy.getHeartbeatInterval() : 50;
@@ -1244,6 +1298,7 @@ public class RaftNodeImpl implements RaftNode {
         CommandLogEntry entry = CommandLogEntry.create(newIndex, term.getCurrent(), nodeId, data);
         log.add(entry);
         logIndexMap.put(newIndex, entry);
+        raftStore.persistLogEntries(java.util.Collections.singletonList(entry));
         truncateLogIfNeeded();
         
         logger.debug("Leader {} added entry at index {}, log size now {}", nodeId, newIndex, log.size());
