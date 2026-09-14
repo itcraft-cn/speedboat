@@ -1,5 +1,6 @@
 package cn.itcraft.speedboat.lock;
 
+import cn.itcraft.speedboat.config.SpeedboatConsts;
 import cn.itcraft.speedboat.raft.RaftNode;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
 import cn.itcraft.speedboat.serialize.SerializationException;
@@ -9,6 +10,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -89,7 +91,8 @@ public class DistributedLockImpl implements DistributedLock {
 
     private static final Logger logger = LoggerFactory.getLogger(DistributedLockImpl.class);
 
-    private static final long DEFAULT_LEASE_TIMEOUT_MS = 30000;
+    /** 租约超时统一引用 {@link SpeedboatConsts#DEFAULT_LEASE_TIMEOUT_MS}（唯一权威定义，避免双副本漂移） */
+    private static final long DEFAULT_LEASE_TIMEOUT_MS = SpeedboatConsts.DEFAULT_LEASE_TIMEOUT_MS;
     private static final long DEFAULT_WAIT_TIMEOUT_MS = 5000;
     private static final long RETRY_INTERVAL_MS = 100;
 
@@ -101,6 +104,15 @@ public class DistributedLockImpl implements DistributedLock {
 
     private final ScheduledExecutorService renewExecutor;
     private final AtomicBoolean renewing = new AtomicBoolean(false);
+    /**
+     * 当前在途续期任务句柄。
+     *
+     * <p>重要：续期任务的启停必须走 cancel(future) 而非 executor.shutdown()——
+     * executor 是构造期创建的单例，shutdown 后 {@code scheduleAtFixedRate} 将抛
+     * RejectedExecutionException，导致"锁失而复得"场景续期静默失效，
+     * 租约过期后锁被他人抢走而持有者无感知（历史缺陷 P0-20260914）。</p>
+     */
+    private volatile ScheduledFuture<?> renewFuture;
 
     public DistributedLockImpl(String lockName, String nodeId, RaftNode raftNode, LockStateMachine stateMachine) {
         this.lockName = lockName;
@@ -202,10 +214,16 @@ public class DistributedLockImpl implements DistributedLock {
         return false;
     }
 
+    /**
+     * 启动续期任务（可重入安全）。
+     *
+     * <p>CAS 保证同一把锁只有一份续期任务；锁失而复得时旧任务已 cancel，
+     * 此处重新调度即可——executor 生命周期与锁实例等价，永不中途 shutdown。</p>
+     */
     private void startRenewTask() {
         if (renewing.compareAndSet(false, true)) {
             long renewInterval = DEFAULT_LEASE_TIMEOUT_MS / 2;
-            renewExecutor.scheduleAtFixedRate(
+            renewFuture = renewExecutor.scheduleAtFixedRate(
                 this::renewLease,
                 renewInterval,
                 renewInterval,
@@ -215,9 +233,22 @@ public class DistributedLockImpl implements DistributedLock {
         }
     }
 
+    /**
+     * 停止续期任务：仅取消在途调度，不关闭 executor。
+     *
+     * <p>历史缺陷修复：旧实现直接 {@code renewExecutor.shutdown()}，导致
+     * executor 终止后再次 startRenewTask 时任务提交被拒（续期静默失效）；
+     * 且从未获取过锁时 executor 永不关闭（线程泄露）。现改为：
+     * 调度由 future.cancel 控制，executor 统一在 {@link #shutdown()} 关闭。</p>
+     */
     private void stopRenewTask() {
         if (renewing.compareAndSet(true, false)) {
-            renewExecutor.shutdown();
+            ScheduledFuture<?> future = this.renewFuture;
+            this.renewFuture = null;
+            if (future != null) {
+                // 不中断在跑任务（false）：renewLease 单次执行很快，避免打断 propose
+                future.cancel(false);
+            }
             logger.debug("Stopped renew task for lock: {}", lockName);
         }
     }
@@ -255,6 +286,12 @@ public class DistributedLockImpl implements DistributedLock {
             // 等 UNLOCK 命令 committed & applied，提供"释放确认"语义：
             // close() 返回后调用方立即读到锁已释放（reproducible contract）
             waitForRelease(1000, entryIndex);
+        } else {
+            // propose 失败（如恰逢 leader 降级）：UNLOCK 未进入日志，
+            // 续期任务若仍在跑会在非 leader 上空转、锁状态悬而未决——
+            // 先停续期止血，本地锁状态交由租约过期自然失效（P2-20260914）
+            logger.warn("Unlock propose failed (may lose leadership), stopping renew task: {} by {}", lockName, nodeId);
+            stopRenewTask();
         }
 
         LockEntry entry = stateMachine.getLockEntry(lockName);
@@ -321,8 +358,24 @@ public class DistributedLockImpl implements DistributedLock {
         return entry != null ? entry.getNodeId() : null;
     }
 
+    /**
+     * 停机：停止续期任务并关闭续期线程池。
+     *
+     * <p>executor 只在本方法关闭（与锁实例生命周期等价）；
+     * 无论是否获取过锁都会执行，杜绝"未获取锁场景线程泄露"。
+     * awaitTermination 有限等待，超时则中断兜底，避免无限阻塞调用方。</p>
+     */
     public void shutdown() {
         stopRenewTask();
+        renewExecutor.shutdown();
+        try {
+            if (!renewExecutor.awaitTermination(1, TimeUnit.SECONDS)) {
+                renewExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            renewExecutor.shutdownNow();
+        }
     }
 
     private static class LockHandleImpl implements LockHandle {

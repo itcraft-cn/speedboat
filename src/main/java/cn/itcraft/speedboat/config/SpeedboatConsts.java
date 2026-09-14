@@ -46,4 +46,13 @@ public final class SpeedboatConsts {
     public static final int SHUTDOWN_TIMEOUT_SECONDS = 1;
 
     public static final int DEFAULT_MAX_LOG_SIZE = 10;
+
+    /**
+     * 分布式锁默认租约超时（毫秒）。
+     *
+     * <p>唯一权威定义：LockStateMachine 与 DistributedLockImpl 的续期间隔
+     * 均以此为准（间隔 = 租期 / 2），禁止在 lock 包内另定义副本——
+     * 历史上两处各自硬编码 30000，修改时极易遗漏造成续期与租期不一致。</p>
+     */
+    public static final long DEFAULT_LEASE_TIMEOUT_MS = 30000L;
 }

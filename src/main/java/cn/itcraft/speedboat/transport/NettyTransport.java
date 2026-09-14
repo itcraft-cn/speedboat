@@ -102,6 +102,11 @@ public class NettyTransport implements TransportLayer {
             logger.info("Server bound to port {}", localEndpoint.getPort());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            // fail-fast：bind 被中断意味着服务端未就绪，静默返回会让节点
+            // 以"无传输层"状态带病运行（收不到任何 RPC，选举假死）。
+            // 必须向上抛出中止启动，同时关闭半初始化的 server channel 防资源泄露。
+            logger.error("Server bind to port {} interrupted, transport startup aborted", localEndpoint.getPort(), e);
+            throw new IllegalStateException("Transport bind interrupted on port " + localEndpoint.getPort(), e);
         }
         // 不做 connectToPeers，改为懒连接：首次发送时才连接
     }
@@ -236,6 +241,10 @@ public class NettyTransport implements TransportLayer {
             ch.writeAndFlush(serializer.wrap(request));
             scheduleResponseTimeout(requestId, request);
         } catch (Exception e) {
+            // 传输层契约：失败折叠为"无响应"占位（term=0），但 cause 必须留存，
+            // 否则线上排障只剩超时表象、丢失根因（通道关闭/对端重置等）
+            logger.warn("Write request failed, type={}, requestId={}, channel={}",
+                request.getClass().getSimpleName(), requestId, ch, e);
             failFast(requestId, request, future);
         }
     }

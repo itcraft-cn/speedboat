@@ -91,19 +91,18 @@ public class MockTransport implements TransportLayer {
         }
         
         // 如果没有 handler，尝试通过反射调用 peer 的 RaftNode.handleAppendEntries
-        logger.info("MockTransport.sendAppendEntries: peerId={}, nodeId={}, nodeRaftNodes={}, nodeTransports={}", 
-            peerId, nodeId, nodeRaftNodes.keySet(), nodeTransports.keySet());
+        logger.debug("MockTransport.sendAppendEntries: peerId={}, nodeId={}", peerId, nodeId);
         Object raftNode = nodeRaftNodes.get(peerId);
         if (raftNode != null) {
             try {
                 Method method = raftNode.getClass().getMethod("handleAppendEntries", AppendEntriesRequest.class);
                 AppendEntriesResponse response = (AppendEntriesResponse) method.invoke(raftNode, request);
-                logger.info("MockTransport.reflective call: peerId={}, nodeId={}, requestTerm={}, responseSuccess={}, responseMatchIndex={}", 
+                logger.debug("MockTransport.reflective call: peerId={}, nodeId={}, requestTerm={}, responseSuccess={}, responseMatchIndex={}",
                     peerId, nodeId, request.getTerm(), response.isSuccess(), response.getMatchIndex());
                 return CompletableFuture.completedFuture(response);
             } catch (Exception e) {
-                System.err.println("MockTransport.sendAppendEntries反射调用失败: peerId=" + peerId + ", nodeId=" + nodeId + ", error=" + e.getClass().getName());
-                e.printStackTrace();
+                logger.error("MockTransport.sendAppendEntries反射调用失败: peerId={}, nodeId={}, error={}",
+                    peerId, nodeId, e.getClass().getName(), e);
                 return CompletableFuture.completedFuture(new AppendEntriesResponse(request.getTerm(), false, 0));
             }
         }

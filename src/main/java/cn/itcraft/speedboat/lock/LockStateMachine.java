@@ -1,5 +1,6 @@
 package cn.itcraft.speedboat.lock;
 
+import cn.itcraft.speedboat.config.SpeedboatConsts;
 import cn.itcraft.speedboat.raft.LogEntry;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
 import cn.itcraft.speedboat.serialize.SerializationException;
@@ -19,7 +20,8 @@ public class LockStateMachine implements StateMachine {
 
     private static final Logger logger = LoggerFactory.getLogger(LockStateMachine.class);
 
-    private static final long DEFAULT_LEASE_TIMEOUT_MS = 30000;
+    /** 租约超时统一引用 {@link SpeedboatConsts#DEFAULT_LEASE_TIMEOUT_MS}（唯一权威定义，避免双副本漂移） */
+    private static final long DEFAULT_LEASE_TIMEOUT_MS = SpeedboatConsts.DEFAULT_LEASE_TIMEOUT_MS;
 
     private final ConcurrentHashMap<String, LockEntry> lockTable = new ConcurrentHashMap<>();
     private final ProtostuffSerializer serializer = new ProtostuffSerializer();
@@ -43,6 +45,9 @@ public class LockStateMachine implements StateMachine {
         try {
             LockCommand command = serializer.deserialize(data, LockCommand.class);
             if (command == null) {
+                // 空命令视为坏 entry：隔离不应用，但必须推进 applied 索引，
+                // 否则调用方 waitForApply 会永久卡死在该索引上（P1-20260914）
+                lastAppliedIndex = entry.getIndex();
                 return;
             }
 
@@ -51,7 +56,11 @@ public class LockStateMachine implements StateMachine {
 
             logger.debug("Applied lock command: {}", command);
         } catch (SerializationException e) {
-            logger.error("Failed to deserialize lock command at index {}", entry.getIndex(), e);
+            // 坏 entry 隔离：状态机语境下不能向上抛（会打死 raft 单线程），
+            // 记录后同样推进索引跳过，保证 applied 推进的单调性
+            lastAppliedIndex = entry.getIndex();
+            logger.error("Failed to deserialize lock command at index {}, skipped entry, lastAppliedIndex advanced to {}",
+                entry.getIndex(), lastAppliedIndex, e);
         }
     }
 
