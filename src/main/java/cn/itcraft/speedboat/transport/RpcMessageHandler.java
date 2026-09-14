@@ -47,13 +47,16 @@ class RpcMessageHandler extends ChannelInboundHandlerAdapter {
             if (obj instanceof RequestVoteRequest && transport.getRequestVoteHandler() != null) {
                 RequestVoteRequest request = (RequestVoteRequest) obj;
                 // 异步派发：handler 返回 Future，完成后回写应答（不再阻塞 Netty IO 线程）
-                dispatch(ctx, transport.getRequestVoteHandler().handle(request), request.getRequestId(), false);
+                dispatch(ctx, transport.getRequestVoteHandler().handle(request), request.getRequestId(), false, false);
+            } else if (obj instanceof PreVoteRequest && transport.getPreVoteHandler() != null) {
+                PreVoteRequest request = (PreVoteRequest) obj;
+                dispatch(ctx, transport.getPreVoteHandler().handle(request), request.getRequestId(), false, false);
             } else if (obj instanceof HeartbeatRequest && transport.getHeartbeatHandler() != null) {
                 HeartbeatRequest request = (HeartbeatRequest) obj;
-                dispatch(ctx, transport.getHeartbeatHandler().handle(request), request.getRequestId(), false);
+                dispatch(ctx, transport.getHeartbeatHandler().handle(request), request.getRequestId(), false, false);
             } else if (obj instanceof AppendEntriesRequest && transport.getAppendEntriesHandler() != null) {
                 AppendEntriesRequest request = (AppendEntriesRequest) obj;
-                dispatch(ctx, transport.getAppendEntriesHandler().handle(request), request.getRequestId(), true);
+                dispatch(ctx, transport.getAppendEntriesHandler().handle(request), request.getRequestId(), true, false);
             }
         } catch (Exception e) {
             logger.error("RpcMessageHandler channelRead error: {}", e.toString(), e);
@@ -67,7 +70,7 @@ class RpcMessageHandler extends ChannelInboundHandlerAdapter {
      * @param isAppendEntries true 表示 AppendEntries 应答（需携带 matchIndex）
      */
     private void dispatch(ChannelHandlerContext ctx, CompletableFuture<? extends RpcResponse> future,
-                          String requestId, boolean isAppendEntries) {
+                          String requestId, boolean isAppendEntries, boolean isPreVote) {
         future.whenComplete((response, throwable) -> {
             if (throwable != null || response == null) {
                 logger.debug("Inbound request processing failed, no response written: requestId={}", requestId);
@@ -79,6 +82,9 @@ class RpcMessageHandler extends ChannelInboundHandlerAdapter {
                     AppendEntriesResponse r = (AppendEntriesResponse) response;
                     ctx.writeAndFlush(serializer.wrap(new AppendEntriesResponse(
                         requestId, r.getTerm(), r.isSuccess(), r.getMatchIndex())));
+                } else if (isPreVote) {
+                    PreVoteResponse r = (PreVoteResponse) response;
+                    ctx.writeAndFlush(serializer.wrap(new PreVoteResponse(requestId, r.getTerm(), r.isVoteGranted())));
                 } else if (response instanceof HeartbeatResponse) {
                     HeartbeatResponse r = (HeartbeatResponse) response;
                     ctx.writeAndFlush(serializer.wrap(new HeartbeatResponse(requestId, r.getTerm(), r.isSuccess())));

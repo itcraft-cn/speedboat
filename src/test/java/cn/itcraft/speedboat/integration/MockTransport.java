@@ -2,6 +2,8 @@ package cn.itcraft.speedboat.integration;
 
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
+import cn.itcraft.speedboat.rpc.PreVoteRequest;
+import cn.itcraft.speedboat.rpc.PreVoteResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
@@ -26,6 +28,7 @@ public class MockTransport implements TransportLayer {
     private RequestVoteHandler requestVoteHandler;
     private HeartbeatHandler heartbeatHandler;
     private AppendEntriesHandler appendEntriesHandler;
+    private PreVoteHandler preVoteHandler;
 
     public MockTransport() {
         this.nodeId = null;
@@ -124,9 +127,29 @@ public class MockTransport implements TransportLayer {
         this.appendEntriesHandler = handler;
     }
 
+    @Override
+    public void setPreVoteHandler(PreVoteHandler handler) {
+        this.preVoteHandler = handler;
+    }
+
+    public PreVoteHandler getPreVoteHandler() {
+        return preVoteHandler;
+    }
+
+    @Override
+    public CompletableFuture<PreVoteResponse> sendPreVote(String peerId, PreVoteRequest request) {
+        MockTransport peerTransport = nodeTransports.get(peerId);
+        if (peerTransport != null && peerTransport.getPreVoteHandler() != null) {
+            return peerTransport.getPreVoteHandler().handle(request);
+        }
+        return CompletableFuture.completedFuture(new PreVoteResponse(request.getRequestId(), 0, false));
+    }
+
     public RequestVoteHandler getRequestVoteHandler() {
         return requestVoteHandler;
     }
+
+
 
     public HeartbeatHandler getHeartbeatHandler() {
         return heartbeatHandler;
@@ -139,6 +162,7 @@ public class MockTransport implements TransportLayer {
     public void clear() {
         nodeTransports.clear();
         requestVoteHandler = null;
+        preVoteHandler = null;
         heartbeatHandler = null;
         appendEntriesHandler = null;
     }

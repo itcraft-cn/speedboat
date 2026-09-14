@@ -6,6 +6,8 @@ import cn.itcraft.speedboat.raft.executor.RaftNodeExecutor;
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
+import cn.itcraft.speedboat.rpc.PreVoteRequest;
+import cn.itcraft.speedboat.rpc.PreVoteResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
@@ -153,6 +155,23 @@ public class RaftNodeImpl implements RaftNode {
     private final cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy changeValidationStrategy;
     private final java.util.concurrent.ConcurrentHashMap<String, FailureRecord> failureRecords;
     private StateMachine stateMachine;
+    // ==================== Phase C：预投票 & check-quorum ====================
+    /** 预投票探测中标记（raft 单线程读写） */
+    private volatile boolean prevoting;
+    /** 本轮预投票已收集的 peer（含自己） */
+    private final java.util.HashSet<String> prevotesReceived = new java.util.HashSet<>();
+    /** check-quorum：最近一次各 peer 心跳响应时间戳（nanos 时间基） */
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> lastResponseNanos = new java.util.concurrent.ConcurrentHashMap<>();
+    /**
+     * check-quorum 心跳新鲜窗口（毫秒）。
+     *
+     * <p>对标 MicroRaft leaderHeartbeatTimeoutPeriodSecs（默认 10s）：
+     * 该窗口远大于选举超时/心跳周期——多数派侧会先选出更高任期 leader 
+     * 并把孤岛 leader"打散"，check-quorum 仅作为长分区的兜底降级，
+     * 而非瞬态抖动的第一反应，避免误杀合法 Leader。</p>
+     */
+    public static final long DEFAULT_QUORUM_CHECK_TIMEOUT_MILLIS = 5000;
+    private long quorumCheckTimeoutMillis = DEFAULT_QUORUM_CHECK_TIMEOUT_MILLIS;
 
     RaftNodeImpl(RaftNode.Builder builder) {
         this.nodeId = builder.nodeId;
@@ -207,6 +226,8 @@ public class RaftNodeImpl implements RaftNode {
                 onRaftThreadAsync(() -> doHandleHeartbeat(request)));
             transportLayer.setAppendEntriesHandler(request ->
                 onRaftThreadAsync(() -> doHandleAppendEntries(request)));
+            transportLayer.setPreVoteHandler(request ->
+                onRaftThreadAsync(() -> doHandlePreVoteRequest(request)));
         }
 
         resetElectionTimeout();
@@ -352,8 +373,12 @@ public class RaftNodeImpl implements RaftNode {
             leaderId = null;
         }
 
-        boolean canVote = (votedFor == null || votedFor.equals(request.getCandidateId())) 
-            && votedForTerm != term.getCurrent();
+        // Phase C leader stickiness：现任 leader 心跳仍健康时不被同任期请求动摇
+        // （更高任期请求在前面已处理为实现 FOLLOWER+term 对齐，正常放行）
+        boolean leaderFresh = isLeaderHeartbeatFresh();
+        boolean canVote = (votedFor == null || votedFor.equals(request.getCandidateId()))
+            && votedForTerm != term.getCurrent()
+            && !(leaderFresh && request.getTerm() < term.getCurrent());
         
         if (canVote && request.getTerm() >= term.getCurrent()) {
             votedFor = request.getCandidateId();
@@ -493,6 +518,157 @@ public class RaftNodeImpl implements RaftNode {
         requestVotesFromPeers(currentWeight, requiredWeight);
     }
 
+    /**
+     * 预投票探测（Phase C，对标 MicroRaft pre-vote）。
+     *
+     * <p>不递增真实任期地询问多数派"若我发起 term+1 正式选举你愿意投票吗"；
+     * 探测超时仍未转正式选举则直接进入正式选举（自复位语义），
+     * 保证活性不回退：链路畅通时预票一次到达即选主，失败最多多等一轮超时。</p>
+     */
+    private void doStartPreVote() {
+        if (!running || transportLayer == null) {
+            return;
+        }
+        if (currentState != NodeState.FOLLOWER) {
+            return;
+        }
+        // 已有探测在途则不重复发起（防任务重入）
+        if (prevoting) {
+            return;
+        }
+        // 自适应预投票：本集群尚未产生任何任期（term==0 且无 leader）时跳过探测，
+        // 直接进入正式选举——保证首主选择在单轮选举窗口内完成（与基线兼容）
+        if (term.getCurrent() == 0 && leaderId == null) {
+            doStartElection();
+            return;
+        }
+
+        prevoting = true;
+        prevotesReceived.clear();
+        prevotesReceived.add(nodeId);
+        long probeTerm = term.getCurrent() + 1;
+        logger.info("Node {} starting pre-vote for term {}", nodeId, probeTerm);
+
+        if (peerIds.isEmpty()) {
+            prevoting = false;
+            doStartElection();
+            return;
+        }
+
+        long lastLogIndex = getLastLogIndex();
+        long lastLogTerm = getLastLogTerm();
+        final long capturedProbeTerm = probeTerm;
+        for (String peerId : peerIds) {
+            PreVoteRequest request = new PreVoteRequest(probeTerm, nodeId, lastLogIndex, lastLogTerm);
+            transportLayer.sendPreVote(peerId, request)
+                .thenAccept(response -> executor.execute(
+                    () -> doHandlePreVoteResponse(peerId, response, capturedProbeTerm)));
+        }
+
+        // 探测超时：仍未转正式选举（多数派拒绝/失联）→ 兜底进入正式选举保证活性
+        executor.schedule(() -> {
+            if (prevoting) {
+                prevoting = false;
+                logger.info("Node {} pre-vote timeout, fallback to real election", nodeId);
+                doStartElection();
+            }
+        }, electionTimeout.getNext());
+    }
+
+    private void doHandlePreVoteResponse(String peerId, PreVoteResponse response, long probeTerm) {
+        if (!prevoting) {
+            return;
+        }
+        if (response.isVoteGranted()) {
+            prevotesReceived.add(peerId);
+            long grantedWeight = 1;
+            for (String grantedPeer : prevotesReceived) {
+                if (grantedPeer.equals(nodeId)) {
+                    continue;
+                }
+                if (voteWeightStrategy != null) {
+                    VoteContext context = VoteContext.forDatacenter(grantedPeer, getPeerDatacenter(grantedPeer), probeTerm);
+                    grantedWeight += 1 + voteWeightStrategy.calculateAdditionalWeight(context);
+                } else {
+                    grantedWeight += 1;
+                }
+            }
+            if (grantedWeight >= calculateRequiredWeight()) {
+                prevoting = false;
+                logger.info("Node {} pre-vote quorum reached ({}>={}), promoting to real election",
+                    nodeId, grantedWeight, calculateRequiredWeight());
+                doStartElection();
+            }
+            return;
+        }
+
+        // 明确拒绝：仅当应答任期高于本地任期（真实更高级别的现象）时收敛 term 并中止探测；
+        // 占位失败（term=0）属"无响应"语义——忽略，靠探测超时兜底进入正式选举
+        if (response.getTerm() > term.getCurrent()) {
+            term.updateIfHigher(response.getTerm());
+            doTransitionTo(NodeState.FOLLOWER);
+            prevoting = false;
+        }
+    }
+
+    private long probeTerm() {
+        return term.getCurrent() + 1;
+    }
+
+    /**
+     * 接收方处理预投票探测（raft 单线程内执行）。
+     *
+     * <p>三条拒绝规则：</p>
+     * <ol>
+     *   <li>请求探测 term <= 本地当前任期（陈旧探测）；</li>
+     *   <li>现任 leader 心跳新鲜（sticky）：健康 leader 存活时不接受任何任期重选；</li>
+     *   <li>候选者日志不新于本地（选举安全校验）。</li>
+     * </ol>
+     */
+    private PreVoteResponse doHandlePreVoteRequest(PreVoteRequest request) {
+        long localTerm = term.getCurrent();
+        if (request.getTerm() <= localTerm) {
+            logger.debug("Node {} rejects pre-vote from {} (stale probe term {} <= {})",
+                nodeId, request.getCandidateId(), request.getTerm(), localTerm);
+            return new PreVoteResponse(request.getRequestId(), localTerm, false);
+        }
+
+        // sticky：自身已是 Leader（现任即自己），或现任 leader 心跳仍新鲜则拒绝
+        // （Leader 的 lastHeartbeatNanos 不由自身心跳刷新，必须显式判定角色）
+        if (currentState == NodeState.LEADER || isLeaderHeartbeatFresh()) {
+            logger.info("Node {} rejects pre-vote from {} (self-leader or live leader {})",
+                nodeId, request.getCandidateId(), leaderId);
+            return new PreVoteResponse(request.getRequestId(), localTerm, false);
+        }
+
+        // 日志安全校验：候选者日志必须不旧于本地
+        if (request.getLastLogTerm() < getLastLogTerm()
+            || (request.getLastLogTerm() == getLastLogTerm() && request.getLastLogIndex() < getLastLogIndex())) {
+            logger.info("Node {} rejects pre-vote from {} (log stale: candidate index/term {}<{} vs local {}/{}), ",
+                nodeId, request.getCandidateId(),
+                request.getLastLogIndex(), request.getLastLogTerm(),
+                getLastLogIndex(), getLastLogTerm());
+            return new PreVoteResponse(request.getRequestId(), localTerm, false);
+        }
+
+        return new PreVoteResponse(request.getRequestId(), localTerm, true);
+    }
+
+    /** leader 心跳新鲜阈值：取选举超时上限，避免误判抖动 */
+    private long heartbeatFreshThresholdMs() {
+        return electionTimeout.getMaxMs();
+    }
+
+    private long elapsedLeaderHeartbeatMs() {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - lastHeartbeatNanos);
+    }
+
+    /** 现任 leader 心跳是否新鲜（check-quorum 与 sticky 共用） */
+    private boolean isLeaderHeartbeatFresh() {
+        return leaderId != null
+            && elapsedLeaderHeartbeatMs() < heartbeatFreshThresholdMs();
+    }
+
     private void requestVotesFromPeers(int currentWeight, int requiredWeight) {
         if (transportLayer == null || peerIds.isEmpty()) {
             checkElectionResult(currentWeight, requiredWeight);
@@ -555,9 +731,11 @@ public class RaftNodeImpl implements RaftNode {
         
         // Become leader时，设置matchIndex：自己的matchIndex为logSize，peer的matchIndex为0
         long logSize = getLastLogIndex();
+        long now = System.nanoTime();
         for (String peerId : peerIds) {
             nextIndex.put(peerId, logSize + 1);
             matchIndex.put(peerId, 0L);
+            lastResponseNanos.put(peerId, now);
         }
         matchIndex.put(nodeId, logSize);
         
@@ -581,7 +759,45 @@ public class RaftNodeImpl implements RaftNode {
     }
 
     public void sendHeartbeat() {
+        // Phase C check-quorum：多数派心跳响应超时则主动降级（防分区脑裂窗口）
+        doCheckQuorumMaybeDemote();
         sendAppendEntries();
+    }
+
+    /**
+     * check-quorum（对标 MicroRaft quorumResponseTimestamp 主动降级）。
+     *
+     * <p>leader 在自身心跳节拍上检查"心跳新鲜"的法定人数权重：
+     * 若新鲜响应的权重（自身+各 peer 在阈值内有无响应）无法构成多数派，
+     * 主动降级为 follower——孤岛 leader 不再对外产生日志/锁等影响。</p>
+     *
+     * <p>新鲜阈值 = 3 × 心跳间隔（需覆盖一个完整选举窗口；
+     * 解群后多数派侧很快选出新 leader 并以更高 term 打奔本节点）。</p>
+     */
+    private void doCheckQuorumMaybeDemote() {
+        if (currentState != NodeState.LEADER) {
+            return;
+        }
+        long thresholdNanos = TimeUnit.MILLISECONDS.toNanos(quorumCheckTimeoutMillis);
+        long now = System.nanoTime();
+        long freshWeight = 1;  // 自己代表新鲜的 leader 响应
+        for (String peerId : peerIds) {
+            Long last = lastResponseNanos.get(peerId);
+            if (last != null && (now - last) <= thresholdNanos) {
+                freshWeight += 1;
+                if (voteWeightStrategy != null) {
+                    VoteContext context = VoteContext.forDatacenter(peerId, getPeerDatacenter(peerId), term.getCurrent());
+                    freshWeight += voteWeightStrategy.calculateAdditionalWeight(context);
+                }
+            }
+        }
+        long required = calculateRequiredWeight();
+        if (freshWeight < required) {
+            logger.warn("Node {} check-quorum FAILED (freshWeight={} < required={}), demoting to follower",
+                nodeId, freshWeight, required);
+            doTransitionTo(NodeState.FOLLOWER);
+            leaderId = null;
+        }
     }
 
     public void sendAppendEntries() {
@@ -648,6 +864,7 @@ public class RaftNodeImpl implements RaftNode {
         }
         
         if (response.isSuccess()) {
+            lastResponseNanos.put(peerId, System.nanoTime());
             matchIndex.put(peerId, response.getMatchIndex());
             nextIndex.put(peerId, response.getMatchIndex() + 1);
             logger.debug("Leader {} matchIndex for {} updated to {}, matchIndex={}", 
@@ -773,8 +990,9 @@ public class RaftNodeImpl implements RaftNode {
             long elapsedNanos = System.nanoTime() - lastHeartbeatNanos;
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(elapsedNanos);
             if (elapsedMs >= timeoutMs) {
-                logger.info("Node {} election timeout, starting election", nodeId);
-                doStartElection();
+                // Phase C：先经预投票探测，避免被分区恢复节点以暴涨 term 打奔现行任
+                logger.info("Node {} election timeout (elapsed={}ms), starting pre-vote", nodeId, elapsedMs);
+                doStartPreVote();
             } else {
                 resetElectionTimeout();
             }

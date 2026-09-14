@@ -6,6 +6,8 @@ import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
+import cn.itcraft.speedboat.rpc.PreVoteRequest;
+import cn.itcraft.speedboat.rpc.PreVoteResponse;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -81,11 +83,19 @@ public interface TransportLayer {
     
     CompletableFuture<AppendEntriesResponse> sendAppendEntries(String peerId, AppendEntriesRequest request);
     
+    /**
+     * 发送预投票探测请求（Phase C 预投票协议）。
+     */
+    CompletableFuture<PreVoteResponse> sendPreVote(String peerId, PreVoteRequest request);
+    
     void setRequestVoteHandler(RequestVoteHandler handler);
     
     void setHeartbeatHandler(HeartbeatHandler handler);
     
     void setAppendEntriesHandler(AppendEntriesHandler handler);
+    
+    /** 注册预投票探测处理器（异步契约同 AppendEntries） */
+    void setPreVoteHandler(PreVoteHandler handler);
     
     /**
      * 入站请求处理器契约（异步版）。
@@ -109,5 +119,14 @@ public interface TransportLayer {
     @FunctionalInterface
     interface AppendEntriesHandler {
         CompletableFuture<AppendEntriesResponse> handle(AppendEntriesRequest request);
+    }
+    
+    /**
+     * 预投票探测处理器：sticky 判定（现任 leader 心跳新鲜则拒绝）在接收侧
+     * raft 单线程内完成，结果经 Future 异步回写。
+     */
+    @FunctionalInterface
+    interface PreVoteHandler {
+        CompletableFuture<PreVoteResponse> handle(PreVoteRequest request);
     }
 }

@@ -31,6 +31,8 @@ public class CustomSerializer {
         registerType(4, cn.itcraft.speedboat.rpc.HeartbeatResponse.class);
         registerType(5, cn.itcraft.speedboat.rpc.AppendEntriesRequest.class);
         registerType(6, cn.itcraft.speedboat.rpc.AppendEntriesResponse.class);
+        registerType(7, cn.itcraft.speedboat.rpc.PreVoteRequest.class);
+        registerType(8, cn.itcraft.speedboat.rpc.PreVoteResponse.class);
     }
     
     private void registerType(int id, Class<?> clazz) {

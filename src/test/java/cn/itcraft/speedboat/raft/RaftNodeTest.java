@@ -3,6 +3,8 @@ package cn.itcraft.speedboat.raft;
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
+import cn.itcraft.speedboat.rpc.PreVoteRequest;
+import cn.itcraft.speedboat.rpc.PreVoteResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
@@ -227,6 +229,7 @@ class RaftNodeTest {
         private RequestVoteHandler requestVoteHandler;
         private HeartbeatHandler heartbeatHandler;
         private AppendEntriesHandler appendEntriesHandler;
+        private cn.itcraft.speedboat.transport.TransportLayer.PreVoteHandler preVoteHandler;
 
         void setVoteResponse(boolean granted) {
             this.voteGranted = granted;
@@ -243,6 +246,13 @@ class RaftNodeTest {
         public CompletableFuture<HeartbeatResponse> sendHeartbeat(String peerId, HeartbeatRequest request) {
             return CompletableFuture.completedFuture(
                 new HeartbeatResponse(request.getTerm(), true)
+            );
+        }
+
+        @Override
+        public CompletableFuture<PreVoteResponse> sendPreVote(String peerId, PreVoteRequest request) {
+            return CompletableFuture.completedFuture(
+                new PreVoteResponse(request.getRequestId(), request.getTerm(), voteGranted)
             );
         }
 
@@ -266,6 +276,11 @@ class RaftNodeTest {
         @Override
         public void setAppendEntriesHandler(AppendEntriesHandler handler) {
             this.appendEntriesHandler = handler;
+        }
+
+        @Override
+        public void setPreVoteHandler(cn.itcraft.speedboat.transport.TransportLayer.PreVoteHandler handler) {
+            this.preVoteHandler = handler;
         }
     }
 
