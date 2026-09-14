@@ -1,8 +1,8 @@
-# Changelog
+# 变更日志
 
-All notable changes to Speedboat will be documented in this file.
+所有重要的变更都会记录在此文件中。
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)。
 
 ## [1.0.1] - 2026-07-13
 

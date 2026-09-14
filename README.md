@@ -1,22 +1,22 @@
 # Speedboat
 
-> Minimalist Raft-based Master Election Component
+> 极简 Raft 主节点选举组件
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-8+-green.svg)]()
 
-## Features
+## 特性
 
-- **Minimalist API**: `Speedboat.start(config)` — one line to start
-- **Cluster-Oriented Configuration**: Just configure `datacenter + nodes`
-- **Auto-Discovery**: Automatically detects local IP and matches the node
-- **Auto Mode**: Flat mode for single datacenter, cascading mode for cross-datacenter
-- **Dual Timeouts**: Independent timeout settings for intra-datacenter and cross-datacenter
-- **Zero-Dependency Config**: Default Properties support, optional JSON/YAML via custom provider
+- **极简 API**：`Speedboat.start(config)` 一行启动
+- **集群视角配置**：用户只需配置 `datacenter + nodes`
+- **自动匹配**：系统自动检测本机 IP 并匹配节点
+- **自动模式**：单机房扁平模式，跨机房级联模式
+- **两套超时**：机房内/机房间独立配置
+- **零依赖配置**：默认 Properties，可选实现 JSON/YAML
 
-## Quick Start
+## 快速开始
 
-### 1. Add Dependency
+### 1. 添加依赖
 
 ```xml
 <dependency>
@@ -26,9 +26,9 @@
 </dependency>
 ```
 
-### 2. Create Configuration File
+### 2. 创建配置文件
 
-**config.properties**:
+**config.properties**：
 
 ```properties
 nodes.0.0=192.168.10.1:3000
@@ -36,7 +36,7 @@ nodes.0.1=192.168.10.2:3000
 nodes.0.2=192.168.10.3:3000
 ```
 
-### 3. Start the Cluster
+### 3. 启动集群
 
 ```java
 SpeedboatConfigProvider config = new PropertiesConfigProvider("config.properties");
@@ -46,13 +46,13 @@ if (Speedboat.isMain()) {
     System.out.println("I am the leader!");
 }
 
-// On shutdown
+// 关闭时
 Speedboat.stop();
 ```
 
-## Configuration Examples
+## 配置示例
 
-### Single Datacenter
+### 单机房
 
 ```properties
 nodes.0.0=192.168.10.1:3000
@@ -60,85 +60,85 @@ nodes.0.1=192.168.10.2:3000
 nodes.0.2=192.168.10.3:3000
 ```
 
-### Cross-Datacenter
+### 跨机房
 
 ```properties
 datacenter=hangzhou001
 
-# Hangzhou datacenter
+# 杭州机房
 nodes.0.0=192.168.10.1:3000
 nodes.0.1=192.168.10.2:3000
 nodes.0.2=192.168.10.3:3000
 
-# Beijing datacenter
+# 北京机房
 nodes.1.0=10.3.1.1:3000
 nodes.1.1=10.3.1.2:3000
 nodes.1.2=10.3.1.3:3000
 
-# Intra-datacenter election timeout
+# 机房内选举超时
 election.intra.timeout.min=1000
 election.intra.timeout.max=2000
 
-# Cross-datacenter election timeout
+# 机房间选举超时
 election.cross.timeout.min=3000
 election.cross.timeout.max=5000
 ```
 
-### Vote Weight (optional)
+### 投票权重（可选）
 
 ```properties
-# Weighted election: give node "node-192.168.10.1:3000" extra weight
+# 加权选举：给节点 "node-192.168.10.1:3000" 附加权重
 vote.weight.strategy=prefer
 vote.weight.prefer=node-192.168.10.1:3000
 vote.weight.prefer.weight=3
 ```
 
-⚠️ **The weight table is a cluster-wide topology fact.** Every node's config must
-contain the *same* `vote.weight.*` values. A mismatched table means each node
-computes a different required-quorum for the same election → split view of who
-won → duelling leaders. Verified on real 4-node cluster: weights (3,1,1,1) →
-total 6, required 4 — three ordinary nodes alone can never win; the weighted
-node must participate in every quorum.
+⚠️ **权重表是集群级拓扑事实**：每台节点的配置必须持有
+**相同** 的 `vote.weight.*`。表不同步会导致各节点计算出
+不同的 required 多数派 → 同一 term 宣布不同胜者 → 双主。
+实机 4 节点验证：权重 (3,1,1,1) → total 6 / required 4，
+三个普通节点永不能单独取胜，加权节点必须参与每次多数派。
 
 ## API
 
 ```java
-// Start
+// 启动
 Speedboat.start(config);
 
-// Status queries
-Speedboat.isMain();           // Is this node the leader?
-Speedboat.getLeaderId();      // Current leader node ID
-Speedboat.getTerm();          // Current term
-Speedboat.getNodeId();        // Local node ID
-Speedboat.getDatacenterId();  // Datacenter ID
-Speedboat.isRunning();        // Running status
+// 状态查询
+Speedboat.isMain();           // 是否主节点
+Speedboat.getLeaderId();      // 主节点ID
+Speedboat.getTerm();          // 当前任期
+Speedboat.getNodeId();        // 本节点ID
+Speedboat.getDatacenterId();  // 机房ID
+Speedboat.isRunning();        // 运行状态
 
-// Stop
+// 停止
 Speedboat.stop();
 ```
 
-## Auto Mode
+## 自动模式
 
-| nodes.size() | Mode | Description |
-|-------------|------|-------------|
-| `== 1` | Single DC Flat | All nodes participate equally in election |
-| `> 1` | Cross-DC Cascading | Intra-DC election + cross-DC cascading |
+| nodes.size() | 模式 | 说明 |
+|-------------|------|------|
+| `== 1` | 单机房扁平模式 | 所有节点平等选举 |
+| `> 1` | 跨机房级联模式 | 本机房选举 + 跨机房级联 |
 
-## Documentation
+## 文档
 
-- [User Manual](MANUAL.md) — Detailed configuration and API reference (English)
-- [使用手册](MANUAL_cn.md) — 详细配置和 API 说明（中文）
-- [Changelog](CHANGELOG.md) — Version history
-- [中文文档](README_cn.md) — 中文版 README
+- [使用手册](MANUAL.md) — 详细配置和 API 说明
+- [User Manual](MANUAL_en.md) — Detailed configuration and API reference (English)
+- [Changelog](CHANGELOG_en.md) — Version history
+- [变更日志](CHANGELOG.md) — 版本更新记录
+- [English](README_en.md) — English README
 
-## Build
+## 构建
 
 ```bash
 mvn clean package
 ```
 
-## Test
+## 测试
 
 ```bash
 mvn test

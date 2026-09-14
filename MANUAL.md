@@ -1,40 +1,40 @@
-# Speedboat User Manual
+# Speedboat 使用手册
 
-## Table of Contents
+## 目录
 
-- [Overview](#overview)
-- [Quick Start](#quick-start)
-- [Configuration Reference](#configuration-reference)
-- [API Reference](#api-reference)
-- [Deployment Guide](#deployment-guide)
-- [Advanced Usage](#advanced-usage)
-- [Troubleshooting](#troubleshooting)
-
----
-
-## Overview
-
-Speedboat is a minimalist Raft consensus algorithm implementation focused on master election.
-
-### Key Features
-
-- **Minimalist API**: `Speedboat.start(config)` — one line to start
-- **Cluster-Oriented Configuration**: Just configure `datacenter + nodes`
-- **Auto-Discovery**: Automatically detects local IP and matches the node
-- **Auto Mode**: Flat mode for single datacenter, cascading mode for cross-datacenter
-- **Zero-Dependency Config**: Default PropertiesConfigProvider, optional JSON/YAML
-
-### Use Cases
-
-- Distributed system master election
-- Cross-datacenter high-availability deployment
-- Microservice primary/standby failover
+- [概述](#概述)
+- [快速开始](#快速开始)
+- [配置详解](#配置详解)
+- [API 参考](#api-参考)
+- [部署指南](#部署指南)
+- [进阶用法](#进阶用法)
+- [故障排查](#故障排查)
 
 ---
 
-## Quick Start
+## 概述
 
-### 1. Add Dependency
+Speedboat 是一个极简的 Raft 共识算法实现，专注于主节点选举场景。
+
+### 核心特性
+
+- **极简 API**：`Speedboat.start(config)` 一行启动
+- **集群视角配置**：用户只需配置 `datacenter + nodes`
+- **自动匹配**：系统自动检测本机 IP 并匹配节点
+- **自动模式**：单机房扁平模式，跨机房级联模式
+- **零依赖配置**：默认 PropertiesConfigProvider，可选实现 JSON/YAML
+
+### 适用场景
+
+- 分布式系统主节点选举
+- 跨机房高可用部署
+- 微服务主备切换
+
+---
+
+## 快速开始
+
+### 1. 添加依赖
 
 ```xml
 <dependency>
@@ -44,9 +44,9 @@ Speedboat is a minimalist Raft consensus algorithm implementation focused on mas
 </dependency>
 ```
 
-### 2. Create Configuration File
+### 2. 创建配置文件
 
-**config.properties** (single datacenter):
+**config.properties**（单机房）：
 
 ```properties
 nodes.0.0=192.168.10.1:3000
@@ -54,7 +54,7 @@ nodes.0.1=192.168.10.2:3000
 nodes.0.2=192.168.10.3:3000
 ```
 
-### 3. Start the Cluster
+### 3. 启动集群
 
 ```java
 import cn.itcraft.speedboat.Speedboat;
@@ -79,11 +79,11 @@ public class Application {
 
 ---
 
-## Configuration Reference
+## 配置详解
 
-### Properties Format
+### Properties 配置格式
 
-#### Single Datacenter
+#### 单机房场景
 
 ```properties
 nodes.0.0=192.168.10.1:3000
@@ -94,7 +94,7 @@ election.intra.timeout.min=1000
 election.intra.timeout.max=2000
 ```
 
-#### Cross-Datacenter
+#### 跨机房场景
 
 ```properties
 datacenter=hangzhou001
@@ -113,168 +113,159 @@ election.cross.timeout.min=3000
 election.cross.timeout.max=5000
 ```
 
-### Configuration Items
+### 配置项说明
 
-| Key | Required | Default | Description |
+| 配置项 | 必需 | 默认值 | 说明 |
 |-------|------|-------|------|
-| `nodes.{dc}.{node}` | ✅ | - | Node address, format `ip:port` |
-| `datacenter` | ❌ | `dc-{index}` | Datacenter ID |
-| `election.intra.timeout.min` | ❌ | 1000 | Intra-DC election timeout min (ms) |
-| `election.intra.timeout.max` | ❌ | 2000 | Intra-DC election timeout max (ms) |
-| `election.cross.timeout.min` | ❌ | 3000 | Cross-DC election timeout min (ms) |
-| `election.cross.timeout.max` | ❌ | 5000 | Cross-DC election timeout max (ms) |
-| `vote.weight.strategy` | ❌ | none | Weighted election: `prefer` / `even` / `none` |
-| `vote.weight.prefer` | ⚠️ for prefer | - | Node ID (format `node-<ip>-<port>`) that gets the extra weight |
-| `vote.weight.prefer.weight` | ❌ | 3 | Extra weight given to the preferred node |
+| `nodes.{dc}.{node}` | ✅ | - | 节点地址，格式 `ip:port` |
+| `datacenter` | ❌ | `dc-{index}` | 机房 ID |
+| `election.intra.timeout.min` | ❌ | 1000 | 机房内选举超时下限（ms） |
+| `election.intra.timeout.max` | ❌ | 2000 | 机房内选举超时上限（ms） |
+| `election.cross.timeout.min` | ❌ | 3000 | 机房间选举超时下限（ms） |
+| `election.cross.timeout.max` | ❌ | 5000 | 机房间选举超时上限（ms） |
+| `vote.weight.strategy` | ❌ | none | 投票权重策略：`prefer` / `even` / `none` |
+| `vote.weight.prefer` | ⚠️ prefer 必填 | - | 享受额外权重的节点 ID（格式 `node-<ip>-<port>`） |
+| `vote.weight.prefer.weight` | ❌ | 3 | 该节点获得的额外权重 |
 
-### ⚠️ Vote Weight: cluster-wide consistency constraint
+### ⚠️ 投票权重：全网一致性约束
 
-The vote-weight table is a **cluster-wide topology fact**, not a per-node
-view. "Give node X weight 3" means **every node's config must express the
-same fact** — the same `vote.weight.prefer`, the same
-`vote.weight.prefer.weight`, or none at all.
+权重表是**集群级拓扑事实**，不是本机视角。"给节点 X 权重 3"的含义是：
+**每一台机器的配置都要表达同一个事实** —— 相同的 `vote.weight.prefer`、
+相同的 `vote.weight.prefer.weight`（或全部不配置）。
 
-**Why**: each node computes candidate weights and the required quorum
-independently and then exchanges votes. If node A believes the weight table
-is `(4,1,1,1)` while node B believes `(1,1,1,1)`, the two sides compute
-different `total/required` numbers and can declare **different winners in the
-same election term** — resulting in duelling leaders.
+**为什么**：每个节点独立计算候选者权重与 required 多数派，再交换选票。
+若 A 机认为权重表是 `(4,1,1,1)` 而 B 机认为 `(1,1,1,1)`，两端会算出
+**不同的 total/required**，同一 term 内可能宣布**不同的胜者** —— 双主。
 
-**Real-cluster verification** (4 nodes, weights `(3,1,1,1)` on all four
-machines → total 6, required 4):
+**实机验证**（4 节点、全机器权重表 `(3,1,1,1)` → total 6 / required 4）：
 
-- Three ordinary nodes alone = 3 < 4 → can never form a quorum
-- Weighted node (4 after base 1 + extra 3) + any one ordinary = 5 ≥ 4 ✓
-- Consequence: **every leader in this topology is elected only via a quorum
-  that includes the weighted node**, which is exactly the intended routing
-  behavior of weighted election.
-
-Verified on a real 4-host intranet cluster (kill-leader failover ×3, extreme
-2-node quorum, and full recovery); see the raft `required weight` in the
-logs for end-to-end evidence.
+- 三个普通节点 = 3 < 4 → 单独永远构不成多数派
+- 权重节点（1+3=4）+ 任一普通 = 5 ≥ 4 ✓
+- 结论：**该拓扑下任何 leader 都必须由"包含加权节点"的多数派选出**，
+  这正是加权选举的路由语义。
 
 
-### Node Index Convention
+### 节点索引规则
 
 ```
-nodes.{dc-index}.{node-index}=ip:port
+nodes.{机房索引}.{节点索引}=ip:port
 ```
 
-- **dc-index**: Starting from 0, incrementing
-- **node-index**: Starting from 0, incrementing
-- **Examples**:
-  - `nodes.0.0` → DC 0, Node 0
-  - `nodes.0.1` → DC 0, Node 1
-  - `nodes.1.0` → DC 1, Node 0
+- **机房索引**：从 0 开始，递增
+- **节点索引**：从 0 开始，递增
+- **示例**：
+  - `nodes.0.0` → 机房0，节点0
+  - `nodes.0.1` → 机房0，节点1
+  - `nodes.1.0` → 机房1，节点0
 
-### Auto Mode Detection
+### 自动模式判断
 
-| nodes first-level size | Mode | Description |
+| nodes 第一层大小 | 模式 | 说明 |
 |----------------|------|------|
-| `== 1` | Single DC Flat | All nodes participate equally in election |
-| `> 1` | Cross-DC Cascading | Intra-DC election + cross-DC cascading |
+| `== 1` | 单机房扁平模式 | 所有节点平等选举 |
+| `> 1` | 跨机房级联模式 | 本机房选举 + 跨机房级联 |
 
 ---
 
-## API Reference
+## API 参考
 
-### Static Methods
+### 静态方法
 
-#### Start Cluster
+#### 启动集群
 
 ```java
 Speedboat.start(SpeedboatConfigProvider config)
 ```
 
-Starts the singleton instance. If already running, the call is ignored.
+启动单例实例。如果已运行，则忽略。
 
-**Parameters**:
-- `config` - Configuration provider
+**参数**：
+- `config` - 配置提供者
 
-**Example**:
+**示例**：
 ```java
 SpeedboatConfigProvider config = new PropertiesConfigProvider("config.properties");
 Speedboat.start(config);
 ```
 
-#### Stop Cluster
+#### 停止集群
 
 ```java
 Speedboat.stop()
 ```
 
-Stops the singleton instance and releases resources.
+停止单例实例并释放资源。
 
-#### Check if Leader
+#### 判断是否主节点
 
 ```java
 boolean isMain = Speedboat.isMain()
 ```
 
-Returns whether the current node is the cluster leader.
+返回当前节点是否是集群主节点。
 
-**Returns**:
-- `true` - Current node is the leader
-- `false` - Current node is a follower
+**返回**：
+- `true` - 当前节点是主节点
+- `false` - 当前节点是从节点
 
-#### Get Leader ID
+#### 获取主节点 ID
 
 ```java
 String leaderId = Speedboat.getLeaderId()
 ```
 
-Returns the current leader node ID.
+返回当前主节点的 ID。
 
-**Returns**:
-- Leader ID (e.g. `server01-192.168.10.1-0012`)
-- `null` if no leader has been elected
+**返回**：
+- 主节点 ID（如 `server01-192.168.10.1-0012`）
+- 未选举时返回 `null`
 
-#### Get Current Term
+#### 获取当前任期
 
 ```java
 long term = Speedboat.getTerm()
 ```
 
-Returns the current Raft term number.
+返回当前 Raft 任期号。
 
-#### Get Local Node ID
+#### 获取本节点 ID
 
 ```java
 String nodeId = Speedboat.getNodeId()
 ```
 
-Returns the auto-generated local node ID, format: `hostname-ip-random`.
+返回本节点的自动生成 ID，格式：`hostname-ip-random`。
 
-#### Get Datacenter ID
+#### 获取机房 ID
 
 ```java
 String dcId = Speedboat.getDatacenterId()
 ```
 
-Returns the local datacenter ID.
+返回本机房 ID。
 
-#### Check Running Status
+#### 检查运行状态
 
 ```java
 boolean running = Speedboat.isRunning()
 ```
 
-Returns whether the singleton instance is running.
+返回单例实例是否正在运行。
 
 ---
 
-## Deployment Guide
+## 部署指南
 
-### Single Datacenter Deployment
+### 单机房部署
 
-#### Requirements
+#### 环境要求
 
 - JDK 8+
-- Network connectivity
+- 网络互通
 
-#### Steps
+#### 部署步骤
 
-1. **Create configuration file** `config.properties`:
+1. **创建配置文件** `config.properties`：
 
 ```properties
 nodes.0.0=192.168.10.1:3000
@@ -282,37 +273,37 @@ nodes.0.1=192.168.10.2:3000
 nodes.0.2=192.168.10.3:3000
 ```
 
-2. **Distribute config**: Place the same config file on each machine.
+2. **分发配置**：每台机器放置相同的配置文件。
 
-3. **Start application** on each machine:
+3. **启动应用**：每台机器执行：
 
 ```bash
 java -jar your-app.jar
 ```
 
-4. **Verify**: Check logs to confirm election is complete.
+4. **验证**：检查日志确认选举完成。
 
-### Cross-Datacenter Deployment
+### 跨机房部署
 
-#### Requirements
+#### 环境要求
 
 - JDK 8+
-- Network connectivity between datacenters
-- Low latency within each datacenter
+- 机房间网络可达
+- 机房内网络低延迟
 
-#### Steps
+#### 部署步骤
 
-1. **Create configuration file** `config.properties`:
+1. **创建配置文件** `config.properties`：
 
 ```properties
 datacenter=hangzhou001
 
-# Hangzhou datacenter
+# 杭州机房
 nodes.0.0=192.168.10.1:3000
 nodes.0.1=192.168.10.2:3000
 nodes.0.2=192.168.10.3:3000
 
-# Beijing datacenter
+# 北京机房
 nodes.1.0=10.3.1.1:3000
 nodes.1.1=10.3.1.2:3000
 nodes.1.2=10.3.1.3:3000
@@ -323,21 +314,21 @@ election.cross.timeout.min=3000
 election.cross.timeout.max=5000
 ```
 
-2. **Hangzhou DC**: Set `datacenter=hangzhou001`, distribute to 3 machines.
+2. **杭州机房**：配置 `datacenter=hangzhou001`，分发到 3 台机器。
 
-3. **Beijing DC**: Set `datacenter=beijing001`, distribute to 3 machines.
+3. **北京机房**：配置 `datacenter=beijing001`，分发到 3 台机器。
 
-4. **Start application** on all machines:
+4. **启动应用**：所有机器执行：
 
 ```bash
 java -jar your-app.jar
 ```
 
-5. **Verify**: Check logs to confirm two-level election is complete.
+5. **验证**：检查日志确认两级选举完成。
 
-### Container Deployment
+### 容器化部署
 
-#### Docker Example
+#### Docker 示例
 
 ```dockerfile
 FROM openjdk:8-jdk-alpine
@@ -346,7 +337,7 @@ COPY config.properties config.properties
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
 
-#### Kubernetes Example
+#### Kubernetes 示例
 
 ```yaml
 apiVersion: apps/v1
@@ -373,11 +364,11 @@ spec:
 
 ---
 
-## Advanced Usage
+## 进阶用法
 
-### Custom Configuration Source
+### 自定义配置源
 
-Implement the `SpeedboatConfigProvider` interface to support JSON/YAML/database config sources.
+实现 `SpeedboatConfigProvider` 接口支持 JSON/YAML/数据库等配置源。
 
 ```java
 public class JsonConfigProvider implements SpeedboatConfigProvider {
@@ -420,7 +411,7 @@ public class JsonConfigProvider implements SpeedboatConfigProvider {
 }
 ```
 
-### Monitor Leader Changes
+### 监听主节点变化
 
 ```java
 public class LeaderChangeListener {
@@ -441,7 +432,7 @@ public class LeaderChangeListener {
 }
 ```
 
-### Spring Boot Integration
+### 集成 Spring Boot
 
 ```java
 @Component
@@ -465,55 +456,55 @@ public class SpeedboatLifecycle implements ApplicationRunner, DisposableBean {
 
 ---
 
-## Troubleshooting
+## 故障排查
 
-### Common Issues
+### 常见问题
 
-#### 1. Election Timeout
+#### 1. 选举超时
 
-**Symptom**: No leader for an extended period.
+**现象**：长时间无主节点。
 
-**Causes**:
-- Network partition
-- Election timeout too short
-- Insufficient nodes (even number of nodes)
+**原因**：
+- 网络分区
+- 选举超时配置过短
+- 节点数量不足（偶数节点）
 
-**Solutions**:
-- Check network connectivity
-- Increase `election.intra.timeout`
-- Use an odd number of nodes (recommended 3/5/7)
+**解决**：
+- 检查网络连通性
+- 调大 `election.intra.timeout`
+- 使用奇数节点（推荐 3/5/7）
 
-#### 2. Node Fails to Start
+#### 2. 节点无法启动
 
-**Symptom**: Error `Local IP not found in configured nodes`.
+**现象**：启动报错 `Local IP not found in configured nodes`。
 
-**Cause**: Local IP is not in the configured node list.
+**原因**：本机 IP 不在配置的节点列表中。
 
-**Solution**:
-- Check local IP: `hostname -I` or `ifconfig`
-- Ensure the config file includes the local IP
+**解决**：
+- 检查本机 IP：`hostname -I` 或 `ifconfig`
+- 确保配置文件中包含本机 IP
 
-#### 3. Cross-Datacenter Election Failure
+#### 3. 跨机房选举失败
 
-**Symptom**: Intra-DC election succeeds, but cross-DC election fails.
+**现象**：机房内选举成功，但跨机房选举失败。
 
-**Causes**:
-- Network unreachable between datacenters
-- `election.cross.timeout` too short
+**原因**：
+- 机房间网络不可达
+- `election.cross.timeout` 配置过短
 
-**Solutions**:
-- Check network latency between datacenters
-- Increase `election.cross.timeout` (recommended 3000-5000ms)
+**解决**：
+- 检查机房网络延迟
+- 调大 `election.cross.timeout`（建议 3000-5000ms）
 
-### Log Level
+### 日志级别
 
-Adjust log level for detailed information:
+调整日志级别查看详细信息：
 
 ```xml
 <logger name="cn.itcraft.speedboat" level="DEBUG"/>
 ```
 
-### Health Check Endpoint
+### 健康检查接口
 
 ```java
 @RestController
@@ -535,26 +526,26 @@ public class HealthController {
 
 ---
 
-## Appendix
+## 附录
 
-### nodeId Format
+### nodeId 生成规则
 
 ```
-{hostname}-{ip}-{random4digits}
+{hostname}-{ip}-{random4位}
 ```
 
-Example: `server01-192.168.10.1-0012`
+示例：`server01-192.168.10.1-0012`
 
-### Recommended Timeout Values
+### 选举超时建议值
 
-| Scenario | intra timeout | cross timeout |
+| 场景 | intra 超时 | cross 超时 |
 |-----|-----------|-----------|
-| Local testing | 500-1000ms | 1000-2000ms |
-| Single DC production | 1000-2000ms | - |
-| Cross-DC production | 1000-2000ms | 3000-5000ms |
+| 本地测试 | 500-1000ms | 1000-2000ms |
+| 单机房生产 | 1000-2000ms | - |
+| 跨机房生产 | 1000-2000ms | 3000-5000ms |
 
-### Recommended Node Count
+### 推荐节点数量
 
-- **Dev/Test**: 1 node (no fault tolerance)
-- **Production**: 3/5/7 nodes (odd number)
-- **Cross-DC**: 3 nodes per DC, at least 2 DCs
+- **开发/测试**：1 节点（无容错）
+- **生产环境**：3/5/7 节点（奇数）
+- **跨机房**：每个机房 3 节点，至少 2 个机房
