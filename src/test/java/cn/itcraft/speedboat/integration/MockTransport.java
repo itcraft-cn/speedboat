@@ -52,8 +52,8 @@ public class MockTransport implements TransportLayer {
     public CompletableFuture<RequestVoteResponse> sendRequestVote(String peerId, RequestVoteRequest request) {
         MockTransport peerTransport = nodeTransports.get(peerId);
         if (peerTransport != null && peerTransport.getRequestVoteHandler() != null) {
-            RequestVoteResponse response = peerTransport.getRequestVoteHandler().handle(request);
-            return CompletableFuture.completedFuture(response);
+            // 异步转发：不阻塞发送方的调用线程（raft 单线程化后的死锁规避）
+            return peerTransport.getRequestVoteHandler().handle(request).thenApply(r -> r);
         }
         return CompletableFuture.completedFuture(new RequestVoteResponse(request.getTerm(), false));
     }
@@ -62,8 +62,7 @@ public class MockTransport implements TransportLayer {
     public CompletableFuture<HeartbeatResponse> sendHeartbeat(String peerId, HeartbeatRequest request) {
         MockTransport peerTransport = nodeTransports.get(peerId);
         if (peerTransport != null && peerTransport.getHeartbeatHandler() != null) {
-            HeartbeatResponse response = peerTransport.getHeartbeatHandler().handle(request);
-            return CompletableFuture.completedFuture(response);
+            return peerTransport.getHeartbeatHandler().handle(request);
         }
         
         // 如果没有 handler，尝试通过反射调用 peer 的 RaftNode.handleHeartbeat
@@ -85,8 +84,7 @@ public class MockTransport implements TransportLayer {
     public CompletableFuture<AppendEntriesResponse> sendAppendEntries(String peerId, AppendEntriesRequest request) {
         MockTransport peerTransport = nodeTransports.get(peerId);
         if (peerTransport != null && peerTransport.getAppendEntriesHandler() != null) {
-            AppendEntriesResponse response = peerTransport.getAppendEntriesHandler().handle(request);
-            return CompletableFuture.completedFuture(response);
+            return peerTransport.getAppendEntriesHandler().handle(request);
         }
         
         // 如果没有 handler，尝试通过反射调用 peer 的 RaftNode.handleAppendEntries

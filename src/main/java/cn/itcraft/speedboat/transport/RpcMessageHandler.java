@@ -8,6 +8,8 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.CompletableFuture;
+
 /**
  * RPC 消息处理器，处理 Netty 通道中的 RPC 消息。
  * 
@@ -44,27 +46,53 @@ class RpcMessageHandler extends ChannelInboundHandlerAdapter {
             
             if (obj instanceof RequestVoteRequest && transport.getRequestVoteHandler() != null) {
                 RequestVoteRequest request = (RequestVoteRequest) obj;
-                RequestVoteResponse response = transport.getRequestVoteHandler().handle(request);
-                RequestVoteResponse responseWithId = new RequestVoteResponse(
-                    request.getRequestId(), response.getTerm(), response.isVoteGranted());
-                ctx.writeAndFlush(serializer.wrap(responseWithId));
+                // 异步派发：handler 返回 Future，完成后回写应答（不再阻塞 Netty IO 线程）
+                dispatch(ctx, transport.getRequestVoteHandler().handle(request), request.getRequestId(), false);
             } else if (obj instanceof HeartbeatRequest && transport.getHeartbeatHandler() != null) {
                 HeartbeatRequest request = (HeartbeatRequest) obj;
-                HeartbeatResponse response = transport.getHeartbeatHandler().handle(request);
-                HeartbeatResponse responseWithId = new HeartbeatResponse(
-                    request.getRequestId(), response.getTerm(), response.isSuccess());
-                ctx.writeAndFlush(serializer.wrap(responseWithId));
+                dispatch(ctx, transport.getHeartbeatHandler().handle(request), request.getRequestId(), false);
             } else if (obj instanceof AppendEntriesRequest && transport.getAppendEntriesHandler() != null) {
                 AppendEntriesRequest request = (AppendEntriesRequest) obj;
-                AppendEntriesResponse response = transport.getAppendEntriesHandler().handle(request);
-                AppendEntriesResponse responseWithId = new AppendEntriesResponse(
-                    request.getRequestId(), response.getTerm(), response.isSuccess(), response.getMatchIndex());
-                ctx.writeAndFlush(serializer.wrap(responseWithId));
+                dispatch(ctx, transport.getAppendEntriesHandler().handle(request), request.getRequestId(), true);
             }
         } catch (Exception e) {
             logger.error("RpcMessageHandler channelRead error: {}", e.toString(), e);
             ctx.close();
         }
+    }
+
+    /**
+     * Future 完成后以 requestId 重建并回写应答。ch 不受 future 结果影响。
+     *
+     * @param isAppendEntries true 表示 AppendEntries 应答（需携带 matchIndex）
+     */
+    private void dispatch(ChannelHandlerContext ctx, CompletableFuture<? extends RpcResponse> future,
+                          String requestId, boolean isAppendEntries) {
+        future.whenComplete((response, throwable) -> {
+            if (throwable != null || response == null) {
+                logger.debug("Inbound request processing failed, no response written: requestId={}", requestId);
+                return;
+            }
+            // 以请求的 requestId 关联回应答，保证发送方可匹配
+            try {
+                if (isAppendEntries) {
+                    AppendEntriesResponse r = (AppendEntriesResponse) response;
+                    ctx.writeAndFlush(serializer.wrap(new AppendEntriesResponse(
+                        requestId, r.getTerm(), r.isSuccess(), r.getMatchIndex())));
+                } else if (response instanceof HeartbeatResponse) {
+                    HeartbeatResponse r = (HeartbeatResponse) response;
+                    ctx.writeAndFlush(serializer.wrap(new HeartbeatResponse(requestId, r.getTerm(), r.isSuccess())));
+                } else {
+                    RequestVoteResponse r = (RequestVoteResponse) response;
+                    if (response instanceof RequestVoteResponse) {
+                        ctx.writeAndFlush(serializer.wrap(new RequestVoteResponse(
+                            requestId, r.getTerm(), r.isVoteGranted())));
+                    }
+                }
+            } catch (Exception e) {
+                logger.error("RpcMessageHandler dispatch write error: {}", e.toString(), e);
+            }
+        });
     }
     
     @Override

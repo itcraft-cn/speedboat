@@ -57,7 +57,7 @@ class TransportTest {
             transportB.setRequestVoteHandler(request -> {
                 receivedRequest.set(request);
                 latch.countDown();
-                return new RequestVoteResponse(request.getTerm(), true);
+                return CompletableFuture.completedFuture(new RequestVoteResponse(request.getTerm(), true));
             });
 
             transportB.start();
@@ -95,7 +95,7 @@ class TransportTest {
             transportB.setHeartbeatHandler(request -> {
                 receivedRequest.set(request);
                 latch.countDown();
-                return new HeartbeatResponse(request.getTerm(), true);
+                return CompletableFuture.completedFuture(new HeartbeatResponse(request.getTerm(), true));
             });
 
             transportB.start();
@@ -274,7 +274,7 @@ class TransportTest {
         try {
             assertNull(transport.getRequestVoteHandler());
             
-            transport.setRequestVoteHandler(req -> new RequestVoteResponse(1, true));
+            transport.setRequestVoteHandler(req -> CompletableFuture.completedFuture(new RequestVoteResponse(1, true)));
             assertNotNull(transport.getRequestVoteHandler());
         } finally {
             transport.shutdown();
@@ -290,7 +290,7 @@ class TransportTest {
         try {
             assertNull(transport.getHeartbeatHandler());
             
-            transport.setHeartbeatHandler(req -> new HeartbeatResponse(1, true));
+            transport.setHeartbeatHandler(req -> CompletableFuture.completedFuture(new HeartbeatResponse(1, true)));
             assertNotNull(transport.getHeartbeatHandler());
         } finally {
             transport.shutdown();

@@ -252,12 +252,42 @@ public class DistributedLockImpl implements DistributedLock {
         long entryIndex = raftNode.propose(data);
         if (entryIndex > 0) {
             logger.info("Lock released: {} by {}", lockName, nodeId);
+            // 等 UNLOCK 命令 committed & applied，提供"释放确认"语义：
+            // close() 返回后调用方立即读到锁已释放（reproducible contract）
+            waitForRelease(1000, entryIndex);
         }
 
         LockEntry entry = stateMachine.getLockEntry(lockName);
         if (entry == null || entry.getHoldCount() <= 0) {
             stopRenewTask();
         }
+    }
+
+    /**
+     * 等待指定日志索引被 commit 并 apply 完成（用于释放确认）。
+     *
+     * <p>与 {@link #waitForApply(long, long)} 的区别：解锁场景是"期望锁被释放"
+     * —— 终止条件是 lastApplied >= target 且锁已不在此节点手中。
+     * raft 线程与调用线程独立，仅做异步轮询，无阻塞风险。</p>
+     */
+    private boolean waitForRelease(long timeoutMs, long targetIndex) {
+        long startTime = System.nanoTime();
+        while ((System.nanoTime() - startTime) / 1_000_000 < timeoutMs) {
+            long currentApplied = raftNode.getLastApplied();
+            boolean heldBy = stateMachine.isLockHeldBy(lockName, nodeId);
+            if (currentApplied >= targetIndex && !heldBy) {
+                return true;
+            }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        logger.warn("waitForRelease timeout: targetIndex={}, finalApplied={}, stillHeld={}",
+            targetIndex, raftNode.getLastApplied(), stateMachine.isLockHeldBy(lockName, nodeId));
+        return false;
     }
 
     private byte[] serializeCommand(LockCommand command) {

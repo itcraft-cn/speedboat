@@ -87,18 +87,27 @@ public interface TransportLayer {
     
     void setAppendEntriesHandler(AppendEntriesHandler handler);
     
+    /**
+     * 入站请求处理器契约（异步版）。
+     *
+     * <p>返回 CompletableFuture 而非同步结果，使请求的"入队"与"应答写回"
+     * 解耦：调用方（通常是发送方的执行线程）绝不等待接收方的业务线程——
+     * 否则 mock 集群/进程内通信会形成跨节点 raft 线程互等死锁。
+     * 实现方应在内部将请求投递到自己的单线程执行器，并把最终应答
+     * 写入返回的 Future（Netty 侧完成后异步回包）。</p>
+     */
     @FunctionalInterface
     interface RequestVoteHandler {
-        RequestVoteResponse handle(RequestVoteRequest request);
+        CompletableFuture<RequestVoteResponse> handle(RequestVoteRequest request);
     }
     
     @FunctionalInterface
     interface HeartbeatHandler {
-        HeartbeatResponse handle(HeartbeatRequest request);
+        CompletableFuture<HeartbeatResponse> handle(HeartbeatRequest request);
     }
     
     @FunctionalInterface
     interface AppendEntriesHandler {
-        AppendEntriesResponse handle(AppendEntriesRequest request);
+        CompletableFuture<AppendEntriesResponse> handle(AppendEntriesRequest request);
     }
 }

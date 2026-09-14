@@ -11,6 +11,7 @@ import cn.itcraft.speedboat.transport.NettyTransport;
 import cn.itcraft.speedboat.transport.NodeEndpoint;
 
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -89,9 +90,9 @@ public class ClusterTestRunner {
             .build();
 
         // 启动节点
-        transport.setRequestVoteHandler(raftNode::handleRequestVote);
-        transport.setHeartbeatHandler(raftNode::handleHeartbeat);
-        transport.setAppendEntriesHandler(raftNode::handleAppendEntries);
+        transport.setRequestVoteHandler(req -> CompletableFuture.completedFuture(raftNode.handleRequestVote(req)));
+        transport.setHeartbeatHandler(req -> CompletableFuture.completedFuture(raftNode.handleHeartbeat(req)));
+        transport.setAppendEntriesHandler(req -> CompletableFuture.completedFuture(raftNode.handleAppendEntries(req)));
         transport.start();
         raftNode.start();
 

@@ -1,6 +1,8 @@
 package cn.itcraft.speedboat.raft;
 
 import cn.itcraft.speedboat.config.SpeedboatConsts;
+import cn.itcraft.speedboat.raft.executor.DefaultRaftNodeExecutor;
+import cn.itcraft.speedboat.raft.executor.RaftNodeExecutor;
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
@@ -23,9 +25,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import cn.itcraft.speedboat.statemachine.StateMachine;
@@ -115,7 +115,15 @@ public class RaftNode {
     private final Map<String, Boolean> votesReceived;
 
     private volatile boolean running;
-    private ScheduledExecutorService scheduler;
+    /**
+     * Raft 单消费者执行器（Actor 模型）。
+     *
+     * <p>所有状态变更只在该执行器的唯一线程上发生；外部线程（Netty IO、
+     * 用户调用）仅允许投递任务或读取 volatile 快照。因此算法本体内部
+     * 不再使用 synchronized——并发正确性由"任务串行 + 任务间 happens-before"
+     * 保证（MicroRaft executor 契约的本地化）。</p>
+     */
+    private RaftNodeExecutor executor;
     private Future<?> electionTimeoutFuture;
     private Future<?> heartbeatFuture;
     private Future<?> membershipChangeFuture;
@@ -167,11 +175,8 @@ public class RaftNode {
             new cn.itcraft.speedboat.strategy.membership.impl.DefaultChangeValidationStrategy();
         this.failureRecords = new java.util.concurrent.ConcurrentHashMap<>();
         this.stateMachine = builder.stateMachine;
-        
-        // 初始化成员变更检测任务（如果需要）
-        if (membershipConfig.isMembershipChangeEnabled()) {
-            startMembershipChangeDetection();
-        }
+        // Actor 执行器：默认单线程调度实现，可注入自定义实现（如 JCTools MPSC 版）
+        this.executor = builder.executor != null ? builder.executor : new DefaultRaftNodeExecutor();
     }
 
     public void start() {
@@ -179,16 +184,28 @@ public class RaftNode {
             return;
         }
         running = true;
-        scheduler = Executors.newScheduledThreadPool(2);
-        
+        executor.start();
+
         if (transportLayer != null) {
-            transportLayer.setRequestVoteHandler(this::handleRequestVote);
-            transportLayer.setHeartbeatHandler(this::handleHeartbeat);
-            transportLayer.setAppendEntriesHandler(this::handleAppendEntries);
+            // 入站消息全异步化：请求投递到 raft 单线程（SC），
+            // 应答经 CompletableFuture 由传输层异步回写（IO 线程不再互等）
+            transportLayer.setRequestVoteHandler(request ->
+                onRaftThreadAsync(() -> doHandleRequestVote(request)));
+            transportLayer.setHeartbeatHandler(request ->
+                onRaftThreadAsync(() -> doHandleHeartbeat(request)));
+            transportLayer.setAppendEntriesHandler(request ->
+                onRaftThreadAsync(() -> doHandleAppendEntries(request)));
         }
-        
+
         resetElectionTimeout();
-        logger.info("Node {} started as {}", nodeId, currentState);
+
+        // 修复历史遗留：构造期 scheduler 尚未创建导致成员检测从未真正启动，
+        // 现改为 start() 统一启动所有定时任务
+        if (membershipConfig.isMembershipChangeEnabled()) {
+            startMembershipChangeDetection();
+        }
+
+        logger.info("Node {} started as {} on raft thread [{}]", nodeId, currentState, executor.isRaftThread());
     }
 
     public void shutdown() {
@@ -196,7 +213,7 @@ public class RaftNode {
             return;
         }
         running = false;
-        
+
         if (electionTimeoutFuture != null) {
             electionTimeoutFuture.cancel(false);
         }
@@ -206,18 +223,75 @@ public class RaftNode {
         if (membershipChangeFuture != null) {
             membershipChangeFuture.cancel(false);
         }
-        if (scheduler != null) {
-            scheduler.shutdown();
-            try {
-                scheduler.awaitTermination(SpeedboatConsts.SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+        if (executor != null) {
+            executor.shutdown();
         }
         logger.info("Node {} shutdown", nodeId);
     }
 
-    public synchronized void transitionTo(NodeState newState) {
+    /**
+     * 将外部同步调用收敛到 raft 线程的兼容门面。
+     *
+     * <p>若当前已处于 raft 线程则直接内联执行（内部调用链全部如此）；
+     * 否则投递任务并阻塞等待结果（有限时长，超时视为节点忙）。
+     * 等待在调用方线程上进行，raft 线程永远不会被它阻塞。</p>
+     *
+     * @param task raft 线程上执行的任务
+     * @param <T>  返回类型
+     * @return 任务结果
+     */
+    private <T> T onRaftThread(java.util.concurrent.Callable<T> task) {
+        try {
+            if (executor.isRaftThread()) {
+                return task.call();
+            }
+            return executor.submit(task).get(SpeedboatConsts.SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            // 停机后被继续调用属预期场景，保留具体异常类型供调用方（propose 等）做退化
+            throw e;
+        } catch (java.util.concurrent.ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            throw new IllegalStateException("Raft task failed", cause);
+        } catch (java.util.concurrent.TimeoutException e) {
+            throw new IllegalStateException("Raft executor busy, task timed out", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting raft thread", e);
+        } catch (Exception e) {
+            throw new IllegalStateException("Raft task failed", e);
+        }
+    }
+
+    /**
+     * raft 线程异步执行任务，结果写入 CompletableFuture（以异常完成亦然）。
+     *
+     * <p>这是入站消息处理器与执行器之间的标准桥接：调用线程（发送方侧）
+     * 拿到 Future 即返回，绝不阻塞等待接收方 raft 线程，避免 mock 集群
+     * 场景的跨节点 raft 线程互等死锁。</p>
+     */
+    private <T> CompletableFuture<T> onRaftThreadAsync(java.util.concurrent.Callable<T> task) {
+        CompletableFuture<T> future = new CompletableFuture<>();
+        executor.execute(() -> {
+            try {
+                future.complete(task.call());
+            } catch (Throwable t) {
+                future.completeExceptionally(t);
+            }
+        });
+        return future;
+    }
+
+    public void transitionTo(NodeState newState) {
+        onRaftThread(() -> {
+            doTransitionTo(newState);
+            return null;
+        });
+    }
+
+    private void doTransitionTo(NodeState newState) {
         if (!currentState.canTransitionTo(newState)) {
             throw new IllegalStateException(
                 String.format("Invalid state transition from %s to %s on node %s", 
@@ -245,7 +319,11 @@ public class RaftNode {
         logger.info("Node {} transitioned from {} to {}", nodeId, oldState, newState);
     }
 
-    public synchronized RequestVoteResponse handleRequestVote(RequestVoteRequest request) {
+    public RequestVoteResponse handleRequestVote(RequestVoteRequest request) {
+        return onRaftThread(() -> doHandleRequestVote(request));
+    }
+
+    private RequestVoteResponse doHandleRequestVote(RequestVoteRequest request) {
         if (term.isMonotonicViolation(request.getTerm())) {
             logger.info("Rejecting vote request from {} with lower term {}", 
                 request.getCandidateId(), request.getTerm());
@@ -278,15 +356,23 @@ public class RaftNode {
         return new RequestVoteResponse(term.getCurrent(), false);
     }
 
-    public synchronized HeartbeatResponse handleHeartbeat(HeartbeatRequest request) {
+    public HeartbeatResponse handleHeartbeat(HeartbeatRequest request) {
+        return onRaftThread(() -> doHandleHeartbeat(request));
+    }
+
+    private HeartbeatResponse doHandleHeartbeat(HeartbeatRequest request) {
         AppendEntriesRequest appendRequest = AppendEntriesRequest.heartbeat(
             request.getTerm(), request.getLeaderId(), 0, 0, 0
         );
-        AppendEntriesResponse response = handleAppendEntries(appendRequest);
+        AppendEntriesResponse response = doHandleAppendEntries(appendRequest);
         return new HeartbeatResponse(response.getTerm(), response.isSuccess());
     }
 
-    public synchronized AppendEntriesResponse handleAppendEntries(AppendEntriesRequest request) {
+    public AppendEntriesResponse handleAppendEntries(AppendEntriesRequest request) {
+        return onRaftThread(() -> doHandleAppendEntries(request));
+    }
+
+    private AppendEntriesResponse doHandleAppendEntries(AppendEntriesRequest request) {
         if (request.getTerm() < term.getCurrent()) {
             logger.info("Rejecting AppendEntries from {} with lower term {}", 
                 request.getLeaderId(), request.getTerm());
@@ -307,7 +393,7 @@ public class RaftNode {
         resetElectionTimeout();
         lastHeartbeatNanos = System.nanoTime();
 
-        logger.info("Follower {} received appendEntries from leader {}, entries={}, prevLogIndex={}, leaderCommit={}", 
+        logger.debug("Follower {} received appendEntries from leader {}, entries={}, prevLogIndex={}, leaderCommit={}", 
             nodeId, request.getLeaderId(), request.getEntries().size(), request.getPrevLogIndex(), request.getLeaderCommit());
 
         if (request.getPrevLogIndex() > 0) {
@@ -346,7 +432,7 @@ public class RaftNode {
             log.addAll(newLog);
             truncateLogIfNeeded();
 
-            logger.info("Follower {} appended {} entries, log size now {}", 
+            logger.debug("Follower {} appended {} entries, log size now {}", 
                 nodeId, request.getEntries().size(), log.size());
         }
 
@@ -354,14 +440,21 @@ public class RaftNode {
             long oldCommitIndex = commitIndex;
             commitIndex = Math.min(request.getLeaderCommit(), getLastLogIndex());
             applyCommittedEntries();
-            logger.info("Node {} commitIndex updated: {} -> {}, lastApplied={}", 
+            logger.debug("Node {} commitIndex updated: {} -> {}, lastApplied={}", 
                 nodeId, oldCommitIndex, commitIndex, lastApplied);
         }
 
         return new AppendEntriesResponse(term.getCurrent(), true, getLastLogIndex());
     }
 
-    public synchronized void startElection() {
+    public void startElection() {
+        onRaftThread(() -> {
+            doStartElection();
+            return null;
+        });
+    }
+
+    private void doStartElection() {
         if (currentState != NodeState.FOLLOWER && currentState != NodeState.CANDIDATE) {
             return;
         }
@@ -393,30 +486,28 @@ public class RaftNode {
             RequestVoteRequest request = new RequestVoteRequest(
                 term.getCurrent(), nodeId, calculateTotalVoteWeight()
             );
-            
+
             transportLayer.sendRequestVote(peerId, request)
-                .thenAccept(response -> {
+                .thenAccept(response -> executor.execute(() -> {
                     if (response.isVoteGranted() && currentState == NodeState.CANDIDATE) {
-                        synchronized (votesReceived) {
-                            votesReceived.put(peerId, true);
-                            checkElectionResult(calculateReceivedVoteWeight(), requiredWeight);
-                        }
+                        votesReceived.put(peerId, true);
+                        checkElectionResult(calculateReceivedVoteWeight(), requiredWeight);
                     } else if (response.getTerm() > term.getCurrent()) {
                         term.updateIfHigher(response.getTerm());
-                        transitionTo(NodeState.FOLLOWER);
+                        doTransitionTo(NodeState.FOLLOWER);
                     }
-                });
+                }));
         }
-        
-        scheduler.schedule(() -> {
+
+        executor.schedule(() -> {
             if (currentState == NodeState.CANDIDATE) {
                 logger.info("Node {} election timeout, starting new election", nodeId);
-                startElection();
+                doStartElection();
             }
-        }, electionTimeout.getNext(), TimeUnit.MILLISECONDS);
+        }, electionTimeout.getNext());
     }
 
-    private synchronized void checkElectionResult(int currentWeight, int requiredWeight) {
+    private void checkElectionResult(int currentWeight, int requiredWeight) {
         if (currentState != NodeState.CANDIDATE) {
             return;
         }
@@ -428,7 +519,14 @@ public class RaftNode {
         }
     }
 
-    public synchronized void becomeLeader() {
+    public void becomeLeader() {
+        onRaftThread(() -> {
+            doBecomeLeader();
+            return null;
+        });
+    }
+
+    private void doBecomeLeader() {
         if (currentState != NodeState.CANDIDATE) {
             return;
         }
@@ -475,13 +573,13 @@ public class RaftNode {
             return;
         }
         
-        logger.info("Leader {} sending append entries to {} peers, logSize={}, commitIndex={}", 
+        logger.debug("Leader {} sending append entries to {} peers, logSize={}, commitIndex={}", 
             nodeId, peerIds.size(), log.size(), commitIndex);
         for (String peerId : peerIds) {
             sendAppendEntriesToPeer(peerId);
         }
         
-        logger.info("Leader {} sent append entries to {} peers", nodeId, peerIds.size());
+        logger.debug("Leader {} sent append entries to {} peers", nodeId, peerIds.size());
     }
 
     private void sendAppendEntriesToPeer(String peerId) {
@@ -503,20 +601,21 @@ public class RaftNode {
             }
         }
         
-        logger.info("Leader {} sending to peer {}: nextIdx={}, logSize={}, entriesToSend={}, commitIndex={}", 
+        logger.debug("Leader {} sending to peer {}: nextIdx={}, logSize={}, entriesToSend={}, commitIndex={}", 
             nodeId, peerId, nextIdx, log.size(), entriesToSend.size(), commitIndex);
         
         AppendEntriesRequest request = new AppendEntriesRequest(
             term.getCurrent(), nodeId, prevLogIndex, prevLogTerm, entriesToSend, commitIndex
         );
         
-        logger.info("Leader {} calling transportLayer.sendAppendEntries to peer {}, transportLayer={}", nodeId, peerId, transportLayer.getClass().getName());
+        logger.debug("Leader {} calling transportLayer.sendAppendEntries to peer {}, transportLayer={}", nodeId, peerId, transportLayer.getClass().getName());
         transportLayer.sendAppendEntries(peerId, request)
-            .thenAccept(response -> handleAppendEntriesResponse(peerId, response));
+            .thenAccept(response -> executor.execute(
+                () -> doHandleAppendEntriesResponse(peerId, response)));
     }
 
-    private synchronized void handleAppendEntriesResponse(String peerId, AppendEntriesResponse response) {
-        logger.info("Leader {} received appendEntries response from {}: success={}, matchIndex={}", 
+    private void doHandleAppendEntriesResponse(String peerId, AppendEntriesResponse response) {
+        logger.debug("Leader {} received appendEntries response from {}: success={}, matchIndex={}", 
             nodeId, peerId, response.isSuccess(), response.getMatchIndex());
         
         if (response.getTerm() > term.getCurrent()) {
@@ -533,18 +632,18 @@ public class RaftNode {
         if (response.isSuccess()) {
             matchIndex.put(peerId, response.getMatchIndex());
             nextIndex.put(peerId, response.getMatchIndex() + 1);
-            logger.info("Leader {} matchIndex for {} updated to {}, matchIndex={}", 
+            logger.debug("Leader {} matchIndex for {} updated to {}, matchIndex={}", 
                 nodeId, peerId, response.getMatchIndex(), matchIndex);
             advanceCommitIndex();
         } else {
             long newNextIndex = Math.max(1, response.getMatchIndex() + 1);
             nextIndex.put(peerId, newNextIndex);
-            logger.info("Leader {} decrementing nextIndex for {} to {}", nodeId, peerId, newNextIndex);
+            logger.debug("Leader {} decrementing nextIndex for {} to {}", nodeId, peerId, newNextIndex);
         }
     }
 
     private void advanceCommitIndex() {
-        logger.info("Leader {} advanceCommitIndex: lastLogIndex={}, commitIndex={}", 
+        logger.debug("Leader {} advanceCommitIndex: lastLogIndex={}, commitIndex={}", 
             nodeId, getLastLogIndex(), commitIndex);
         for (long n = getLastLogIndex(); n > commitIndex; n--) {
             LogEntry entry = getEntryAt(n);
@@ -578,7 +677,7 @@ public class RaftNode {
                         nodeId, commitIndex, matchedWeight, totalWeight);
                     break;
                 } else {
-                    logger.info("Leader {} cannot advance commitIndex to {}, matchedWeight={}, totalWeight={}, matchIndex={}", 
+                    logger.debug("Leader {} cannot advance commitIndex to {}, matchedWeight={}, totalWeight={}, matchIndex={}", 
                         nodeId, n, matchedWeight, totalWeight, matchIndex);
                 }
             }
@@ -599,7 +698,7 @@ public class RaftNode {
                 } else {
                     leaderId = entry.getLeaderId();
                 }
-                logger.info("Node {} applied entry at index {}: type={}", 
+                logger.debug("Node {} applied entry at index {}: type={}", 
                     nodeId, lastApplied, entry.getEntryType());
             }
         }
@@ -631,44 +730,43 @@ public class RaftNode {
     }
 
     public void resetElectionTimeout() {
-        if (scheduler == null || !running) {
+        if (executor == null) {
             return;
         }
-        
+
         if (electionTimeoutFuture != null) {
             electionTimeoutFuture.cancel(false);
         }
-        
+
         electionTimeout.reset();
         long timeout = electionTimeout.getNext();
-        
-        electionTimeoutFuture = scheduler.schedule(() -> {
+
+        electionTimeoutFuture = executor.schedule(() -> {
             if (running && currentState != NodeState.LEADER) {
                 long elapsedNanos = System.nanoTime() - lastHeartbeatNanos;
                 long elapsedMs = TimeUnit.NANOSECONDS.toMillis(elapsedNanos);
                 if (elapsedMs >= timeout) {
                     logger.info("Node {} election timeout, starting election", nodeId);
-                    startElection();
+                    doStartElection();
                 } else {
                     resetElectionTimeout();
                 }
             }
-        }, timeout, TimeUnit.MILLISECONDS);
+        }, timeout);
     }
 
     private void startHeartbeat() {
-        if (scheduler == null || !running) {
+        if (!running) {
             return;
         }
-        
-        long heartbeatInterval = groupStrategy != null ? 
-            groupStrategy.getHeartbeatInterval() : 50;
-        
-        heartbeatFuture = scheduler.scheduleAtFixedRate(
+
+        long heartbeatInterval = groupStrategy != null && groupStrategy.getHeartbeatInterval() > 0
+            ? groupStrategy.getHeartbeatInterval() : 50;
+
+        heartbeatFuture = executor.scheduleAtFixedRate(
             this::sendHeartbeat,
             0,
-            heartbeatInterval,
-            TimeUnit.MILLISECONDS
+            heartbeatInterval
         );
     }
 
@@ -878,6 +976,16 @@ public class RaftNode {
      * @return 命令在日志中的索引（≥1），或 -1 表示失败
      */
     public long propose(byte[] data) {
+        try {
+            return onRaftThread(() -> doPropose(data));
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            // 节点已 shutdown、executor 已终止：propose 返回失败占位（-1）
+            logger.warn("Node {} shutdown, propose rejected", nodeId);
+            return -1;
+        }
+    }
+
+    private long doPropose(byte[] data) {
         if (!isLeader()) {
             logger.warn("Only leader can propose commands");
             return -1;
@@ -893,11 +1001,11 @@ public class RaftNode {
         log.add(entry);
         truncateLogIfNeeded();
         
-        logger.info("Leader {} added entry at index {}, log size now {}", nodeId, newIndex, log.size());
+        logger.debug("Leader {} added entry at index {}, log size now {}", nodeId, newIndex, log.size());
 
         sendAppendEntries();
 
-        logger.info("Leader {} proposed command at index {}", nodeId, newIndex);
+        logger.debug("Leader {} proposed command at index {}", nodeId, newIndex);
         return newIndex;
     }
 
@@ -922,16 +1030,15 @@ public class RaftNode {
      * 启动成员变更检测任务
      */
     private void startMembershipChangeDetection() {
-        if (scheduler == null || !running || !membershipConfig.isMembershipChangeEnabled()) {
+        if (!running || !membershipConfig.isMembershipChangeEnabled()) {
             return;
         }
-        
+
         long checkInterval = membershipConfig.getHealthCheckInterval();
-        membershipChangeFuture = scheduler.scheduleAtFixedRate(
+        membershipChangeFuture = executor.scheduleAtFixedRate(
             this::checkMembershipChanges,
             checkInterval,
-            checkInterval,
-            TimeUnit.MILLISECONDS
+            checkInterval
         );
     }
     
@@ -1010,6 +1117,10 @@ public class RaftNode {
      * 提出添加成员
      */
     public boolean proposeAddMember(String newPeerId) {
+        return onRaftThread(() -> doProposeAddMember(newPeerId));
+    }
+
+    private boolean doProposeAddMember(String newPeerId) {
         if (!isLeader()) {
             logger.warn("Only leader can propose member additions");
             return false;
@@ -1045,6 +1156,10 @@ public class RaftNode {
      * 提出移除成员
      */
     public boolean proposeRemoveMember(String peerId) {
+        return onRaftThread(() -> doProposeRemoveMember(peerId));
+    }
+
+    private boolean doProposeRemoveMember(String peerId) {
         if (!isLeader()) {
             logger.warn("Only leader can propose member removals");
             return false;
@@ -1162,6 +1277,7 @@ public class RaftNode {
         private VoteWeightStrategy voteWeightStrategy;
         private GroupStrategy groupStrategy;
         private TransportLayer transportLayer;
+        private RaftNodeExecutor executor;
         private int maxLogSize;
         private cn.itcraft.speedboat.config.MembershipConfig membershipConfig;
         private cn.itcraft.speedboat.strategy.membership.HealthCheckStrategy healthCheckStrategy;
@@ -1201,6 +1317,15 @@ public class RaftNode {
 
         public Builder transportLayer(TransportLayer transportLayer) {
             this.transportLayer = transportLayer;
+            return this;
+        }
+
+        /**
+         * 注入自定义 raft 单消费者执行器（Actor 模型核心，可替换为
+         * JCTools MPSC 队列实现）。缺省为单线程 Scheduled 调度器。
+         */
+        public Builder executor(RaftNodeExecutor executor) {
+            this.executor = executor;
             return this;
         }
 
