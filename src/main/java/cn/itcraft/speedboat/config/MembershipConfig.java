@@ -31,7 +31,10 @@ public class MembershipConfig {
         this.confirmationPeriods = 2;
         this.registryCheckIntervalMs = 30000;
         this.registryImpl = RegistryImpl.NONE;
-        this.enableAutoRemoval = true;
+        // 默认关闭自动剔除：动态成员变更（auto-eject）在无注册中心的场景会因网络抖动
+        // 误将健康 peer 移出成员 → 孤岛自选主 → 分裂视角；静态成员表才是安全缺省。
+        // 需要自动剔除的场景请显式通过带参构造或注册中心/配置开启。
+        this.enableAutoRemoval = false;
     }
 
     public MembershipConfig(int healthCheckIntervalMs, int failureThreshold, int confirmationPeriods,

@@ -50,7 +50,7 @@ class RpcMessageHandler extends ChannelInboundHandlerAdapter {
                 dispatch(ctx, transport.getRequestVoteHandler().handle(request), request.getRequestId(), false, false);
             } else if (obj instanceof PreVoteRequest && transport.getPreVoteHandler() != null) {
                 PreVoteRequest request = (PreVoteRequest) obj;
-                dispatch(ctx, transport.getPreVoteHandler().handle(request), request.getRequestId(), false, false);
+                dispatch(ctx, transport.getPreVoteHandler().handle(request), request.getRequestId(), false, true);
             } else if (obj instanceof HeartbeatRequest && transport.getHeartbeatHandler() != null) {
                 HeartbeatRequest request = (HeartbeatRequest) obj;
                 dispatch(ctx, transport.getHeartbeatHandler().handle(request), request.getRequestId(), false, false);

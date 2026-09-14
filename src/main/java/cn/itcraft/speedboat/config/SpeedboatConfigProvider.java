@@ -71,6 +71,16 @@ public interface SpeedboatConfigProvider {
      * @return 集群节点列表，不能为 null 或空
      */
     List<List<String>> getNodes();
+
+    /**
+     * 获取成员管理配置（Phase B2+ 成员变更策略）。
+     *
+     * <p>默认实现返回静态成员（自动剔除关闭）；配置文件可通过
+     * {@code membership.auto.removal=true|false} 显式开启自动剔除。</p>
+     */
+    default cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig() {
+        return new cn.itcraft.speedboat.config.MembershipConfig();
+    }
     
     /**
      * 获取机房内选举超时下限（毫秒）

@@ -128,6 +128,19 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
     }
     
     @Override
+    public cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig() {
+        String autoRemoval = properties.getProperty("membership.auto.removal");
+        if (autoRemoval == null) {
+            return new cn.itcraft.speedboat.config.MembershipConfig();
+        }
+        boolean enable = Boolean.parseBoolean(autoRemoval.trim());
+        cn.itcraft.speedboat.config.MembershipConfig def = new cn.itcraft.speedboat.config.MembershipConfig();
+        return new cn.itcraft.speedboat.config.MembershipConfig(
+            def.getHealthCheckIntervalMs(), def.getFailureThreshold(), def.getConfirmationPeriods(),
+            def.getRegistryCheckIntervalMs(), def.getRegistryImpl(), enable);
+    }
+
+    @Override
     public int getIntraDatacenterElectionTimeoutMin() {
         String value = properties.getProperty("election.intra.timeout.min");
         if (value != null) {
