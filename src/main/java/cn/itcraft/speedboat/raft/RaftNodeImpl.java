@@ -133,6 +133,14 @@ public class RaftNodeImpl implements RaftNode {
     private Future<?> membershipChangeFuture;
 
     private final List<LogEntry> log;
+    /**
+     * 日志索引 → 条目的 O(1) 映射。
+     *
+     * <p>raft 单线程独占写（append/rebuild/truncate 同步维护），
+     * 外部线程仅做 get 读快照——替代原 {@code getEntryAt} 对链表
+     * 的 O(n) 线性扫描（Phase B 结构性修复）。</p>
+     */
+    private final java.util.concurrent.ConcurrentHashMap<Long, LogEntry> logIndexMap = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile long commitIndex;
     private volatile long lastApplied;
     private final Map<String, Long> nextIndex;
@@ -434,6 +442,11 @@ public class RaftNodeImpl implements RaftNode {
 
             log.clear();
             log.addAll(newLog);
+            // 重建后统一重打索引（幂等，容量与 log list 一致）
+            logIndexMap.clear();
+            for (LogEntry existing : log) {
+                logIndexMap.put(existing.getIndex(), existing);
+            }
             truncateLogIfNeeded();
 
             logger.debug("Follower {} appended {} entries, log size now {}", 
@@ -562,6 +575,7 @@ public class RaftNodeImpl implements RaftNode {
         long newIndex = getLastLogIndex() + 1;
         LogEntry entry = new LogEntry(newIndex, term.getCurrent(), nodeId);
         log.add(entry);
+        logIndexMap.put(newIndex, entry);
         truncateLogIfNeeded();
         logger.info("Leader {} appended entry at index {} term {}", nodeId, newIndex, term.getCurrent());
     }
@@ -715,6 +729,7 @@ public class RaftNodeImpl implements RaftNode {
                 break;
             }
             log.remove(0);
+            logIndexMap.remove(oldest.getIndex());
             logger.info("Truncated log entry at index {}, log size now {}", oldest.getIndex(), log.size());
         }
     }
@@ -745,18 +760,25 @@ public class RaftNodeImpl implements RaftNode {
         electionTimeout.reset();
         long timeout = electionTimeout.getNext();
 
-        electionTimeoutFuture = executor.schedule(() -> {
-            if (running && currentState != NodeState.LEADER) {
-                long elapsedNanos = System.nanoTime() - lastHeartbeatNanos;
-                long elapsedMs = TimeUnit.NANOSECONDS.toMillis(elapsedNanos);
-                if (elapsedMs >= timeout) {
-                    logger.info("Node {} election timeout, starting election", nodeId);
-                    doStartElection();
-                } else {
-                    resetElectionTimeout();
-                }
+        electionTimeoutFuture = executor.schedule(
+            new cn.itcraft.speedboat.raft.task.ElectionTimeoutTask(() -> runElectionTimeout(timeout)), timeout);
+    }
+
+    /**
+     * 选举超时到期后的判定（raft 单线程内执行）：
+     * 心跳真超时则发起选举，否则重新武装下一次检测（self-rescheduling）。
+     */
+    private void runElectionTimeout(long timeoutMs) {
+        if (running && currentState != NodeState.LEADER) {
+            long elapsedNanos = System.nanoTime() - lastHeartbeatNanos;
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(elapsedNanos);
+            if (elapsedMs >= timeoutMs) {
+                logger.info("Node {} election timeout, starting election", nodeId);
+                doStartElection();
+            } else {
+                resetElectionTimeout();
             }
-        }, timeout);
+        }
     }
 
     private void startHeartbeat() {
@@ -768,7 +790,7 @@ public class RaftNodeImpl implements RaftNode {
             ? groupStrategy.getHeartbeatInterval() : 50;
 
         heartbeatFuture = executor.scheduleAtFixedRate(
-            this::sendHeartbeat,
+            new cn.itcraft.speedboat.raft.task.HeartbeatTask(this::sendHeartbeat),
             0,
             heartbeatInterval
         );
@@ -1003,6 +1025,7 @@ public class RaftNodeImpl implements RaftNode {
         long newIndex = getLastLogIndex() + 1;
         CommandLogEntry entry = CommandLogEntry.create(newIndex, term.getCurrent(), nodeId, data);
         log.add(entry);
+        logIndexMap.put(newIndex, entry);
         truncateLogIfNeeded();
         
         logger.debug("Leader {} added entry at index {}, log size now {}", nodeId, newIndex, log.size());
@@ -1022,12 +1045,7 @@ public class RaftNodeImpl implements RaftNode {
     }
 
     private LogEntry getEntryAt(long index) {
-        for (LogEntry entry : log) {
-            if (entry.getIndex() == index) {
-                return entry;
-            }
-        }
-        return null;
+        return logIndexMap.get(index);
     }
 
     /**
@@ -1040,7 +1058,7 @@ public class RaftNodeImpl implements RaftNode {
 
         long checkInterval = membershipConfig.getHealthCheckInterval();
         membershipChangeFuture = executor.scheduleAtFixedRate(
-            this::checkMembershipChanges,
+            new cn.itcraft.speedboat.raft.task.MemberCheckTask(this::checkMembershipChanges),
             checkInterval,
             checkInterval
         );
@@ -1148,6 +1166,7 @@ public class RaftNodeImpl implements RaftNode {
         
         // 添加到日志
         log.add(entry);
+        logIndexMap.put(entry.getIndex(), entry);
         
         // 复制到所有节点
         replicateMemberChange(entry);
@@ -1192,6 +1211,7 @@ public class RaftNodeImpl implements RaftNode {
         
         // 添加到日志
         log.add(entry);
+        logIndexMap.put(entry.getIndex(), entry);
         
         // 复制到所有节点
         replicateMemberChange(entry);
