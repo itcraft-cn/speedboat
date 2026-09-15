@@ -118,6 +118,30 @@ Speedboat.isRunning();        // Running status
 Speedboat.stop();
 ```
 
+## Design Constraint: Single Cluster
+
+> ⚠️ **One process = one cluster topology**. Speedboat uses a singleton facade:
+> each application instance maintains the leader/follower relationship of
+> exactly **one** cluster (a single cluster may still span multiple datacenters).
+
+```text
+✅ Supported: one application participating in one cluster (single or cross-datacenter)
+❌ Not supported: one application maintaining leadership of multiple clusters
+                 simultaneously (e.g. both a/b/c and a/x/y clusters)
+```
+
+Implications:
+
+- `Speedboat.start(config)` is a singleton; a second start is ignored
+- The config holds exactly one `nodes` topology; the local IP is matched only once
+- All static APIs (`isMain()` / `getLock()` etc.) refer to this single cluster
+- Distributed locks are bound to that cluster's Raft log, with no namespace isolation
+
+**Why this design**: multi-cluster (multi-group / namespaced) use cases are rare.
+To keep the API and transport protocol minimal, support is deliberately omitted.
+If you truly need it, deploy one process per cluster, or extend the config layer
+and transport layer yourself (RPC messages would need a groupId for multiplexing).
+
 ## Auto Mode
 
 | nodes.size() | Mode | Description |
