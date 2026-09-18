@@ -10,14 +10,15 @@ import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
- * 内存持久化实现（三档策略之 Mem：当前进程内的"稳定环境默认且快速"实现）。
+ * 内存持久化实现（三档策略之 Mem：<b>显式档</b>——无盘沙箱/容器 ephemeral 场景）。
  *
- * <p><b>三档定位（2026-09-18 P4 决策）：</b></p>
+ * <p><b>三档定位（2026-09-18 P4-M5 收敛：缺省已让位 mmap）：</b></p>
  * <ul>
- *   <li>{@link NopRaftStore}：测试基线/显式关闭</li>
- *   <li><b>Mem（本类，缺省）</b>：JVM 进程内可恢复（raft node 重启语义），
- *       无磁盘开销、吞吐最优；跨进程重启不承诺</li>
- *   <li>Mmap（{@link MmapRaftStore}）：跨进程重启可挂回，极稳定环境</li>
+ *   <li>{@link NopRaftStore}：测试基线/显式关闭；库级 Builder 缺省</li>
+ *   <li><b>Mem（本类，显式选档 raft.persistence=mem）</b>：JVM 进程内可恢复，
+ *       零磁盘开销；<b>跨进程重启丢 term/votedFor（重复投票风险）与锁 epoch</b>
+ *       ——不支持"极稳定/重启保真"诉求</li>
+ *   <li>{@link MmapRaftStore}（<b>生产缺省</b>）：跨进程重启可挂回</li>
  * </ul>
  *
  * <p>语义对齐 RaftStore 契约：persist 返回即 durable（内存层面）；

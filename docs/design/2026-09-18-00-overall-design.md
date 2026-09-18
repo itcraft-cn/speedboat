@@ -37,7 +37,7 @@ Speedboat(静态门面, default 单组兼容层)
    │       ├── StateMachine(LockStateMachine)：锁表裁决 + 检查点
    │       └── RaftNodeReport（Phase E 可观测性快照/监听）
    ├── lock/           DistributedLock + DistributedLockImpl（转发/本地双路合一）
-   ├── persistence/    NopRaftStore / InMemoryRaftStore(默认 mem) / MmapRaftStore
+   ├── persistence/    NopRaftStore(Builder 缺省) / InMemoryRaftStore(显式) / MmapRaftStore(生产缺省)
    ├── strategy/       vote-weight（prefer/even）· group · membership（健康检查/变更验证/注册）
    └── config/         SpeedboatConfigProvider + PropertiesConfigProvider（全部键见 §5）
 ```
@@ -73,7 +73,7 @@ Speedboat(静态门面, default 单组兼容层)
 | `vote.weight.strategy` | none | prefer / even / none；**全网一致约束** |
 | `vote.weight.prefer` / `.prefer.weight` | -/3 | prefer 钉主键值 |
 | `membership.auto.removal` | false | 自动剔除（不建议开启） |
-| `raft.persistence` | **mem** | none / mem / mmap 三档 |
+| `raft.persistence` | **mmap** | none / mem / mmap 三档（mem=显式无盘档；mmap 生产缺省） |
 | `raft.persistence.dir` | speedboat-data | mmap 目录（{nodeId} 自动分子目录） |
 | `raft.mmap.size.mb` | 128 | mmap 单文件上限 |
 | `raft.mmap.file.name` | raft.mmap | 文件名占比 {nodeId} |
@@ -106,7 +106,7 @@ Speedboat(静态门面, default 单组兼容层)
 - **正确性**：同名目锁互斥由日志全序保证（0 双持；"失主窗口"只允许 **零持有**，不出现双持）；
 - **性能**：锁操作 Leader 本地 <10ms / follower 转发 RTT 级；mmap 写 = 内存级消耗；心跳 50ms 折叠为空 AppendEntries；
 - **可观测**：重启/挂回、检查点、压实回收、锁授予/拒绝/RENEW 被拒均有语义化 INFO/WARN 日志锚点（`[PASS]`/`[FAIL]`、`restored term`、`rebuilt log`、`snapshot written`、`compacted`）；
-- **兼容**：`Speedboat.start(config)` 单组语义零变化；`raft.persistence` 缺省 mem 不扰既有部署；
+- **兼容**：`Speedboat.start(config)` 单组语义零变化；`raft.persistence` 缺省 mmap——写代价与 mem 同量级而跨进程重启安全性严格占优（P4-M5 收敛）；
 - **持久化 durability 边界（精确口径）**：
   - **term**：每次写槽后 `force()`（msync）——选主安全性零丢失；
   - **日志**：append 入 page cache；`force()` 点 = 检查点 / 停机 / 压实。**未 force 的尾部断电可退**——此处的"未提交"指 *尚未进入本轮多数派 AppendEntries 确认前缀* 的尾部；已提交条目若尚未 force 且全体同时断电，属于本档的 durability 极限（要 power-loss 级保证需每次提交后 force 或接 WAL fsync 策略，列为演进项）；

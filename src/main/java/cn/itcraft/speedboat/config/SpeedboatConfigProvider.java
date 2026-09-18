@@ -155,15 +155,17 @@ public interface SpeedboatConfigProvider {
 
 
     /**
-     * 持久化三档选型（P4 2026-09-18）：
+     * 持久化三档选型（2026-09-18 P4-M5 收敛：**缺省 mmap**）：
      * <ul>
      *   <li>{@code none}：NopRaftStore（测试基线/显式关闭）</li>
-     *   <li>{@code mem}（缺省）：InMemoryRaftStore——进程内可恢复、快速、无磁盘开销</li>
-     *   <li>{@code mmap}：MmapRaftStore——跨进程重启挂回，极稳定环境</li>
+     *   <li>{@code mem}：InMemoryRaftStore——<b>显式档</b>（无盘沙箱/容器 ephemeral；
+     *       跨进程重启丢 term/votedFor/锁 epoch，不再是缺省）</li>
+     *   <li>{@code mmap}（缺省）：MmapRaftStore——跨进程重启挂回，
+     *       选主安全性与锁 epoch 保真度最高</li>
      * </ul>
      */
     default String getRaftPersistenceType() {
-        return "mem";
+        return "mmap";
     }
 
     /** mmap 档持久化目录（缺省工作目录下 speedboat-data） */

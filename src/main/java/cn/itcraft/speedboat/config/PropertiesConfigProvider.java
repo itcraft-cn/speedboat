@@ -240,7 +240,7 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
     @Override
     public String getRaftPersistenceType() {
         String v = properties.getProperty("raft.persistence");
-        return v == null || v.isEmpty() ? "mem" : v.trim();
+        return v == null || v.isEmpty() ? "mmap" : v.trim();
     }
 
     @Override

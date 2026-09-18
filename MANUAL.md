@@ -127,7 +127,7 @@ election.cross.timeout.max=5000
 | `vote.weight.strategy` | ❌ | none | 投票权重策略：`prefer` / `even` / `none` |
 | `vote.weight.prefer` | ⚠️ prefer 必填 | - | 享受额外权重的节点 ID（格式 `node-<ip>-<port>`） |
 | `vote.weight.prefer.weight` | ❌ | 3 | 该节点获得的额外权重 |
-| `raft.persistence` | ❌ | mem | 持久化三档：`mmap` / `mem`（默认）/ `none` |
+| `raft.persistence` | ❌ | mmap | 持久化三档：`mmap`（默认，跨进程挂回）/ `mem`（显式档，重启即全丢） / `none` |
 | `raft.persistence.dir` | ❌ | `speedboat-data` | mmap 档持久化目录（按 `{nodeId}` 自动分子目录） |
 | `raft.mmap.size.mb` | ❌ | 128 | mmap 档 WAL 区域大小上限 |
 | `raft.mmap.file.name` | ❌ | `raft.mmap` | mmap 文件名（可自定义检测 `{nodeId}` 占位） |
@@ -301,7 +301,7 @@ if (handle.isSuccess()) {
 
 #### 重启副本边界（2026-09-18 P4 起：三档持久化解决）
 
-`raft.persistence` 三档持久化（**默认 mem**；mmap 为"丢了能挂回的"极稳定档）落地后，进程重启副本可挂回检查点/WAL 确定性地重建锁表与 epoch，epoch 单调性全网成立（真网已复核：重启副本接管迁移 grant 的 epoch 与长驻副本一致）。
+`raft.persistence` 三档持久化（**默认 mmap**——写代价与 mem 同量级，但跨进程重启安全性严格占优，因此缺省承载最安全档）落地后，进程重启副本可挂回检查点/WAL 确定性地重建锁表与 epoch，epoch 单调性全网成立（真网已复核：重启副本接管迁移 grant 的 epoch 与长驻副本一致）。
 - **mem（缺省）**：进程内可恢复，跨进程重启等同"首次启动"，仅适合长驻进程场景；
 - **mmap**（`raft.persistence=mmap`，默认目录 `./speedboat-data/{nodeId}/`、默认 128MB 单文件）：重启挂回，锁表 epoch 跨重启保真；
 - **none**（`raft.persistence=none`）：NopRaftStore 测试基线。

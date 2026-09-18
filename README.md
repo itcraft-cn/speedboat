@@ -101,13 +101,13 @@ vote.weight.prefer.weight=3
 实机 4 节点验证：权重 (3,1,1,1) → total 6 / required 4，
 三个普通节点永不能单独取胜，加权节点必须参与每次多数派。
 
-### 持久化三档（可选，默认 mem）
+### 持久化三档（可选，默认 mmap）
 
 ```properties
-# raft.persistence=mem | mmap | none
-#   mem（缺省）：进程内可恢复，快速，无磁盘开销（稳定环境默认）
-#   mmap      ：128MB 单文件 mmap WAL——"丢了挂回"，跨进程重启可恢复（极稳定环境）
-#   none      ：NopRaftStore 测试基线
+# raft.persistence=mmap | mem | none
+#   mmap（缺省）：128MB 单文件 mmap WAL——"丢了挂回"，跨进程重启保 term/日志/锁 epoch（推荐）
+#   mem        ：显式内存档——零磁盘（沙箱/容器 ephemeral）；**跨进程重启丢 term 与锁状态**
+#   none       ：NopRaftStore 测试基线
 raft.persistence=mmap
 raft.persistence.dir=speedboat-data        # mmap 目录（{nodeId} 自动分子目录）
 raft.mmap.size.mb=128                      # mmap 单文件大小上限

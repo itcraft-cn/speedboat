@@ -291,31 +291,36 @@ public class Speedboat {
     private RaftStore raftStoreRef;
 
     /**
-     * 持久化三档解析（2026-09-18 P4 决策）：
+     * 持久化三档解析（2026-09-18 P4-M5 收敛：**生产缺省 mmap**）。
+     *
+     * <p>决策依据：写路径 Mem/Mmap 同数量级（低频锁命令下均无感），但
+     * <b>跨进程重启安全性 Mmap 严格占优</b>——Mem 档进程重启即丢 term/votedFor
+     * （重复投票风险）与锁 epoch；故生产门面缺省应携带最全安全性档位。</p>
      * <ul>
      *   <li>{@code none} → NopRaftStore（测试基线/显式关闭）</li>
-     *   <li>{@code mem}（缺省）→ InMemoryRaftStore（进程内可恢复，快速，无磁盘开销）</li>
-     *   <li>{@code mmap} → MmapRaftStore（跨进程重启挂回；目录 {nodeId} 自动分目录）</li>
+     *   <li>{@code mem} → InMemoryRaftStore（<b>显式档</b>：无盘沙箱/容器 ephemeral；跨进程重启丢 term 与锁状态）</li>
+     *   <li>{@code mmap}（缺省）→ MmapRaftStore（跨进程重启挂回；目录 {nodeId} 自动分目录）</li>
      * </ul>
+     * 库级 {@code RaftNode.Builder} 缺省保持 Nop（零副作用，档位由调用方显式选择）。
      */
     private RaftStore buildRaftStore(SpeedboatConfigProvider config) {
-        String type = config.getRaftPersistenceType() == null ? "mem" : config.getRaftPersistenceType().trim();
+        String type = config.getRaftPersistenceType() == null ? "mmap" : config.getRaftPersistenceType().trim();
         switch (type) {
             case "none":
                 return NopRaftStore.getInstance();
-            case "mmap": {
+            case "mem":
+                this.raftStoreRef = InMemoryRaftStore.createDefault();
+                return raftStoreRef;
+            case "mmap":
+            default: {
                 String dir = config.getRaftPersistenceDir();
                 String fileName = config.getRaftMmapFileName().replace("{nodeId}", nodeId);
                 File dirFile = new File(dir, nodeId);
                 this.raftStoreRef = new MmapRaftStore(dirFile, fileName, config.getRaftMmapSizeMb());
-                logger.info("RaftStore resolved mmap: dir={}, file={}, sizeMb={}",
+                logger.info("RaftStore resolved mmap (default): dir={}, file={}, sizeMb={}",
                     dirFile.getAbsolutePath(), fileName, config.getRaftMmapSizeMb());
                 return raftStoreRef;
             }
-            case "mem":
-            default:
-                this.raftStoreRef = InMemoryRaftStore.createDefault();
-                return raftStoreRef;
         }
     }
     

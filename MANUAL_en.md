@@ -127,7 +127,7 @@ election.cross.timeout.max=5000
 | `vote.weight.strategy` | ❌ | none | Weighted election: `prefer` / `even` / `none` |
 | `vote.weight.prefer` | ⚠️ for prefer | - | Node ID (format `node-<ip>-<port>`) that gets the extra weight |
 | `vote.weight.prefer.weight` | ❌ | 3 | Extra weight given to the preferred node |
-| `raft.persistence` | ❌ | mem | Persistence tier: `mmap` / `mem` (default) / `none` |
+| `raft.persistence` | ❌ | mmap | Persistence tier: `mmap` (default, re-attachable) / `mem` (explicit, no cross-process recovery) / `none` |
 | `raft.persistence.dir` | ❌ | `speedboat-data` | mmap tier persistence dir (auto sub-dir per `{nodeId}`) |
 | `raft.mmap.size.mb` | ❌ | 128 | mmap tier WAL region size cap (MB) |
 | `raft.mmap.file.name` | ❌ | `raft.mmap` | mmap file name (supports `{nodeId}` placeholder) |
@@ -314,8 +314,9 @@ if (handle.isSuccess()) {
 
 #### Restart-replica boundary (resolved by the P4 persistence tiers)
 
-With `raft.persistence` tiers (**default `mem`**; `mmap` as the extreme-stability
-tier) a restarted process re-attaches checkpoint/WAL and rebuilds lock table and
+With `raft.persistence` tiers (**default `mmap**` — write cost is same order as
+`mem`, but cross-process restart safety is strictly superior, so the safest tier
+is the default) a restarted process re-attaches checkpoint/WAL and rebuilds lock table and
 epoch deterministically — epoch monotonicity holds cluster-wide (verified on real
 network: the restarted replica's migration takeover epoch equals the long-lived
 replicas').

@@ -102,14 +102,15 @@ won → duelling leaders. Verified on real 4-node cluster: weights (3,1,1,1) →
 total 6, required 4 — three ordinary nodes alone can never win; the weighted
 node must participate in every quorum.
 
-### Persistence tiers (optional, default `mem`)
+
 
 ```properties
-# raft.persistence=mem | mmap | none
-#   mem (default): in-process recoverable, fast, no disk overhead (stable default)
-#   mmap         : 128MB single-file mmap WAL — "attach back if lost",
-#                  recoverable across process restarts (extreme-stability tier)
-#   none         : NopRaftStore, test baseline
+# raft.persistence=mmap | mem | none
+#   mmap (default): 128MB single-file mmap WAL — "attach back if lost";
+#                   survives process restarts (recommended)
+#   mem           : explicit tier — zero disk (sandbox/ephemeral containers);
+#                   loses term and lock state across process restarts
+#   none          : NopRaftStore, test baseline
 raft.persistence=mmap
 raft.persistence.dir=speedboat-data        # mmap dir ({nodeId} auto sub-dir)
 raft.mmap.size.mb=128                      # mmap single-file size cap

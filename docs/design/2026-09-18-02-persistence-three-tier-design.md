@@ -4,6 +4,7 @@
 - 状态：已实现（提交 e8d307f / 0866889 / 619c6d9；真网复核 defect-20260918-01 关闭）
 - 关联：总设计 [2026-09-18-00](2026-09-18-00-overall-design.md)、缺陷报告 docs/analysis/defect-20260918-01-log-truncation-epoch-divergence.md
 - 用户拍板：三实现 Nop/Mem/Mmap，**默认 Mem**；Mmap 128MB 单文件 mmap WAL"丢了挂回"；快照阈值 1024 条；配置"默认优先、最小化配置"
+- **P4-M5 收敛（2026-09-18 追加拍板）**：比对代价后生产缺省由 mem 改 **mmap**——写路径两者同数量级（低频锁命令均无感），但跨进程重启安全性 mmap 严格占优（mem 重启丢 term/votedFor=重复投票风险、丢锁 epoch）；因此：门面缺省=mmap，`raft.persistence=mem` 降级为显式无盘档（沙箱/容器 ephemeral），库级 Builder 缺省保持 Nop（零副作用）。InMemoryRaftStore 类保留不删（公共 API + 测试利用）
 
 ---
 
@@ -12,7 +13,7 @@
 | 档 | 实现 | 定位 | 重启语义 |
 |----|------|------|----------|
 | `NopRaftStore` | Nop | 测试基线 / 显式关闭 | 全空（行为与历史版本一致） |
-| `InMemoryRaftStore`（默认 mem） | TreeMap 镜像 + 读写锁 | **进程内**可恢复（raft node 重启语义）；无磁盘；跨进程重启不承诺 | 稳定环境默认（长驻进程） |
+| `InMemoryRaftStore`（显式档，原默认） | TreeMap 镜像 + 读写锁 | **进程内**可恢复（raft node 重启语义）；无磁盘；**跨进程重启丢 term/epoch（重复投票风险）** | 无盘沙箱/容器 ephemeral |
 | `MmapRaftStore` | 单文件 mmap | **跨进程重启可挂回**，锁/epoch 保真 | 极稳定环境 |
 
 选型铁律：三档实现同一 `RaftStore` 契约，算法层（RaftNodeImpl）零感知；档位切换不改变任何共识语义。这也是"重启副本 epoch 边界根治"的结构基础——判定的重建只能来自 pair（WAL 日志 + 状态机检查点），不依赖任何档位差异。
