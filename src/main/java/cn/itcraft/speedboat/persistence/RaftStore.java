@@ -85,4 +85,17 @@ public interface RaftStore {
     default String getCheckpointFile() {
         return null;
     }
+
+    /**
+     * 上报检查点水位（P4-M4 容量回收联动；缺省 no-op）。
+     *
+     * <p>{@code appliedIndex} 表示"状态机已完整落盘覆盖至该索引"——实现方据此
+     * 确认：索引 ≤ appliedIndex 的日志在<b>重启恢复</b>时不再需要（可从检查点重建），
+     * 从而在容量压力下安全回收前缀（Mmap 档压实）。</p>
+     *
+     * <p>调用时机：RaftNodeImpl 在状态机 snapshot 成功 + flush 之后，raft 单线程调用。</p>
+     */
+    default void markCheckpoint(long appliedIndex) {
+        // 缺省无容量回收需求（Nop/Mem）
+    }
 }

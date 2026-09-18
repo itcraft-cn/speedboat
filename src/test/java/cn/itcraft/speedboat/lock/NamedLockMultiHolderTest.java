@@ -283,4 +283,21 @@ class NamedLockMultiHolderTest {
         hA.close();
         hB.close();
     }
+
+    /**
+     * isLost 可观测出口（P4-M4）：正常持锁为 false；本地 applied 视图失效后为 true
+     * ——业务发布前的校验依据（框架无回调，轮询是唯一通道）。
+     */
+    @Test
+    void isLostReflectsLocalView() {
+        String leaderId = getLeaderNodeId();
+        DistributedLock lock = newLock(leaderId, "forex");
+        LockHandle handle = lock.tryLock(3000);
+        assertTrue(handle.isSuccess());
+        assertFalse(lock.isLost(), "正常持有期间不应报失效");
+
+        // 外部抹除本节点锁表（模拟本地 applied 视图失效：过期/被接管等）
+        smBy(leaderId).getLockTable().clear();
+        assertTrue(lock.isLost(), "本地视图不持有时必须报失效");
+    }
 }

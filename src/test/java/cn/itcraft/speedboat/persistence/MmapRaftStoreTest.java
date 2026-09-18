@@ -25,7 +25,11 @@ class MmapRaftStoreTest {
 
     /** 挂载（模拟进程重启）：同目录重新 new + open */
     private MmapRaftStore mount() {
-        MmapRaftStore s = new MmapRaftStore(dir.toFile(), "raft.mmap", 8);
+        return mount(8);
+    }
+
+    private MmapRaftStore mount(int sizeMb) {
+        MmapRaftStore s = new MmapRaftStore(dir.toFile(), "raft.mmap", sizeMb);
         s.open();
         return s;
     }
@@ -138,5 +142,56 @@ class MmapRaftStoreTest {
         MemberChangeEntry restored = (MemberChangeEntry) view.get(0);
         assertEquals("node-X", restored.getNodeId());
         assertEquals("1.2.3.4:8888", restored.getAddress());
+    }
+
+    // ==================== P4-M4 压实回收 ====================
+
+    /** 压实：检查点水位以下的日志前缀被回收，重挂后恢复语义等价（检查点 + 保留段） */
+    @Test
+    void compactionReclaimsPrefixBelowCheckpointFloor() {
+        MmapRaftStore s1 = mount();
+        for (int i = 1; i <= 10; i++) {
+            s1.persistLogEntries(Arrays.<LogEntry>asList(cmd(i, 1, "L", ("d" + i).getBytes())));
+        }
+        assertEquals(10, s1.restoredLogEntries().size());
+
+        s1.markCheckpoint(5L);
+        assertEquals(5L, s1.getCompactFloor());
+        long newOffset = s1.compactNow();
+
+        List<LogEntry> retained = s1.restoredLogEntries();
+        assertEquals(5, retained.size(), "floor 以下的 5 条应被回收");
+        assertEquals(6L, retained.get(0).getIndex(), "保留段应从 floor+1 开始");
+        assertEquals(10L, retained.get(retained.size() - 1).getIndex());
+        assertTrue(newOffset <= 1024 + 5 * 64, "写位应回落到区域起始附近");
+
+        // 重挂：WAL 只含保留段（检查点负责 floor 以下状态）
+        s1.close();
+        MmapRaftStore s2 = mount();
+        List<LogEntry> afterRemount = s2.restoredLogEntries();
+        assertEquals(5, afterRemount.size(), "压实后重挂仍收敛于保留段");
+        assertEquals(6L, afterRemount.get(0).getIndex());
+
+        // 压实后继续追加正常（写位从新位置前进）
+        s2.persistLogEntries(Arrays.<LogEntry>asList(cmd(11, 1, "L", "d11".getBytes())));
+        assertEquals(6, s2.restoredLogEntries().size());
+    }
+
+    /** 容量压力路径自动触发：随检查点水位推进，WAL 不会被写满丢帧 */
+    @Test
+    void capacityPressureTriggersCompactionNotFrameLoss() {
+        MmapRaftStore s = mount(1); // sizeMb=1：区域约 1MB，约 2.3 万条触发压实
+        int total = 30000;
+        for (int i = 1; i <= total; i++) {
+            s.persistLogEntries(Arrays.<LogEntry>asList(cmd(i, 1, "L", new byte[]{1})));
+            if (i % 100 == 0) {
+                s.markCheckpoint(i);
+            }
+        }
+        List<LogEntry> retained = s.restoredLogEntries();
+        // 前缀被持续压实：保留条数远小于总量，且全部高于检查点水位以下的部分
+        assertTrue(retained.size() < total, "应已压实回收前缀而非线性增长");
+        assertTrue(retained.get(retained.size() - 1).getIndex() == total, "最新条目必须在线");
+        assertTrue(retained.get(0).getIndex() > 0);
     }
 }

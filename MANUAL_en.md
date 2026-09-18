@@ -132,6 +132,8 @@ election.cross.timeout.max=5000
 | `raft.mmap.size.mb` | ❌ | 128 | mmap tier WAL region size cap (MB) |
 | `raft.mmap.file.name` | ❌ | `raft.mmap` | mmap file name (supports `{nodeId}` placeholder) |
 | `raft.max.log.size` | ❌ | 4096 | In-memory log cap (defect-20260918-01: the sole rebuild basis for restarted replicas; must not truncate too deep) |
+| `raft.checkpoint.interval` | ❌ | 1024 | State-machine checkpoint trigger threshold (applied delta; mmap tier only) |
+| `lock.lease.ms` | ❌ | 30000 | Default distributed-lock lease (ms; shorter = faster takeover, more renewal cost) |
 
 ### ⚠️ Vote Weight: cluster-wide consistency constraint
 
@@ -307,6 +309,8 @@ if (handle.isSuccess()) {
 | Non-preemption | A held lock is never revoked; the returning A must wait for the new holder's loss/release |
 | Migration latency | holder lost → ≤ leaseMs to takeover; leader crash adds ≤1 election timeout of state-change pause (lease countdown unaffected) |
 | Multi-lock coexistence | One node may hold several named locks at once (subjects never block each other) |
+| Loss observability | `lock.isLost()` turns true on a rejected RENEW or a stale local view; **check before publishing** (no callbacks — polling is the only channel in this version) |
+| Fairness | Non-preemptive => no starvation-free guarantee (renew-and-hold wins); retries carry ±50% jitter against thundering herd |
 
 #### Restart-replica boundary (resolved by the P4 persistence tiers)
 

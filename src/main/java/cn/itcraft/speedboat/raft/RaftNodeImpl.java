@@ -219,6 +219,7 @@ public class RaftNodeImpl implements RaftNode {
         this.nextIndex = new ConcurrentHashMap<>();
         this.matchIndex = new ConcurrentHashMap<>();
         this.maxLogSize = builder.maxLogSize > 0 ? builder.maxLogSize : SpeedboatConsts.DEFAULT_MAX_LOG_SIZE;
+        this.checkpointInterval = builder.checkpointInterval > 0 ? builder.checkpointInterval : DEFAULT_CHECKPOINT_INTERVAL;
         
         // 成员变更初始化
         this.membershipConfig = builder.membershipConfig != null ? builder.membershipConfig : new cn.itcraft.speedboat.config.MembershipConfig();
@@ -353,6 +354,7 @@ public class RaftNodeImpl implements RaftNode {
             if (checkpointFile != null && stateMachine != null && lastApplied > lastCheckpointApplied) {
                 stateMachine.snapshot(checkpointFile);
                 lastCheckpointApplied = lastApplied;
+                raftStore.markCheckpoint(lastApplied);
             }
             raftStore.flush();
         } catch (Exception e) {
@@ -1056,14 +1058,18 @@ public class RaftNodeImpl implements RaftNode {
         maybeCheckpoint();
     }
 
-    /** 快照触发阈值（P4 决策：applied 每 1024 条一个状态机检查点） */
-    private static final int CHECKPOINT_INTERVAL = 1024;
+    private static final int DEFAULT_CHECKPOINT_INTERVAL = 1024;
+    /** 状态机检查点触发阈值（applied 增量；Builder.checkpointInterval / raft.checkpoint.interval 可配） */
+    private final int checkpointInterval;
     /** 触发水位：最近一次检查点覆盖的 appliedIndex */
     private long lastCheckpointApplied = 0L;
 
     /**
      * 检查点判定：仅当 raftStore 提供检查点路径（MmapRaftStore）且间隔达标时落盘。
-     * raft 单线程调用；同步写（频率极低——1024 才一次），阻塞可接受。
+     * raft 单线程调用；同步写（频率可配，缺省 1024 才一次），阻塞可接受。
+     *
+     * <p>成功次序铁律：先检查点落盘 + flush，再 {@code markCheckpoint} 上报水位——
+     * 水位一旦上报即允许存储层压实回收 WAL 前缀，顺序颠倒会导致回收后仍无检查点可恢复。</p>
      */
     private void maybeCheckpoint() {
         if (stateMachine == null) {
@@ -1073,28 +1079,83 @@ public class RaftNodeImpl implements RaftNode {
         if (checkpointFile == null) {
             return;
         }
-        if (lastApplied - lastCheckpointApplied < CHECKPOINT_INTERVAL) {
+        if (lastApplied - lastCheckpointApplied < checkpointInterval) {
             return;
         }
         try {
             stateMachine.snapshot(checkpointFile);
             raftStore.flush();
             lastCheckpointApplied = lastApplied;
+            raftStore.markCheckpoint(lastApplied);
         } catch (Exception e) {
             logger.warn("Node {} checkpoint failed: {}", nodeId, e.toString());
         }
     }
 
+    /**
+     * 内存日志裁剪（maxLogSize 生效路径，P4-M4 修正）。
+     *
+     * <p><b>历史缺陷</b>：旧逻辑"遇到已提交条目即 break"，提交推进后永不裁剪、
+     * maxLogSize 对已提交区域形同虚设（日志无限增长）。</p>
+     *
+     * <p><b>两条安全裁剪路径（合并保留）</b>：</p>
+     * <ol>
+     *   <li><b>未提交积压</b>（含 follower）：index &gt; commitIndex 的条目被裁剪是安全的
+     *       —— 未提交条目由 Leader 按 nextIndex 重发收敛；</li>
+     *   <li><b>已提交前缀</b>（仅 Leader）：要求所有 peer 的 matchIndex 已覆盖该前缀
+     *       （或单节点），此时该前缀不可能再被任何 peer 需要重发（本框架无 INSTALL_SNAPSHOT）。</li>
+     * </ol>
+     */
     private void truncateLogIfNeeded() {
-        while (log.size() > maxLogSize && !log.isEmpty()) {
-            LogEntry oldest = log.get(0);
-            if (oldest.getIndex() <= commitIndex) {
+        if (log.size() <= maxLogSize) {
+            return;
+        }
+        long safeCommittedFloor = resyncSafeFloor();
+        int allowedRemove = log.size() - maxLogSize;
+        int removeCount = 0;
+        for (LogEntry entry : log) {
+            if (removeCount >= allowedRemove) {
                 break;
             }
-            log.remove(0);
-            logIndexMap.remove(oldest.getIndex());
-            logger.info("Truncated log entry at index {}, log size now {}", oldest.getIndex(), log.size());
+            boolean uncommitted = entry.getIndex() > commitIndex;
+            boolean safeCommitted = safeCommittedFloor >= 0 && entry.getIndex() <= safeCommittedFloor;
+            if (!uncommitted && !safeCommitted) {
+                break;
+            }
+            removeCount++;
         }
+        if (removeCount <= 0) {
+            return;
+        }
+        for (int i = 0; i < removeCount; i++) {
+            LogEntry oldest = log.get(i);
+            logIndexMap.remove(oldest.getIndex());
+        }
+        log.subList(0, removeCount).clear();
+        logger.info("Node {} trimmed {} log entries (maxLogSize={}, safeCommittedFloor={}, logSize={})",
+            nodeId, removeCount, maxLogSize, safeCommittedFloor, log.size());
+    }
+
+    /**
+     * 可安全裁剪的日志上界：所有 peer 都已复制的最大连续前缀（≤ commitIndex）。
+     * 返回 -1 表示当前不可裁剪（follower / 有 peer 匹配未知）。
+     */
+    private long resyncSafeFloor() {
+        if (peerIds.isEmpty()) {
+            return commitIndex;
+        }
+        if (!isLeader()) {
+            return -1;
+        }
+        long floor = Long.MAX_VALUE;
+        for (String peer : peerIds) {
+            Long m = matchIndex.get(peer);
+            if (m == null) {
+                return -1;
+            }
+            floor = Math.min(floor, m);
+        }
+        return Math.min(floor, commitIndex);
     }
 
     public boolean isMain() {

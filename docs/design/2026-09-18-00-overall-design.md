@@ -77,24 +77,41 @@ Speedboat(静态门面, default 单组兼容层)
 | `raft.persistence.dir` | speedboat-data | mmap 目录（{nodeId} 自动分子目录） |
 | `raft.mmap.size.mb` | 128 | mmap 单文件上限 |
 | `raft.mmap.file.name` | raft.mmap | 文件名占比 {nodeId} |
-| `raft.max.log.size` | 4096 | 内存日志上限（defect-20260918-01 校正） |
+| `raft.max.log.size` | 4096 | 内存日志上限（双安全裁剪路径，见 02 分项 §6） |
+| `raft.checkpoint.interval` | 1024 | 状态机检查点触发阈值（applied 增量，仅 Mmap 档生效） |
+| `lock.lease.ms` | 30000 | 分布式锁默认租约时长（越短迁移越快、续期开销越高） |
+
+### 5.1 锁内部常量（当前未配置化，改需评估）
+
+| 常量 | 值 | 语义 |
+|------|-----|------|
+| 转发等待上限 | 6000ms | 略大于传输层 5s 兜底；**阻塞在调用方线程**，非 Netty IO |
+| 重试间隔 | 100ms（±50% jitter） | 申请失败后退避；jitter 防多竞争者同拍重试（惊群） |
+| 判定结果 TTL | 60s | 结果表惰性清理窗口；调用方实际等待仅 1s，远小于 TTL |
+| 结果表软容量 | 4096 | 超限才触发按时间清理 |
+| 续期间隔 | leaseMs/2 | 每个锁实例一个单线程调度器（锁名数量级=业务名目数） |
 
 样例：`config.properties`（单机房全量注释化）、`config-named-lock.properties`（报价三名目场景）。
 
 ## 6. 线程模型与故障域
 
-- **raft 单消费者线程**：全部状态变更（角色/term/日志/成员/commitIndex/锁表 apply/检查点）收口在该线程；外部同步调用经 `onRaftThread / onRaftThreadAsync` 收敛——**禁止在 raft 线程上调用阻塞锁 API**（DistributedLock 的等待发生在调用方线程）；
-- **Netty IO 线程**：收发帧、异步 dispatch；handler 注册面向 `TransportLayer` 契约（mock 可替换）；
-- **锁续期线程**（每锁实例一把，leaseMs/2 周期）、命名锁转发复用 Netty IO——无独立线程池扩散；
-- **故障域**：端口级隔离（bind 失败 fail-fast）；持久化档位切换不影响算法层；锁转发失败为**客户端可重试失败**，不进入共识裁决。
+- **raft 单消费者线程**：全部状态变更（角色/term/日志/成员/commitIndex/锁表 apply/检查点/日志裁剪）收口在该线程；外部同步调用经 `onRaftThread / onRaftThreadAsync` 收敛——**禁止在 raft 线程上调用阻塞锁 API**（DistributedLock 的等待发生在调用方线程）；
+- **Netty IO 线程**：只负责收发帧与异步 dispatch；**转发等待（上限 6s）发生在调用方线程**（business / 续期线程），不占用 IO 线程（此前文档措辞易误解，已更正）；
+- **锁续期线程**：每个 `DistributedLockImpl` 实例一个单线程调度器（按锁名缓存，量级=业务名目数）；锁名数量级很大时建议改共享调度器（演进项）；
+- **持久化 IO**：term 写、日志 append 均在 raft 线程；Mmap `force()` 只在 term / 检查点 / 停机三个精确点发生，压实回收亦在 raft 线程（容量压力触发）。
 
 ## 7. 非功能性承诺
 
 - **可用性**：多数派存活即收敛；Leader 迁移 ≤ 同机房选举超时（实机 T2 ≤6s，同机房目标 150-300ms 基线）；
 - **正确性**：同名目锁互斥由日志全序保证（0 双持；"失主窗口"只允许 **零持有**，不出现双持）；
 - **性能**：锁操作 Leader 本地 <10ms / follower 转发 RTT 级；mmap 写 = 内存级消耗；心跳 50ms 折叠为空 AppendEntries；
-- **可观测**：重启/挂回、检查点、锁授予/拒绝/RENEW 被拒均有语义化 INFO/WARN 日志锚点（`[PASS]`/`[FAIL]`、`restored term`、`rebuilt log`、`snapshot written`）；
-- **兼容**：`Speedboat.start(config)` 单组语义零变化；`raft.persistence` 缺省 mem 不扰既有部署。
+- **可观测**：重启/挂回、检查点、压实回收、锁授予/拒绝/RENEW 被拒均有语义化 INFO/WARN 日志锚点（`[PASS]`/`[FAIL]`、`restored term`、`rebuilt log`、`snapshot written`、`compacted`）；
+- **兼容**：`Speedboat.start(config)` 单组语义零变化；`raft.persistence` 缺省 mem 不扰既有部署；
+- **持久化 durability 边界（精确口径）**：
+  - **term**：每次写槽后 `force()`（msync）——选主安全性零丢失；
+  - **日志**：append 入 page cache；`force()` 点 = 检查点 / 停机 / 压实。**未 force 的尾部断电可退**——此处的"未提交"指 *尚未进入本轮多数派 AppendEntries 确认前缀* 的尾部；已提交条目若尚未 force 且全体同时断电，属于本档的 durability 极限（要 power-loss 级保证需每次提交后 force 或接 WAL fsync 策略，列为演进项）；
+  - **锁语义下的后果**：极端场景可能"丢已提交锁授予"→ 表现为**零持有者**（安全方向：不双持）；重启后由检查点 + WAL 重放 + Leader 重同步收敛；
+- **Leader 时钟（跨机房监控项）**：`grantTimestampMs` 由 Leader 墙钟打点并随日志传播，全网到期点一致；代价是单机部署下租约时长跟随 Leader 时钟，跨机房部署应将 Leader 时钟漂移纳入监控（NTP 偏差会整体平移租约到期）。
 
 ## 8. 关键历史决策索引
 

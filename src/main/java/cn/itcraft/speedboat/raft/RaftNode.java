@@ -207,6 +207,7 @@ public interface RaftNode {
         TransportLayer transportLayer;
         RaftNodeExecutor executor;
         int maxLogSize;
+        int checkpointInterval;
         cn.itcraft.speedboat.config.MembershipConfig membershipConfig;
         cn.itcraft.speedboat.strategy.membership.HealthCheckStrategy healthCheckStrategy;
         cn.itcraft.speedboat.strategy.membership.RegistryStrategy registryStrategy;
@@ -261,6 +262,15 @@ public interface RaftNode {
 
         public Builder maxLogSize(int maxLogSize) {
             this.maxLogSize = maxLogSize;
+            return this;
+        }
+
+        /**
+         * 状态机检查点触发阈值（applied 增量；缺省 1024）。
+         * 仅对提供检查点路径的 RaftStore（Mmap 档）生效。
+         */
+        public Builder checkpointInterval(int checkpointInterval) {
+            this.checkpointInterval = checkpointInterval;
             return this;
         }
 

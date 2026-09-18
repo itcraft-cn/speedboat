@@ -183,6 +183,7 @@ public class Speedboat {
             .stateMachine(lockStateMachine)
             .voteWeightStrategy(config.getVoteWeightStrategy())
             .maxLogSize(config.getMaxLogSize())
+            .checkpointInterval(config.getRaftCheckpointInterval())
             .raftStore(resolvedStore)
             .build();
 
@@ -234,6 +235,7 @@ public class Speedboat {
             .transportLayer(nettyTransport)
             // defect-20260918-01：日志上限可配（重启副本判定状态的唯一重建依据）
             .maxLogSize(config.getMaxLogSize())
+            .checkpointInterval(config.getRaftCheckpointInterval())
             .stateMachine(lockStateMachine)
             .raftStore(buildRaftStore(config))
             .build();
@@ -337,7 +339,7 @@ public class Speedboat {
         Objects.requireNonNull(lockName, "lockName cannot be null");
         
         return lockCache.computeIfAbsent(lockName, name -> 
-            new DistributedLockImpl(name, nodeId, raftNode, lockStateMachine)
+            new DistributedLockImpl(name, nodeId, raftNode, lockStateMachine, config.getLockLeaseMs())
         );
     }
     

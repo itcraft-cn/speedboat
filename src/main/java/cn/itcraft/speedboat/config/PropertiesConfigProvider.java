@@ -268,4 +268,34 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
             return 128;
         }
     }
+
+    @Override
+    public int getRaftCheckpointInterval() {
+        String v = properties.getProperty("raft.checkpoint.interval");
+        if (v == null || v.isEmpty()) {
+            return 1024;
+        }
+        try {
+            int parsed = Integer.parseInt(v.trim());
+            return parsed > 0 ? parsed : 1024;
+        } catch (NumberFormatException e) {
+            logger.warn("Invalid raft.checkpoint.interval='{}', fallback 1024", v);
+            return 1024;
+        }
+    }
+
+    @Override
+    public long getLockLeaseMs() {
+        String v = properties.getProperty("lock.lease.ms");
+        if (v == null || v.isEmpty()) {
+            return 30000L;
+        }
+        try {
+            long parsed = Long.parseLong(v.trim());
+            return parsed > 0 ? parsed : 30000L;
+        } catch (NumberFormatException e) {
+            logger.warn("Invalid lock.lease.ms='{}', fallback 30000", v);
+            return 30000L;
+        }
+    }
 }

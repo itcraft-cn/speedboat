@@ -180,4 +180,20 @@ public interface SpeedboatConfigProvider {
     default int getRaftMmapSizeMb() {
         return 128;
     }
+
+    /**
+     * 状态机检查点触发阈值（applied 增量，缺省 1024；仅 Mmap 档生效）。
+     * 高频锁场景可放大以减少检查点频率，低频场景可缩小以缩短重启恢复时长。
+     */
+    default int getRaftCheckpointInterval() {
+        return 1024;
+    }
+
+    /**
+     * 分布式锁默认租约时长（毫秒，缺省 30000）。
+     * 租约越短迁移越快（失联接管时延 = 剩余租约），越短也意味着续期开销越高。
+     */
+    default long getLockLeaseMs() {
+        return 30000L;
+    }
 }

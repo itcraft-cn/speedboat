@@ -115,6 +115,8 @@ raft.persistence.dir=speedboat-data        # mmap dir ({nodeId} auto sub-dir)
 raft.mmap.size.mb=128                      # mmap single-file size cap
 raft.mmap.file.name=raft.mmap              # file name, {nodeId} placeholder allowed
 raft.max.log.size=4096                     # in-memory log cap (rebuild basis)
+raft.checkpoint.interval=1024              # checkpoint threshold (mmap tier)
+lock.lease.ms=30000                        # default named-lock lease
 ```
 
 ## Named Distributed Lock

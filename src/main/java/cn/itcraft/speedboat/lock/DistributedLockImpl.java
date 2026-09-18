@@ -119,6 +119,11 @@ public class DistributedLockImpl implements DistributedLock {
      * 租约过期后锁被他人抢走而持有者无感知（历史缺陷 P0-20260914）。</p>
      */
     private volatile ScheduledFuture<?> renewFuture;
+    /**
+     * 失锁标记（P4-M4 可观测）：RENEW 被拒（RENEW_LOST）或本地视图不再持有时置位；
+     * 成功获取时清零。业务发布前应校验 {@link #isLost()}，不得继续使用发布权。
+     */
+    private volatile boolean lost = false;
 
     public DistributedLockImpl(String lockName, String nodeId, RaftNode raftNode, LockStateMachine stateMachine) {
         this(lockName, nodeId, raftNode, stateMachine, DEFAULT_LEASE_TIMEOUT_MS);
@@ -160,13 +165,18 @@ public class DistributedLockImpl implements DistributedLock {
                 
             long acquiredEpoch = tryLockInternal();
             if (acquiredEpoch >= 0) {
+                lost = false;
                 startRenewTask();
                 logger.info("Lock acquired: {} by {} (epoch={})", lockName, nodeId, acquiredEpoch);
                 return new LockHandleImpl(true, lockName, nodeId, this, acquiredEpoch);
             }
 
             try {
-                Thread.sleep(RETRY_INTERVAL_MS);
+                // 退避抖动：固定间隔会在多竞争者间形成同拍重试（惊群），
+                // 在 [0.5x, 1.5x] 区间随机化（nanoTime 无关的纯抖动，无需时钟安全）
+                long jittered = RETRY_INTERVAL_MS / 2
+                    + java.util.concurrent.ThreadLocalRandom.current().nextLong(RETRY_INTERVAL_MS + 1);
+                Thread.sleep(jittered);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
@@ -339,6 +349,7 @@ public class DistributedLockImpl implements DistributedLock {
     private void renewLease() {
         if (!stateMachine.isLockHeldBy(lockName, nodeId)) {
             logger.warn("Lock lost, stopping renew: {}", lockName);
+            lost = true;
             stopRenewTask();
             return;
         }
@@ -375,6 +386,7 @@ public class DistributedLockImpl implements DistributedLock {
                 }
                 logger.warn("Renew rejected, lock may be lost: requestId={}, err={}, stopping renew: {}",
                     requestId, result.getErrCode(), lockName);
+                lost = true;
                 stopRenewTask();
                 return null;
             }
@@ -463,6 +475,12 @@ public class DistributedLockImpl implements DistributedLock {
     @Override
     public boolean isHeldByCurrentNode() {
         return stateMachine.isLockHeldBy(lockName, nodeId);
+    }
+
+    @Override
+    public boolean isLost() {
+        // 任一为真即失效：主动探测到 RENEW_LOST，或本地 applied 视图已不持有
+        return lost || !stateMachine.isLockHeldBy(lockName, nodeId);
     }
 
     @Override

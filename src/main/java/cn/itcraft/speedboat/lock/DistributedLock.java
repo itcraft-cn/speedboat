@@ -93,6 +93,17 @@ public interface DistributedLock {
 
     boolean isHeldByCurrentNode();
 
+    /**
+     * 锁是否已在本节点视角失效（可观测出口，P4-M4）。
+     *
+     * <p>为 true 的场景：{@code RENEW} 被拒（RENEW_LOST）/ 本地 applied 视图已不持有
+     * （自然过期或被他节点接管）。业务契约：**发布前应校验本值**；为 true 即必须停止
+     * 使用该锁对应的发布权（框架不提供回调，主动轮询是本版本唯一通道）。</p>
+     */
+    default boolean isLost() {
+        return false;
+    }
+
     String getLockName();
 
     String getHolderNodeId();

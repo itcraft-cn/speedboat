@@ -103,6 +103,14 @@ public class MmapRaftStore implements RaftStore {
     private long sequence = 0;
     private long writeOffset = LOG_START;
     private volatile boolean opened;
+    /**
+     * 检查点水位（P4-M4）：状态机已落盘覆盖至该索引，重启恢复时 ≤ 该索引的日志
+     * 可由检查点重建——容量压力下允许据此压实回收 WAL 前缀。
+     * 仅 raft 单线程写（markCheckpoint/appendFrame 同线程），volatile 供只读观测。
+     */
+    private volatile long compactFloor = 0L;
+    /** 压实进行中标志：压实重写保留段时禁止再次触发压力压实（防递归） */
+    private boolean compacting = false;
 
     /** 双槽扫描取最大合法 seq；无有效槽返回 0（新起） */
     private long recoverTermSlot() {
@@ -314,6 +322,23 @@ public class MmapRaftStore implements RaftStore {
         return new File(directory, "state-machine.ckpt").getAbsolutePath();
     }
 
+    /**
+     * 检查点水位上报（容量回收联动）：状态机快照成功落盘后由 RaftNode 调用。
+     * 记录 ceil，仅上不减（水位单调）。
+     */
+    @Override
+    public void markCheckpoint(long appliedIndex) {
+        if (appliedIndex > compactFloor) {
+            compactFloor = appliedIndex;
+            logger.debug("MmapRaftStore checkpoint floor advanced to {}", appliedIndex);
+        }
+    }
+
+    /** 当前检查点水位（测试/排障用） */
+    long getCompactFloor() {
+        return compactFloor;
+    }
+
     // ==================== WAL 内部 ====================
 
     /**
@@ -437,10 +462,14 @@ public class MmapRaftStore implements RaftStore {
 
     private void appendFrame(ByteBuffer body) {
         int bodyLen = body.remaining();
+        // 容量压力（剩余不足 1/4）且已有检查点水位 → 先压实回收前缀再写
+        if (!compacting && writeOffset + 8L + bodyLen > softThreshold()) {
+            maybeCompact(bodyLen);
+        }
         int frameEnd = (int) writeOffset + 8 + bodyLen;
-        if (frameEnd > mmap.capacity()) {
-            logger.warn("MmapRaftStore WAL full: file={} writeOffset={}; 需 M2 检查点回收前缀，帧丢弃",
-                fileNameBase, writeOffset);
+        if (frameEnd > mmap.capacity() || (int) writeOffset < LOG_START) {
+            logger.warn("MmapRaftStore WAL full after compaction: file={} writeOffset={} compactFloor={}; 帧丢弃（内存日志不受影响，重启由 Leader 重同步）",
+                fileNameBase, writeOffset, compactFloor);
             return;
         }
         mmap.putInt((int) writeOffset, bodyLen);
@@ -455,6 +484,48 @@ public class MmapRaftStore implements RaftStore {
         crc32.update(copy);
         mmap.putInt((int) (writeOffset + 4), (int) crc32.getValue());
         writeOffset = frameEnd;
+    }
+
+    /** 软阈值：WAL 区域剩余不足 1/4 即触发压实（留出写入余量） */
+    private long softThreshold() {
+        long logRegion = mmap.capacity() - LOG_START;
+        return mmap.capacity() - logRegion / 4;
+    }
+
+    /**
+     * WAL 压实回收（P4-M4，容量压力路径）：把索引 > compactFloor 的日志帧原地重写到
+     * 区域起始，丢弃已被检查点覆盖的前缀；随后 force 落盘。
+     *
+     * <p>安全性：仅 raft 单线程调用；重写前内存镜像清空、逐条重编码（自描述重放源语义不变）；
+     * 重启恢复走"检查点(≤floor) + WAL 保留段(>floor)"，与压实前语义等价。</p>
+     */
+    private void maybeCompact(int incomingBytes) {
+        if (compactFloor <= 0) {
+            logger.warn("MmapRaftStore WAL pressure but checkpoint floor unset: file={} writeOffset={}; 暂不回收（等待首个检查点）",
+                fileNameBase, writeOffset);
+            return;
+        }
+        compactNow();
+    }
+
+    /** 立即压实（包级可见，供测试与压力路径调用）；返回回收后写位。 */
+    long compactNow() {
+        long floor = compactFloor;
+        List<LogEntry> retained = new ArrayList<>(entryIndex.tailMap(floor, false).values());
+        compacting = true;
+        try {
+            writeOffset = LOG_START;
+            entryIndex.clear();
+            for (LogEntry e : retained) {
+                writeLogFrame(e);
+            }
+        } finally {
+            compacting = false;
+        }
+        mmap.force();
+        logger.info("MmapRaftStore compacted: file={} floor={} retained={} writeOffset={}",
+            fileNameBase, floor, retained.size(), writeOffset);
+        return writeOffset;
     }
 
     /** 写一条截断标记帧（restore 扫描按帧裁剪 entryIndex 内存镜像）。 */

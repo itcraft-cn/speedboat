@@ -113,6 +113,8 @@ raft.persistence.dir=speedboat-data        # mmap 目录（{nodeId} 自动分子
 raft.mmap.size.mb=128                      # mmap 单文件大小上限
 raft.mmap.file.name=raft.mmap              # 文件名，可用 {nodeId} 占位
 raft.max.log.size=4096                     # 内存日志上限（重启副本重建依据）
+raft.checkpoint.interval=1024              # 检查点阈值（mmap 档）
+lock.lease.ms=30000                        # 命名锁默认租约
 ```
 
 ## 分布式命名锁

@@ -57,7 +57,7 @@ getCheckpointFile() [default null]              // 本分项新增：状态机�
 
 **日志 append 语义**：page cache 承载（写消耗等同内存），`flush()` 精确点（节点 stop / 检查点 / 测试）才 `force()` 全区域；未 msync 尾部断电可丢——raft 未提交尾部丢失属安全域（客户端重试）。
 
-**容量策略**：`bodyEnd > capacity` 丢帧告警；前缀回收依赖检查点（§6）+ `truncateLogEntriesUntil`；v1 不做自动轮转（容量时间窗≈月级，3 锁 × 15s 续期 ≈ 1.7MB/天）。
+**容量策略（P4-M4 已闭环）**：软阈值 = 区域剩余不足 1/4 时触发**压实回收**——若已上报检查点水位（`markCheckpoint(appliedIndex)`，由 RaftNode 在检查点落盘 + flush 后调用），则把索引 > 水位 的日志帧原地重写到区域起始（`compactNow`），丢弃已被检查点覆盖的前缀，随后 `force()`。压实语义与"检查点(≤floor) + WAL(>floor)"恢复等价。无检查点水位时仅告警不回收（等待首个检查点）；压实后仍不足才丢帧并告警（内存日志不受影响，重启由 Leader 重同步）。
 
 ## 4. "列表即全量" reconcile（关键语义——对齐 InMemoryRaftStore）
 
@@ -107,7 +107,10 @@ shutdown()：先 snapshot(checkpoint)（支持档）→ flush() → executor 关
 
 Speedboat 门面（两模式共用 `buildRaftStore(config)`）：档位解析 + `raftStoreRef` 保存 + 停机 `MmapRaftStore.close()`（msync 收口）；`raft.persistence` 键值映射 `{none, mem, mmap}`，dir 默认 `speedboat-data/{nodeId}/`，文件名支持 `{nodeId}` 占位。
 
-**防御性注意**：`raft.max.log.size`（内存版）不再决定 epoch 收敛唯一性——mmap 档读回链以 WAL+检查点为准；内存档（in-process）eager 全量重放亦可重建。
+**防御性注意（maxLogSize 与 WAL 的交互口径）**：内存日志与 WAL 是两套裁剪源——
+- 内存日志 `maxLogSize` 走**双安全路径**：未提交积压（含 follower）/ 已提交前缀（仅 Leader 且全员 matchIndex 覆盖）。`raft.max.log.size` 不决定持久层内容；
+- **WAL 不随内存裁剪**，只由"检查点水位 + 容量压力压实"回收前缀；因此 WAL 条目数可多于内存日志条数；
+- 重启恢复 = `检查点(≤floor)` + `WAL(>floor)` 重放；若 WAL 中也缺失（压实后仍不足、丢帧告警），新上任/回归节点由 Leader 的 `AppendEntries` 按 nextIndex 补齐（这是把"日志长度逐差"当正常协同路径的设计，也是没有 INSTALL_SNAPSHOT 时的兜底）。
 
 ## 7. 验收（defect-20260918-01 关闭记录）
 
@@ -121,7 +124,8 @@ Speedboat 门面（两模式共用 `buildRaftStore(config)`）：档位解析 + 
 
 ## 8. 演进边界与已知容量核算（非本期）
 
-- WAL 前缀回收：检查点（1024 条）+ `truncateLogEntriesUntil` 已接；**存量 truncateLogEntriesUntil 自动触发**未在心跳路径调用（M2 之后若日均流量增长需再核实）；
-- INSTALL_SNAPSHOT RPC（落后副本快啫追平）不做——读回链已让副本自建；
-- Leader 优雅停机后重启 → WAL 全量恢复；极端容量场景 128MB 边缘依赖"检查点回收"联动（容量告警已埋）；
-- 磁盘 IO 契约：mmap 档 force 只在 term/检查点/stop 三个精确点；page cache ✓；raft 单线程写、启动单线程读——无锁。
+- **WAL 前缀回收（已落地 P4-M4）**：`markCheckpoint` 水位 + 容量压力压实（`compactNow`）联动；压实与检查点次序铁律=先快照落盘+flush → 再上报水位（顺序颠倒会导致回收后无可恢复锚点）；
+- **内存日志裁剪（已修正 P4-M4）**：`maxLogSize` 双安全路径——①未提交积压（含 follower，Leader 会重发）②已提交前缀（仅 Leader 且所有 peer matchIndex 已覆盖，或单节点)；修正前"遇已提交即 break"导致已提交区域永不裁剪；
+- INSTALL_SNAPSHOT RPC（落后副本快照追平）不做——读回链已让副本自建；
+- **fsync/durability 边界**：force 点 = term / 检查点 / 停机 / 压实；已提交但未 force 的尾部在全体同时断电下可能回退（表现为零持有者→安全方向）；power-loss 级保证需提交后 force 或 WAL fsync 策略，列为演进项；
+- 磁盘 IO 契约：mmap 档 force 只在上述精确点；page cache ✓；raft 单线程写、启动单线程读——无锁。

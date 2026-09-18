@@ -33,6 +33,8 @@ Leader 在锁体系中的唯一职责：**锁命令的日志复制与全序化**
   - `grantTimestampMs`：**Leader 授权打点**（propose 前由 Leader 侧写入），随命令复制后全网到期点一致（`leaseExpireTime = grantPoint + leaseMs`，消除各副本本地打点漂移）；
 - `LockEntry` 新增 `epoch`（fencing token）：每次**所有权变更**成功 tryAcquire +1；重入/续期不推进；release 也不消耗（新持有者才推进代际）；
 - **判定结果表 `opResults`**：`requestId → LockOpResult{success, epoch, errCode}`（GRANTED / DENIED_HELD_BY / NOT_HOLDER / RENEW_LOST）；软容量 4096、60s 窗口惰性清理——调用方等 apply 后读结果，**消除"被拒仍等满超时"的盲等**；
+  - **契约边界（重要）**：等待方 `waitForApplyResult` 上限 1s，远小于 60s TTL，因此"结果被清理而调用方还在等"不会发生；结果表仅在超容量时才按时间清理。业务如自行扩展等待时长，须自行保证 < 60s；
+- **失锁可观测（P4-M4）**：`DistributedLock.isLost()` —— `RENEW` 被拒或本地 applied 视图已不持有时为 true；**业务发布前必须校验**（框架不提供回调，轮询是本版本唯一通道）。成功获取时清零；
 - APPLY 顺序安全：applyCommand 仅 raft 单线程执行，无锁竞争面（synchronized 仅防御测试直接调用）。
 
 ## 3. 转发协议：任意成员可申请
@@ -113,4 +115,7 @@ LockCommand 新增字段向后兼容（老工厂函数继续可用）
 
 ## 8. 演进边界（不在本期）
 
-- 公平队列（争抢激烈先来先得排队）；onAcquired/onLost 回调；批量锁命令日志压缩；"锁与 Leader 绑定/联动"由业务在申请顺序上自谋——框架不提供。
+- **公平性**：当前为"非抢占公平竞争"，**不保证无饥饿**——理论上存在某竞争者连续多轮落败的可能（先到先得续期即长持）。业务侧若观察到长期拿不到锁，需在申请顺序/重试策略上自谋；公平队列列为演进项；
+- **零改造成本项（已落地）**：申请失败重试已加入 ±50% 随机抖动（防多竞争者同拍重试惊群）；
+- onAcquired/onLost 回调（当前以 `isLost()` 轮询替代）；批量锁命令日志压缩；"锁与 Leader 绑定/联动"由业务在申请顺序上自谋——框架不提供；
+- 锁实例续期调度器当前"每锁一名单线程"，锁名量级很大时建议共享调度器（总设计 §5.1 已列）。
