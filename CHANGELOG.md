@@ -4,6 +4,26 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)。
 
+## [Unreleased] - 2026-09-18
+
+### Added（重要）
+
+- **通用分布式命名锁**：主与锁概念分离——任意成员可申请任意名目锁（不再限 Leader），日志共识成功即持有；`tryLock/unlock/renew` 保持原 API，新增 `LockHandle.getEpoch()` fencing token
+- **锁迁移语义**：持有者失联 → 租约到期 → 公平竞争接管；**非抢占**（不抢存量持有者）；判定只发生在状态机 apply（日志全序保证互斥）
+- **LockOp 转发协议**：`LockOpRequest/Response` RPC（消息类型 9/10），follower 锁操作转发 Leader propose
+- **判定结果表**：`LockOpResult`（GRANTED/DENIED + epoch），requestId 幂等去重
+- **配置项**：`raft.max.log.size`（默认 4096）
+
+### Fixed
+
+- **defect-20260918-01**：内存日志上限 10 → 4096（重启副本重建判定状态的唯一依据，截断过深导致 epoch 跨副本分叉）；根治待快照/持久化（P4）
+- 续期被拒（RENEW_LOST）立即停续期（宁可误停不可双持）
+
+### Verified
+
+- 单元：全量 510 绿（新增 NamedLockMultiHolderTest 6 条语义用例）
+- 真实网络（三节点实网 + 本机三 JVM loopback）：三锁三持有者并存全网收敛、非 Leader 转发持锁、失联迁移 grant 双长驻副本一致 epoch=2
+
 ## [1.0.1] - 2026-07-13
 
 ### Added

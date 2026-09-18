@@ -126,6 +126,7 @@ election.cross.timeout.max=5000
 | `vote.weight.strategy` | ❌ | none | 投票权重策略：`prefer` / `even` / `none` |
 | `vote.weight.prefer` | ⚠️ prefer 必填 | - | 享受额外权重的节点 ID（格式 `node-<ip>-<port>`） |
 | `vote.weight.prefer.weight` | ❌ | 3 | 该节点获得的额外权重 |
+| `raft.max.log.size` | ❌ | 4096 | 内存日志上限（defect-20260918-01：重启副本重建判定状态的唯一依据，不可截断过深） |
 
 ### ⚠️ 投票权重：全网一致性约束
 
@@ -251,6 +252,47 @@ boolean running = Speedboat.isRunning()
 ```
 
 返回单例实例是否正在运行。
+
+### 分布式命名锁
+
+> **语义要点（2026-09-18 设计落地后）**：主节点与锁是两个正交抽象——
+> Leader 仅负责锁命令的日志复制与全序化；**任意成员**都可申请任意名目的锁，
+> 经 Raft 日志共识成功即持有；同名目任意时刻**至多一个持有者**（互斥硬约束）；
+> 持有者失联 → 租约到期 → 他人可公平竞争接管（**非抢占**，不抢存量持有者的锁）。
+
+#### 获取锁对象
+
+```java
+DistributedLock lock = Speedboat.getLock("forex")
+```
+
+- 锁名即"名目"（如 forex/metals/commodity），同集群可多把锁并存、持有者互不相同
+- Leader 本地申请与 follower 转发共用一套判定；判定只发生在状态机 apply（日志全序）
+
+#### 申请 / 释放 / fencing token
+
+```java
+LockHandle handle = lock.tryLock(5000);
+if (handle.isSuccess()) {
+    long epoch = handle.getEpoch();   // fencing token：所有权代际，单调递增
+    // ... 业务持有期（框架自动每 leaseMs/2 续期：RENEW 被拒立即停发续期）
+    handle.close();                   // 释放（全网生效后返回）
+}
+```
+
+**关键语义**：
+
+| 语义 | 说明 |
+|------|------|
+| 互斥 | 同名目锁任意时刻至多一个持有者；被拒时判定结果立即可读（不再超时盲猜） |
+| epoch fencing | 下游信凭 `lockName + epoch` 单调递增拒绝旧主（旧持有者分区自认请拒读）|
+| 非抢占 | 已被持有的锁不会被夺回；原持有者恢复后只能等新持有者失联或释放 |
+| 迁移时延 | 持有者失联 → ≤ leaseMs 到期 → 接管；Leader 宕机额外 ≤ 1 选举超时时锁状态变更暂停（租约倒计时不受影响） |
+| 跨锁并存 | 同一节点可同时持多把锁（名目间互不阻塞） |
+
+#### 重启副本边界（已知限制，P4 收敛）
+
+节点进程重启后锁表从零起步（依赖日志重放重建；受 `raft.max.log.size` 与快照/持久化成熟度影响）。**重启副本在快照/持久化上线前不参与 epoch 断言**；epoch 单调性以"长驻副本"为准（真网已验证：迁移 grant 双长驻副本一致 epoch=2）。
 
 ---
 
