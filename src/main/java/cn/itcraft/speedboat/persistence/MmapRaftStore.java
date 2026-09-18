@@ -249,14 +249,28 @@ public class MmapRaftStore implements RaftStore {
         if (entries == null || entries.isEmpty()) {
             return;
         }
+        long listFirstIndex = entries.get(0).getIndex();
+        long listMaxIndex = entries.get(entries.size() - 1).getIndex();
+
+        // "列表即全量"语义（对齐 InMemoryRaftStore）：列表覆盖 [first..last] 区间；
+        // WAL 内首条 >= first 的既有索引若存在（含 term 冲突），必须先收口再重写，
+        // 否则截断标记缺失会让旧帧在扫描时复活（defect-20260918-01 同族缺陷）。
+        if (!entryIndex.isEmpty() && entryIndex.lastKey() >= listFirstIndex) {
+            writeTruncateFrame(FRAME_TRUNC_FROM, listFirstIndex);
+            entryIndex.tailMap(listFirstIndex).clear();
+        }
+
         for (LogEntry e : entries) {
-            if (e == null || entryIndex.containsKey(e.getIndex())) {
+            if (e == null) {
+                continue;
+            }
+            if (entryIndex.containsKey(e.getIndex())) {
+                // 同索引同内容幂等跳过（term 一致为准；冲突已被上方收口融化）
                 continue;
             }
             writeLogFrame(e);
         }
-        // "列表即全量" 语义对齐 InMemoryRaftStore：残留尾巴高于传入列表 → 裁剪帧修正
-        long listMaxIndex = entries.get(entries.size() - 1).getIndex();
+
         if (!entryIndex.isEmpty() && entryIndex.lastKey() > listMaxIndex) {
             writeTruncateFrame(FRAME_TRUNC_FROM, listMaxIndex + 1);
             entryIndex.tailMap(listMaxIndex + 1).clear();
@@ -386,12 +400,13 @@ public class MmapRaftStore implements RaftStore {
     /** 截帧：type|index|term|leader+data 或 op+nodeId+addr。 */
     private ByteBuffer frameBody(LogEntry e, byte frameType) {
         byte[] leader = utf(e.getLeaderId());
-        if (frameType == FRAME_MEMBER_CHANGE && e instanceof MemberChangeEntry) {
+        if (frameType == FRAME_MEMBER_CHANGE) {
             MemberChangeEntry m = (MemberChangeEntry) e;
             byte op = m.getChangeType() == MemberChangeEntry.ChangeType.ADD ? (byte) 0 : (byte) 1;
             byte[] nodeId = utf(m.getNodeId());
             byte[] addr = utf(m.getAddress());
-            int bodyLen = 1 + 8 + 8 + 4 + leader.length + 4 + nodeId.length + 4 + addr.length;
+            // op(1) 为帧体独立字段（type/index/term 之外）——遗漏会 BufferOverflow
+            int bodyLen = 1 + 8 + 8 + 1 + 4 + leader.length + 4 + nodeId.length + 4 + addr.length;
             ByteBuffer b = ByteBuffer.allocate(bodyLen);
             b.put(frameType);
             b.putLong(e.getIndex());
@@ -403,6 +418,7 @@ public class MmapRaftStore implements RaftStore {
             b.put(nodeId);
             b.putInt(addr.length);
             b.put(addr);
+            b.flip();
             return b;
         }
         byte[] data = e.getData() == null ? new byte[0] : e.getData();
@@ -415,6 +431,7 @@ public class MmapRaftStore implements RaftStore {
         b.put(leader);
         b.putInt(data.length);
         b.put(data);
+        b.flip();
         return b;
     }
 
@@ -446,6 +463,7 @@ public class MmapRaftStore implements RaftStore {
         body.put(frameType);
         body.putLong(targetIndex);
         body.putLong(0L);
+        body.flip();
         appendFrame(body);
     }
 

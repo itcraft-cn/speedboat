@@ -255,6 +255,51 @@ public class RaftNodeImpl implements RaftNode {
                 nodeId, restored.getTerm(), restored.getVotedFor(), raftStore.getClass().getName());
         }
 
+        // P4：WAL 读回链（defect-20260918-01 根治）——重启先重建日志，再把 commitIndex 交给
+        // Leader 心跳推进；applyCommittedEntries 将从 lastApplied 全序重放 → lockTable/epoch 确定
+        List<LogEntry> restoredLogs = raftStore.restoredLogEntries();
+        if (!restoredLogs.isEmpty() && log.isEmpty()) {
+            for (LogEntry e : restoredLogs) {
+                LogEntry mirror;
+                if (e.getEntryType() == LogEntry.EntryType.MEMBER_CHANGE && e instanceof MemberChangeEntry) {
+                    MemberChangeEntry mce = (MemberChangeEntry) e;
+                    mirror = mce.getChangeType() == MemberChangeEntry.ChangeType.ADD
+                        ? MemberChangeEntry.add(e.getIndex(), e.getTerm(), e.getLeaderId(), mce.getNodeId(), mce.getAddress())
+                        : MemberChangeEntry.remove(e.getIndex(), e.getTerm(), e.getLeaderId(), mce.getNodeId());
+                } else if (e.getEntryType() == LogEntry.EntryType.COMMAND) {
+                    mirror = CommandLogEntry.create(e.getIndex(), e.getTerm(), e.getLeaderId(),
+                        e.getData() == null ? new byte[0] : e.getData().clone());
+                } else {
+                    LogEntry plain = new LogEntry(e.getIndex(), e.getTerm(), e.getLeaderId());
+                    plain.setEntryType(e.getEntryType());
+                    plain.setData(e.getData() == null ? null : e.getData().clone());
+                    mirror = plain;
+                }
+                logIndexMap.put(e.getIndex(), mirror);
+                log.add(mirror);
+            }
+            logger.info("Node {} rebuilt log from store {} entries={}", nodeId, raftStore.getClass().getName(), log.size());
+        }
+
+        // 状态机检查点恢复（M2）：在 apply 重放之前，先落到 checkpoint 时刻的锁表；
+        // 之后只重放 > lastApplied 的日志尾巴（epoch 租约等由检查点承载）
+        String checkpointFile = raftStore.getCheckpointFile();
+        if (checkpointFile != null && stateMachine != null) {
+            try {
+                stateMachine.restore(checkpointFile);
+                long smApplied = stateMachine.getLastAppliedIndex();
+                long lastLogIdx = getLastLogIndex();
+                if (smApplied > 0 && smApplied <= lastLogIdx) {
+                    this.lastApplied = smApplied;
+                } else if (smApplied > 0) {
+                    logger.warn("Node {} checkpoint appliedIndex {} beyond restored log ({}) — ignoring",
+                        nodeId, smApplied, lastLogIdx);
+                }
+            } catch (Exception e) {
+                logger.warn("Node {} state machine checkpoint restore failed: {}", nodeId, e.toString());
+            }
+        }
+
         if (transportLayer != null) {
             // 入站消息全异步化：请求投递到 raft 单线程（SC），
             // 应答经 CompletableFuture 由传输层异步回写（IO 线程不再互等）
@@ -301,6 +346,17 @@ public class RaftNodeImpl implements RaftNode {
         }
         if (membershipChangeFuture != null) {
             membershipChangeFuture.cancel(false);
+        }
+        // 优雅停机：先落一次检查点（若 store 支持）并 flush WAL 尾部，崩溃恢复失去"最顺手"锚点
+        try {
+            String checkpointFile = raftStore.getCheckpointFile();
+            if (checkpointFile != null && stateMachine != null && lastApplied > lastCheckpointApplied) {
+                stateMachine.snapshot(checkpointFile);
+                lastCheckpointApplied = lastApplied;
+            }
+            raftStore.flush();
+        } catch (Exception e) {
+            logger.warn("Node {} shutdown checkpoint/flush failed: {}", nodeId, e.toString());
         }
         if (executor != null) {
             executor.shutdown();
@@ -996,6 +1052,36 @@ public class RaftNodeImpl implements RaftNode {
                 logger.debug("Node {} applied entry at index {}: type={}", 
                     nodeId, lastApplied, entry.getEntryType());
             }
+        }
+        maybeCheckpoint();
+    }
+
+    /** 快照触发阈值（P4 决策：applied 每 1024 条一个状态机检查点） */
+    private static final int CHECKPOINT_INTERVAL = 1024;
+    /** 触发水位：最近一次检查点覆盖的 appliedIndex */
+    private long lastCheckpointApplied = 0L;
+
+    /**
+     * 检查点判定：仅当 raftStore 提供检查点路径（MmapRaftStore）且间隔达标时落盘。
+     * raft 单线程调用；同步写（频率极低——1024 才一次），阻塞可接受。
+     */
+    private void maybeCheckpoint() {
+        if (stateMachine == null) {
+            return;
+        }
+        String checkpointFile = raftStore.getCheckpointFile();
+        if (checkpointFile == null) {
+            return;
+        }
+        if (lastApplied - lastCheckpointApplied < CHECKPOINT_INTERVAL) {
+            return;
+        }
+        try {
+            stateMachine.snapshot(checkpointFile);
+            raftStore.flush();
+            lastCheckpointApplied = lastApplied;
+        } catch (Exception e) {
+            logger.warn("Node {} checkpoint failed: {}", nodeId, e.toString());
         }
     }
 

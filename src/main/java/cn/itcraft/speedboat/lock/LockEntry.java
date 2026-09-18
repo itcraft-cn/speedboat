@@ -140,6 +140,17 @@ public class LockEntry {
         return epoch;
     }
 
+    /**
+     * 快照回填（checkpoint restore 路径）：绕过 tryAcquire 判定直达"持有态"。
+     * 仅 LockStateMachine.restore 调用（raft 单线程）；epoch/租约忠实回写。
+     */
+    synchronized void restoreFromCheckpoint(String holder, int holdCount, long leaseExpireTime, long epoch) {
+        this.nodeId = holder == null || holder.isEmpty() ? null : holder;
+        this.holdCount = holdCount;
+        this.leaseExpireTime = leaseExpireTime;
+        this.epoch = epoch;
+    }
+
     @Override
     public String toString() {
         return "LockEntry{" +

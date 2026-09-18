@@ -8,6 +8,9 @@ import cn.itcraft.speedboat.statemachine.StateMachine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
+import java.io.IOException;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -218,13 +221,124 @@ public class LockStateMachine implements StateMachine {
 
     @Override
     public void snapshot(String snapshotPath) {
-        logger.info("Snapshot not implemented yet: {}", snapshotPath);
+        if (snapshotPath == null || snapshotPath.isEmpty()) {
+            return;
+        }
+        File tmp = new java.io.File(snapshotPath + ".tmp");
+        File target = new java.io.File(snapshotPath);
+        try {
+            // 原子替换：temp 写成 + rename，防半写
+            try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(tmp, "rw")) {
+                java.nio.ByteBuffer buf = serializeState();
+                raf.setLength(buf.remaining());
+                java.nio.channels.FileChannel ch = raf.getChannel();
+                buf.position(0);
+                ch.position(0);
+                ch.write(buf);
+                ch.force(true);
+            }
+            java.nio.file.Files.deleteIfExists(target.toPath());
+            if (!tmp.renameTo(target)) {
+                logger.warn("snapshot rename failed: {} -> {}", tmp, target);
+                return;
+            }
+            logger.info("LockStateMachine snapshot written: path={} appliedIndex={} locks={}",
+                target.getAbsolutePath(), lastAppliedIndex, lockTable.size());
+        } catch (IOException e) {
+            logger.error("LockStateMachine snapshot failed: path={}", snapshotPath, e);
+        }
     }
 
     @Override
     public void restore(String snapshotPath) {
-        logger.info("Restore not implemented yet: {}", snapshotPath);
+        if (snapshotPath == null || snapshotPath.isEmpty()) {
+            return;
+        }
+        File target = new java.io.File(snapshotPath);
+        if (!target.exists()) {
+            return;
+        }
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(target, "r")) {
+            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate((int) raf.length());
+            java.nio.channels.FileChannel ch = raf.getChannel();
+            ch.position(0);
+            ch.read(buf);
+            buf.rewind();
+            deserializeState(buf);
+            logger.info("LockStateMachine restored: path={} appliedIndex={} entries={}",
+                target.getAbsolutePath(), lastAppliedIndex, lockTable.size());
+        } catch (IOException e) {
+            logger.warn("LockStateMachine restore failed (start blank): path={}", target.getAbsolutePath(), e);
+        }
     }
+
+    /**
+     * 序列化布局：crc32(4) 覆盖 payload；payload = magic(4)|count(4)|{name UTF | holderFlag 1 |
+     * holder UTF | holdCount 4 | leaseExpireTime 8 | epoch 8}.. | lastAppliedIndex(8)。
+     * 重启确定性一致（不依赖日志重放时序）。
+     */
+    private java.nio.ByteBuffer serializeState() throws IOException {
+        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+        java.io.DataOutputStream out = new java.io.DataOutputStream(bos);
+        out.writeInt(SNAPSHOT_MAGIC);
+        out.writeInt(lockTable.size());
+        for (Map.Entry<String, LockEntry> e : lockTable.entrySet()) {
+            LockEntry le = e.getValue();
+            out.writeUTF(e.getKey());
+            String holder = le.getNodeId();
+            out.writeBoolean(holder != null);
+            out.writeUTF(holder == null ? "" : holder);
+            out.writeInt(le.getHoldCount());
+            out.writeLong(le.getLeaseExpireTime());
+            out.writeLong(le.getEpoch());
+        }
+        out.writeLong(lastAppliedIndex);
+        out.flush();
+        byte[] payload = bos.toByteArray();
+
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(payload);
+        java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(payload.length + 4);
+        buffer.putInt((int) crc.getValue());
+        buffer.put(payload);
+        buffer.flip();
+        return buffer;
+    }
+
+    private void deserializeState(java.nio.ByteBuffer buf) throws IOException {
+        int crc = buf.getInt();
+        byte[] payload = new byte[buf.remaining()];
+        buf.get(payload);
+        java.util.zip.CRC32 c = new java.util.zip.CRC32();
+        c.update(payload);
+        if ((int) c.getValue() != crc) {
+            throw new IOException("LockStateMachine snapshot CRC mismatch");
+        }
+        java.io.DataInputStream in = new java.io.DataInputStream(new java.io.ByteArrayInputStream(payload));
+        if (in.readInt() != SNAPSHOT_MAGIC) {
+            throw new IOException("LockStateMachine snapshot magic mismatch");
+        }
+        int count = in.readInt();
+        for (int i = 0; i < count; i++) {
+            String lockName = in.readUTF();
+            boolean hasHolder = in.readBoolean();
+            String holder = hasHolder ? in.readUTF() : null;
+            int holdCount = in.readInt();
+            long lease = in.readLong();
+            long epoch = in.readLong();
+            LockEntry le = lockTable.computeIfAbsent(lockName, LockEntry::new);
+            // 直接回填（绕过 tryAcquire：snapshot 即"当机时刻合法权益"）
+            restoreEntry(le, holder, holdCount, lease, epoch);
+        }
+        lastAppliedIndex = in.readLong();
+    }
+
+    /** LockEntry 绕过判定直达的快照回填（synchronized 保单线程一致性） */
+    private void restoreEntry(LockEntry le, String holder, int holdCount, long lease, long epoch) {
+        le.restoreFromCheckpoint(holder, holdCount, lease, epoch);
+    }
+
+    private static final int SNAPSHOT_MAGIC = 0x4C4B4350; // "LKCP"
 
     @Override
     public long getLastAppliedIndex() {
