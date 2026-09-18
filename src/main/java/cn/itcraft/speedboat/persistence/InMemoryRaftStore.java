@@ -10,10 +10,17 @@ import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
- * 内存持久化实现（测试/验证专用）。
+ * 内存持久化实现（三档策略之 Mem：当前进程内的"稳定环境默认且快速"实现）。
  *
- * <p>在 JVM 内维持 term/votedFor/leader 与日志的"可恢复"副本，
- * 语义对齐 RaftStore 契约：persist 返回即 durable（内存层面）；
+ * <p><b>三档定位（2026-09-18 P4 决策）：</b></p>
+ * <ul>
+ *   <li>{@link NopRaftStore}：测试基线/显式关闭</li>
+ *   <li><b>Mem（本类，缺省）</b>：JVM 进程内可恢复（raft node 重启语义），
+ *       无磁盘开销、吞吐最优；跨进程重启不承诺</li>
+ *   <li>Mmap（{@link MmapRaftStore}）：跨进程重启可挂回，极稳定环境</li>
+ * </ul>
+ *
+ * <p>语义对齐 RaftStore 契约：persist 返回即 durable（内存层面）；
  * 支持 {@link #restoreTerm()} / {@link #restoredLogEntries()} 模拟节点重启恢复。</p>
  *
  * <p><b>线程模型：</b>persist* 由 raft 单线程调用（写），restore* 由任意线程读取
@@ -23,6 +30,11 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * @since 1.1.0
  */
 public class InMemoryRaftStore implements RaftStore {
+
+    /** 新建实例（缺省装配口：每个 raft 节点一份私有状态，禁止单例） */
+    public static InMemoryRaftStore createDefault() {
+        return new InMemoryRaftStore();
+    }
 
     // 【PERSISTENT】任期状态：term / votedFor / leaderId
     private long term;

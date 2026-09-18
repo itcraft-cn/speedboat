@@ -232,8 +232,9 @@ public class RaftNodeImpl implements RaftNode {
         this.stateMachine = builder.stateMachine;
         // Actor 执行器：默认单线程调度实现，可注入自定义实现（如 JCTools MPSC 版）
         this.executor = builder.executor != null ? builder.executor : new DefaultRaftNodeExecutor();
-        // 持久化缺省 NopRaftStore（内存模式，覆盖既有一致行为），可注入选中实现
-        this.raftStore = builder.raftStore != null ? builder.raftStore : cn.itcraft.speedboat.persistence.NopRaftStore.getInstance();
+        // 持久化三档（defect-20260918-01 收敛）：缺省 Mem（稳定环境默认且快速），
+        // Nop 仅测试基线 / 显式关闭，Mmap 为跨进程重启的极稳定实现。
+        this.raftStore = builder.raftStore != null ? builder.raftStore : cn.itcraft.speedboat.persistence.InMemoryRaftStore.createDefault();
         this.reportListener = builder.reportListener;
     }
 

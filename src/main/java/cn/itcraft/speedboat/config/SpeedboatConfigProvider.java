@@ -152,4 +152,32 @@ public interface SpeedboatConfigProvider {
     default int getCrossDatacenterElectionTimeoutMax() {
         return 5000;
     }
+
+
+    /**
+     * 持久化三档选型（P4 2026-09-18）：
+     * <ul>
+     *   <li>{@code none}：NopRaftStore（测试基线/显式关闭）</li>
+     *   <li>{@code mem}（缺省）：InMemoryRaftStore——进程内可恢复、快速、无磁盘开销</li>
+     *   <li>{@code mmap}：MmapRaftStore——跨进程重启挂回，极稳定环境</li>
+     * </ul>
+     */
+    default String getRaftPersistenceType() {
+        return "mem";
+    }
+
+    /** mmap 档持久化目录（缺省工作目录下 speedboat-data） */
+    default String getRaftPersistenceDir() {
+        return "speedboat-data";
+    }
+
+    /** mmap 档文件名（缺省 raft.mmap，可自定义；{nodeId} 占位符可用） */
+    default String getRaftMmapFileName() {
+        return "raft.mmap";
+    }
+
+    /** mmap 档文件大小（MB，缺省 128） */
+    default int getRaftMmapSizeMb() {
+        return 128;
+    }
 }

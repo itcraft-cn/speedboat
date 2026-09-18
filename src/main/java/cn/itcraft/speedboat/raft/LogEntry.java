@@ -67,6 +67,11 @@ public class LogEntry {
         this.data = data;
     }
 
+    /** 日志序列化/重建路径的类型回填（MmapRaftStore 扫描与镜像 copy 使用；apply 分派依赖 entryType） */
+    public void setEntryType(EntryType entryType) {
+        this.entryType = entryType;
+    }
+
     @Override
     public String toString() {
         return "LogEntry{index=" + index + ", term=" + term + 

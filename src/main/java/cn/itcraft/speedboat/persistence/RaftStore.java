@@ -74,4 +74,15 @@ public interface RaftStore {
 
     /** 恢复日志条目（按 index 升序）；未持久化时返回空列表。 */
     List<LogEntry> restoredLogEntries();
+
+    /**
+     * 状态机检查点文件（可落盘实现提供；缺省 null = 无检查点恢复链）。
+     *
+     * <p>非 null 时 {@link cn.itcraft.speedboat.statemachine.StateMachine} 的
+     * snapshot/restore 会以该路径持久化/恢复锁表与 lastAppliedIndex。
+     * MmapRaftStore 提供、Nop/Mem 返回 null。</p>
+     */
+    default String getCheckpointFile() {
+        return null;
+    }
 }

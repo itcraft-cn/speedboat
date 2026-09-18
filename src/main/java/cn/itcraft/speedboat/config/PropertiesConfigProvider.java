@@ -235,4 +235,37 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
         }
         return SpeedboatConfigProvider.super.getCrossDatacenterElectionTimeoutMax();
     }
+
+
+    @Override
+    public String getRaftPersistenceType() {
+        String v = properties.getProperty("raft.persistence");
+        return v == null || v.isEmpty() ? "mem" : v.trim();
+    }
+
+    @Override
+    public String getRaftPersistenceDir() {
+        String v = properties.getProperty("raft.persistence.dir");
+        return v == null || v.isEmpty() ? "speedboat-data" : v.trim();
+    }
+
+    @Override
+    public String getRaftMmapFileName() {
+        String v = properties.getProperty("raft.mmap.file.name");
+        return v == null || v.isEmpty() ? "raft.mmap" : v.trim();
+    }
+
+    @Override
+    public int getRaftMmapSizeMb() {
+        String v = properties.getProperty("raft.mmap.size.mb");
+        if (v == null || v.isEmpty()) {
+            return 128;
+        }
+        try {
+            return Integer.parseInt(v.trim());
+        } catch (NumberFormatException e) {
+            logger.warn("Invalid raft.mmap.size.mb='{}', fallback 128", v);
+            return 128;
+        }
+    }
 }

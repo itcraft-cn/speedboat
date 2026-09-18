@@ -4,6 +4,10 @@ import cn.itcraft.speedboat.config.SpeedboatConfigProvider;
 import cn.itcraft.speedboat.raft.ElectionTimeout;
 import cn.itcraft.speedboat.raft.RaftGroup;
 import cn.itcraft.speedboat.raft.RaftNode;
+import cn.itcraft.speedboat.persistence.MmapRaftStore;
+import cn.itcraft.speedboat.persistence.InMemoryRaftStore;
+import cn.itcraft.speedboat.persistence.NopRaftStore;
+import cn.itcraft.speedboat.persistence.RaftStore;
 import cn.itcraft.speedboat.serialize.CustomSerializer;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
 import cn.itcraft.speedboat.transport.NettyTransport;
@@ -15,6 +19,7 @@ import cn.itcraft.speedboat.lock.LockStateMachine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -161,26 +166,29 @@ public class Speedboat {
         NodeEndpoint localEndpoint = new NodeEndpoint(nodeId, localIp, localPort);
         CustomSerializer serializer = new CustomSerializer(new ProtostuffSerializer());
         nettyTransport = new NettyTransport(localEndpoint, peerEndpoints, serializer);
-        
+
+        // 持久化三档解析（P4：默认 mem；none=nop；mmap=可挂回）
+        RaftStore resolvedStore = buildRaftStore(config);
+
         ElectionTimeout electionTimeout = new ElectionTimeout(
             config.getIntraDatacenterElectionTimeoutMin(),
             config.getIntraDatacenterElectionTimeoutMax()
         );
-        
+
         raftNode = new RaftNode.Builder()
             .nodeId(nodeId)
             .peerIds(peerIds)
             .electionTimeout(electionTimeout)
             .transportLayer(nettyTransport)
             .stateMachine(lockStateMachine)
-            // defect-20260918-01：日志上限可配（重启副本判定状态的唯一重建依据）
-            .maxLogSize(config.getMaxLogSize())
             .voteWeightStrategy(config.getVoteWeightStrategy())
+            .maxLogSize(config.getMaxLogSize())
+            .raftStore(resolvedStore)
             .build();
-        
+
         logger.info("Starting NettyTransport...");
         nettyTransport.start();
-        
+
         logger.info("Starting RaftNode...");
         raftNode.start();
     }
@@ -227,6 +235,7 @@ public class Speedboat {
             // defect-20260918-01：日志上限可配（重启副本判定状态的唯一重建依据）
             .maxLogSize(config.getMaxLogSize())
             .stateMachine(lockStateMachine)
+            .raftStore(buildRaftStore(config))
             .build();
         
         logger.info("Starting NettyTransport (intra-datacenter)...");
@@ -256,13 +265,56 @@ public class Speedboat {
         if (raftNode != null) {
             raftNode.shutdown();
         }
-        
+
         if (nettyTransport != null) {
             nettyTransport.shutdown();
         }
-        
+
+        // 持久化收尾（Mmap 档：msync 尾部 + 关闭映射；mem 档无操作）
+        if (raftStoreRef != null) {
+            try {
+                if (raftStoreRef instanceof MmapRaftStore) {
+                    ((MmapRaftStore) raftStoreRef).close();
+                }
+            } catch (Exception e) {
+                logger.warn("RaftStore close failed: {}", e.toString());
+            }
+            raftStoreRef = null;
+        }
+
         running = false;
         logger.info("Speedboat stopped");
+    }
+
+    private RaftStore raftStoreRef;
+
+    /**
+     * 持久化三档解析（2026-09-18 P4 决策）：
+     * <ul>
+     *   <li>{@code none} → NopRaftStore（测试基线/显式关闭）</li>
+     *   <li>{@code mem}（缺省）→ InMemoryRaftStore（进程内可恢复，快速，无磁盘开销）</li>
+     *   <li>{@code mmap} → MmapRaftStore（跨进程重启挂回；目录 {nodeId} 自动分目录）</li>
+     * </ul>
+     */
+    private RaftStore buildRaftStore(SpeedboatConfigProvider config) {
+        String type = config.getRaftPersistenceType() == null ? "mem" : config.getRaftPersistenceType().trim();
+        switch (type) {
+            case "none":
+                return NopRaftStore.getInstance();
+            case "mmap": {
+                String dir = config.getRaftPersistenceDir();
+                String fileName = config.getRaftMmapFileName().replace("{nodeId}", nodeId);
+                File dirFile = new File(dir, nodeId);
+                this.raftStoreRef = new MmapRaftStore(dirFile, fileName, config.getRaftMmapSizeMb());
+                logger.info("RaftStore resolved mmap: dir={}, file={}, sizeMb={}",
+                    dirFile.getAbsolutePath(), fileName, config.getRaftMmapSizeMb());
+                return raftStoreRef;
+            }
+            case "mem":
+            default:
+                this.raftStoreRef = InMemoryRaftStore.createDefault();
+                return raftStoreRef;
+        }
     }
     
     private boolean checkIsMain() {
