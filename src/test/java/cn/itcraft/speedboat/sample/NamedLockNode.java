@@ -34,6 +34,7 @@ public class NamedLockNode {
         String configPath = null;
         String mode = "state";
         String lockName = null;
+        String secondLockName = null;
 
         for (int i = 0; i < args.length; i++) {
             if ("--config".equals(args[i]) && i + 1 < args.length) {
@@ -45,6 +46,9 @@ public class NamedLockNode {
             if ("--lock".equals(args[i]) && i + 1 < args.length) {
                 lockName = args[i + 1];
             }
+            if ("--second-lock".equals(args[i]) && i + 1 < args.length) {
+                secondLockName = args[i + 1];
+            }
         }
 
         if (configPath == null) {
@@ -53,14 +57,12 @@ public class NamedLockNode {
         }
 
         Speedboat.start(new PropertiesConfigProvider(configPath));
-        logger.info("[named-lock] nodeId={} started, mode={} lock={}",
-            Speedboat.getNodeId(), mode, lockName);
-
-        final String marker = "[PASS]";
+        logger.info("[named-lock] nodeId={} started, mode={} lock={} secondLock={}",
+            Speedboat.getNodeId(), mode, lockName, secondLockName);
 
         switch (mode) {
             case "hold":
-                runHolding(lockName);
+                runHolding(lockName, secondLockName);
                 break;
             case "acquire":
                 runAcquireOnce(lockName);
@@ -75,10 +77,13 @@ public class NamedLockNode {
     }
 
     /**
-     * hold 模式：tryLock 成功后仅上报、不释放——非抢占语义下"失联才迁移"，
-     * 由外部 kill 驱动迁移；不响应优雅退出（模拟持有者崩溃）。
+     * hold 模式：tryLock 成功后长期持有并每秒上报，直到被 kill。
+     *
+     * <p>{@code secondLockName} 非空时：作为"长驻副本申请他人名目锁"的验证单元，
+     * 每秒对第二把锁 tryLock（成功即长持，不释放，同样被首个实现的非抢占语义约束），
+     * 用于真网迁移场景中"长驻副本在迁移 grant 后申请成功"的直接证据采集。</p>
      */
-    private static void runHolding(String lockName) throws Exception {
+    private static void runHolding(String lockName, String secondLockName) throws Exception {
         DistributedLock lock = Speedboat.getLock(lockName);
         LockHandle handle = lock.tryLock(30000);
 
@@ -90,12 +95,29 @@ public class NamedLockNode {
         logger.info("[PASS]-candidate [LOCK] acquired: lock={}, holder={}, epoch={}",
             lockName, Speedboat.getNodeId(), handle.getEpoch());
 
+        DistributedLock secondLock = secondLockName == null ? null : Speedboat.getLock(secondLockName);
+        LockHandle secondHandle = secondLock == null ? null : secondLock.tryLock(1000);
+        if (secondHandle != null && secondHandle.isSuccess()) {
+            logger.info("[PASS]-candidate [LOCK] acquired second simultaneously: lock={}, holder={}, epoch={}",
+                secondLockName, Speedboat.getNodeId(), secondHandle.getEpoch());
+        }
+
         int round = 0;
         while (true) {
             round++;
             logger.info("[hosts-cluster] HOLD round={} lock={} nodeId={} epoch={} holder={} isMain={}",
                 round, lockName, Speedboat.getNodeId(), handle.getEpoch(),
                 lock.getHolderNodeId(), Speedboat.isMain());
+
+            // 长驻副本周期申请第二把锁：迁移 grant 后应成功且 epoch 递增
+            if (secondLock != null && secondHandle != null && !secondHandle.isSuccess()) {
+                LockHandle retry = secondLock.tryLock(1000);
+                if (retry.isSuccess()) {
+                    secondHandle = retry;
+                    logger.info("[PASS]-candidate [LOCK] acquired after migration: lock={}, holder={}, epoch={}",
+                        secondLockName, Speedboat.getNodeId(), retry.getEpoch());
+                }
+            }
             TimeUnit.SECONDS.sleep(1);
         }
     }
