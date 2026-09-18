@@ -95,6 +95,8 @@ public class DistributedLockImpl implements DistributedLock {
 
     /** 租约超时统一引用 {@link SpeedboatConsts#DEFAULT_LEASE_TIMEOUT_MS}（唯一权威定义，避免双副本漂移） */
     private static final long DEFAULT_LEASE_TIMEOUT_MS = SpeedboatConsts.DEFAULT_LEASE_TIMEOUT_MS;
+    /** 本锁实例的租约时长（构造时确定；建议 > 2×续期间隔即整租约的 1/2） */
+    private final long leaseTimeoutMs;
     private static final long DEFAULT_WAIT_TIMEOUT_MS = 5000;
     private static final long RETRY_INTERVAL_MS = 100;
     /** 转发等待上限：略大于传输层 5s 兜底，确保能收到显式失败而非超时异常 */
@@ -119,10 +121,21 @@ public class DistributedLockImpl implements DistributedLock {
     private volatile ScheduledFuture<?> renewFuture;
 
     public DistributedLockImpl(String lockName, String nodeId, RaftNode raftNode, LockStateMachine stateMachine) {
+        this(lockName, nodeId, raftNode, stateMachine, DEFAULT_LEASE_TIMEOUT_MS);
+    }
+
+    /**
+     * 租约时长可指定构造（命名锁设计：lock.lease.ms 可配；测试用短租约验证迁移）。
+     *
+     * @param leaseTimeoutMs 本锁实例的租约时长（毫秒，>0 生效，<=0 回退默认 30s）
+     */
+    public DistributedLockImpl(String lockName, String nodeId, RaftNode raftNode,
+                               LockStateMachine stateMachine, long leaseTimeoutMs) {
         this.lockName = lockName;
         this.nodeId = nodeId;
         this.raftNode = raftNode;
         this.stateMachine = stateMachine;
+        this.leaseTimeoutMs = leaseTimeoutMs > 0 ? leaseTimeoutMs : DEFAULT_LEASE_TIMEOUT_MS;
         this.serializer = new ProtostuffSerializer();
         this.renewExecutor = Executors.newSingleThreadScheduledExecutor(
             NamedThreadFactory.forComponent("LeaseRenewer", nodeId)
@@ -192,7 +205,7 @@ public class DistributedLockImpl implements DistributedLock {
 
         String requestId = java.util.UUID.randomUUID().toString();
         LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.LOCK,
-            requestId, DEFAULT_LEASE_TIMEOUT_MS, 0L);
+            requestId, leaseTimeoutMs, 0L);
 
         long entryIndex = proposeOrForward(command);
         if (entryIndex > 0) {
@@ -292,7 +305,7 @@ public class DistributedLockImpl implements DistributedLock {
      */
     private void startRenewTask() {
         if (renewing.compareAndSet(false, true)) {
-            long renewInterval = DEFAULT_LEASE_TIMEOUT_MS / 2;
+            long renewInterval = leaseTimeoutMs / 2;
             renewFuture = renewExecutor.scheduleAtFixedRate(
                 this::renewLease,
                 renewInterval,
@@ -332,7 +345,7 @@ public class DistributedLockImpl implements DistributedLock {
 
         String requestId = java.util.UUID.randomUUID().toString();
         LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.RENEW,
-            requestId, DEFAULT_LEASE_TIMEOUT_MS, 0L);
+            requestId, leaseTimeoutMs, 0L);
         long entryIndex = proposeOrForward(command);
 
         // 续期权威判定：被拒（RENEW_LOST）即锁已失守——立刻停止续期与业务持有预期，
@@ -384,7 +397,7 @@ public class DistributedLockImpl implements DistributedLock {
 
         String requestId = java.util.UUID.randomUUID().toString();
         LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.UNLOCK,
-            requestId, DEFAULT_LEASE_TIMEOUT_MS, 0L);
+            requestId, leaseTimeoutMs, 0L);
         byte[] data = serializeCommand(command);
 
         // 释放确认语义：close() 返回后调用方立即读到锁已释放（reproducible contract）
