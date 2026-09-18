@@ -173,6 +173,8 @@ public class Speedboat {
             .electionTimeout(electionTimeout)
             .transportLayer(nettyTransport)
             .stateMachine(lockStateMachine)
+            // defect-20260918-01：日志上限可配（重启副本判定状态的唯一重建依据）
+            .maxLogSize(config.getMaxLogSize())
             .voteWeightStrategy(config.getVoteWeightStrategy())
             .build();
         
@@ -222,6 +224,8 @@ public class Speedboat {
             .peerIds(peerIds)
             .electionTimeout(intraTimeout)
             .transportLayer(nettyTransport)
+            // defect-20260918-01：日志上限可配（重启副本判定状态的唯一重建依据）
+            .maxLogSize(config.getMaxLogSize())
             .stateMachine(lockStateMachine)
             .build();
         

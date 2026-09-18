@@ -92,6 +92,14 @@ public interface SpeedboatConfigProvider {
     default cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig() {
         return new cn.itcraft.speedboat.config.MembershipConfig();
     }
+
+    /**
+     * 内存日志保留上限（defect-20260918-01：重启副本重建判定状态的唯一依据，
+     * 截断过深会引发 epoch 跨副本分叉；缺省 {@link SpeedboatConsts#DEFAULT_MAX_LOG_SIZE}）。
+     */
+    default int getMaxLogSize() {
+        return SpeedboatConsts.DEFAULT_MAX_LOG_SIZE;
+    }
     
     /**
      * 获取机房内选举超时下限（毫秒）

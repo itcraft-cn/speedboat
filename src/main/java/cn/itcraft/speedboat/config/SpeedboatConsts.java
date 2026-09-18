@@ -45,7 +45,16 @@ public final class SpeedboatConsts {
     
     public static final int SHUTDOWN_TIMEOUT_SECONDS = 1;
 
-    public static final int DEFAULT_MAX_LOG_SIZE = 10;
+    /**
+     * 内存日志保留条数上限（defect-20260918-01 校正：10 → 4096）。
+     *
+     * <p><b>根源与语义（必须懂再改）：</b>日志是重启副本重建锁表/判定状态的唯一
+     * 依据（快照/持久化上线前）。上限过小时历史被截断 → 重启副本 apply 到空态
+     * → epoch/fencing 等判定跨副本分叉。按锁租约续期节奏（lease/2 条/锁/租期）
+     * 估算：4096 条足以覆盖典型"重锁名目 × 30s 租约 × 数小时"场景；
+     * 更长期的运行仍必须依赖快照（P4 C）/持久化（P4 D）。</p>
+     */
+    public static final int DEFAULT_MAX_LOG_SIZE = 4096;
 
     /**
      * 分布式锁默认租约超时（毫秒）。

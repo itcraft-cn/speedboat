@@ -3,6 +3,8 @@ package cn.itcraft.speedboat.config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import cn.itcraft.speedboat.config.SpeedboatConsts;
+
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -65,6 +67,23 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
     public PropertiesConfigProvider(InputStream inputStream) {
         this.properties = new Properties();
         loadConfig(inputStream);
+    }
+
+    /**
+     * 内存日志上限（raft.max.log.size；defect-20260918-01：重启副本唯一重建依据不可截断过深）。
+     */
+    @Override
+    public int getMaxLogSize() {
+        String v = properties.getProperty("raft.max.log.size");
+        if (v == null || v.isEmpty()) {
+            return SpeedboatConsts.DEFAULT_MAX_LOG_SIZE;
+        }
+        try {
+            return Integer.parseInt(v.trim());
+        } catch (NumberFormatException e) {
+            logger.warn("Invalid raft.max.log.size='{}', fallback to default {}", v, SpeedboatConsts.DEFAULT_MAX_LOG_SIZE);
+            return SpeedboatConsts.DEFAULT_MAX_LOG_SIZE;
+        }
     }
     
     private void loadConfig(String configFile) {
