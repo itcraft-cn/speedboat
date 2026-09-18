@@ -1,5 +1,9 @@
 # 缺陷报告：maxLogSize 截断 + 无快照/持久化 → 重启副本 epoch 分叉
 
+> **状态（2026-09-18 P4 落地后）：已关闭。**
+> 根治手段 = 三档 RaftStore（默认 mem / MmapRaftStore 128MB 挂回 / Nop）+ LockStateMachine 检查点 + 读回链接线（restoreTerm + restoredLogEntries + lastApplied 跳位）。
+> 真网复核（loopback 三 JVM mmap 模式）：kill → 同身份重启副本 → 迁移接管 epoch=2 与长驻一致，分叉消失。本档案保留为演进过程记录。
+
 - 编号：defect-20260918-01
 - 级别：P1（正确性：fencing token 前提破坏；但在"NopRaftStore 默认 + 无快照"阶段内已文档化的退化范围）
 - 发现：2026-09-18 真实网络三节点测试（本机 192.168.30.39 使用 33001 端口 + 174/176，本机 → 174/176 连通性验证通过）

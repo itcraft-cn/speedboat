@@ -126,6 +126,10 @@ election.cross.timeout.max=5000
 | `vote.weight.strategy` | ❌ | none | 投票权重策略：`prefer` / `even` / `none` |
 | `vote.weight.prefer` | ⚠️ prefer 必填 | - | 享受额外权重的节点 ID（格式 `node-<ip>-<port>`） |
 | `vote.weight.prefer.weight` | ❌ | 3 | 该节点获得的额外权重 |
+| `raft.persistence` | ❌ | mem | 持久化三档：`mmap` / `mem`（默认）/ `none` |
+| `raft.persistence.dir` | ❌ | `speedboat-data` | mmap 档持久化目录（按 `{nodeId}` 自动分子目录） |
+| `raft.mmap.size.mb` | ❌ | 128 | mmap 档 WAL 区域大小上限 |
+| `raft.mmap.file.name` | ❌ | `raft.mmap` | mmap 文件名（可自定义检测 `{nodeId}` 占位） |
 | `raft.max.log.size` | ❌ | 4096 | 内存日志上限（defect-20260918-01：重启副本重建判定状态的唯一依据，不可截断过深） |
 
 ### ⚠️ 投票权重：全网一致性约束
@@ -290,9 +294,12 @@ if (handle.isSuccess()) {
 | 迁移时延 | 持有者失联 → ≤ leaseMs 到期 → 接管；Leader 宕机额外 ≤ 1 选举超时时锁状态变更暂停（租约倒计时不受影响） |
 | 跨锁并存 | 同一节点可同时持多把锁（名目间互不阻塞） |
 
-#### 重启副本边界（已知限制，P4 收敛）
+#### 重启副本边界（2026-09-18 P4 起：三档持久化解决）
 
-节点进程重启后锁表从零起步（依赖日志重放重建；受 `raft.max.log.size` 与快照/持久化成熟度影响）。**重启副本在快照/持久化上线前不参与 epoch 断言**；epoch 单调性以"长驻副本"为准（真网已验证：迁移 grant 双长驻副本一致 epoch=2）。
+`raft.persistence` 三档持久化（**默认 mem**；mmap 为"丢了能挂回的"极稳定档）落地后，进程重启副本可挂回检查点/WAL 确定量重建锁表与 epoch，`epoach` 单调性全网成立（真网已复核：重启副本接管迁移 grant 与长驻副本一致 epoch）。
+- **mem（缺省）**：进程内可恢复，跨进程重启等同"模式重启"，仅适合长驻进程场景；
+- **mmap**（`raft.persistence=mmap`，默认目录 `./speedboat-data/{nodeId}/`、默认 128MB 单文件）：重启挂回，锁表 epoch 跨重启保真；
+- **none**（`raft.persistence=none`）：NopRaftStore 测试基线。
 
 ---
 

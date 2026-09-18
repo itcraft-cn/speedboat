@@ -4,6 +4,25 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)。
 
+## [Unreleased 2] - 2026-09-18
+
+### Added（P4 三档持久化）
+
+- **RaftStore 三档策略**：`NopRaftStore`（测试基线） / `InMemoryRaftStore`（**默认 mem**：进程内可恢复，CSV 快速） / `MmapRaftStore`（极稳定：128MB 单文件 mmap WAL——"丢了挂回"，默认目录 `./speedboat-data/{nodeId}/`、文件名/大小可配）
+- **LockStateMachine 状态机检查点**：snapshot/restore（crc + temp·rename 原子替换），applied 每 1024 条触发或停机一次；epoch/holder/租约跨重启保真
+- **读回链**：RaftNodeImpl.start() 接线 restoreTerm（既有） + `restoredLogEntries()` WAL 重建 + 检查点 lastApplied 跳位 + shutdown 快照兜底
+- **配置**：`raft.persistence=mmap|mem|none`、`raft.persistence.dir`、`raft.mmap.size.mb`、`raft.mmap.file.name`
+
+### Fixed
+
+- **defect-20260918-01 消除**（重启副本 epoch 与长驻分叉）：mmap 挂回 WAL/检查点 + "列表即全量" TRUNC 标记收口；真网 loopback 复核——kill→同身份重启副本接管迁移 grant epoch=2 与长驻一致
+- MmapRaftStore 帧.flip 缺陷（marker/normal frame bodyLen=0 空帧致扫描懵收口）+ MEMBER_CHANGE 帧体 Len 实校与 op 字节修正
+
+### Verified
+
+- 单元：全量 519 绿（+6 MmapRaftStoreTest 契约、+3 LockStateMachineCheckpointTest）
+- 真网：loopback 三 JVM mmap 模式——重启副本 `restored term + rebuilt log entries=98`、跨重启迁移接管 epoch=2 双副本一致
+
 ## [Unreleased] - 2026-09-18
 
 ### Added（重要）
