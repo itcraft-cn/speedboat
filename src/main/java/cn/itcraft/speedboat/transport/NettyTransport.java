@@ -53,6 +53,7 @@ public class NettyTransport implements TransportLayer {
     private HeartbeatHandler heartbeatHandler;
     private AppendEntriesHandler appendEntriesHandler;
     private PreVoteHandler preVoteHandler;
+    private LockOpHandler lockOpHandler;
 
     public NettyTransport(NodeEndpoint localEndpoint, List<NodeEndpoint> peers, CustomSerializer serializer) {
         this.localEndpoint = localEndpoint;
@@ -257,6 +258,8 @@ public class NettyTransport implements TransportLayer {
             schedulePreVoteTimeout(requestId);
         } else if (request instanceof HeartbeatRequest) {
             scheduleHeartbeatTimeout(requestId);
+        } else if (request instanceof LockOpRequest) {
+            scheduleLockOpTimeout(requestId);
         } else {
             scheduleAppendEntriesTimeout(requestId);
         }
@@ -282,6 +285,9 @@ public class NettyTransport implements TransportLayer {
             return new PreVoteResponse(requestId, 0, false);
         } else if (request instanceof HeartbeatRequest) {
             return new HeartbeatResponse(requestId, 0, false);
+        } else if (request instanceof LockOpRequest) {
+            // ok=false = 提案未被收录；发起方按"本次转发失败"处理并重试
+            return new LockOpResponse(requestId, false, -1);
         } else {
             return new AppendEntriesResponse(requestId, 0, false, 0);
         }
@@ -323,9 +329,28 @@ public class NettyTransport implements TransportLayer {
         }, DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
+    private void scheduleLockOpTimeout(String requestId) {
+        workerGroup.schedule(() -> {
+            CompletableFuture<RpcResponse> pending = pendingRequests.remove(requestId);
+            if (pending != null && !pending.isDone()) {
+                pending.complete(new LockOpResponse(requestId, false, -1));
+            }
+        }, DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
     @Override
     public CompletableFuture<PreVoteResponse> sendPreVote(String targetNodeId, PreVoteRequest request) {
         CompletableFuture<PreVoteResponse> future = new CompletableFuture<>();
+        pendingRequests.put(request.getRequestId(), (CompletableFuture<RpcResponse>) (CompletableFuture<?>) future);
+        getOrConnect(targetNodeId)
+            .thenAccept(ch -> writeRequest(ch, request, request.getRequestId(), future))
+            .exceptionally(ex -> { failFast(request.getRequestId(), (Object) request, future); return null; });
+        return future;
+    }
+
+    @Override
+    public CompletableFuture<LockOpResponse> sendLockOp(String targetNodeId, LockOpRequest request) {
+        CompletableFuture<LockOpResponse> future = new CompletableFuture<>();
         pendingRequests.put(request.getRequestId(), (CompletableFuture<RpcResponse>) (CompletableFuture<?>) future);
         getOrConnect(targetNodeId)
             .thenAccept(ch -> writeRequest(ch, request, request.getRequestId(), future))
@@ -343,10 +368,13 @@ public class NettyTransport implements TransportLayer {
     public void setAppendEntriesHandler(AppendEntriesHandler handler) { this.appendEntriesHandler = handler; }
     @Override
     public void setPreVoteHandler(PreVoteHandler handler) { this.preVoteHandler = handler; }
+    @Override
+    public void setLockOpHandler(LockOpHandler handler) { this.lockOpHandler = handler; }
 
     PreVoteHandler getPreVoteHandler() { return preVoteHandler; }
     RequestVoteHandler getRequestVoteHandler() { return requestVoteHandler; }
     HeartbeatHandler getHeartbeatHandler() { return heartbeatHandler; }
     AppendEntriesHandler getAppendEntriesHandler() { return appendEntriesHandler; }
+    LockOpHandler getLockOpHandler() { return lockOpHandler; }
     Map<String, CompletableFuture<RpcResponse>> getPendingRequests() { return pendingRequests; }
 }

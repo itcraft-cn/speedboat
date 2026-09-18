@@ -185,6 +185,16 @@ public interface RaftNode {
     boolean proposeRemoveMember(String peerId);
 
     /**
+     * 锁操作转发（命名锁设计）：非 Leader 成员把序列化的 LockCommand
+     * 经本方法送达当前 Leader propose。
+     *
+     * <p>调用线程任意（传输层全异步）；响应仅含"提案是否收录"（ok+entryIndex），
+     * 权威判定由发起方等本地 apply 后读取。无 Leader 时未来以 ok=false 完成。</p>
+     */
+    java.util.concurrent.CompletableFuture<cn.itcraft.speedboat.rpc.LockOpResponse> forwardLockOp(
+        cn.itcraft.speedboat.rpc.LockOpRequest request);
+
+    /**
      * Raft 节点构建器（保持既有 {@code new RaftNode.Builder()} 调用兼容）。
      */
     class Builder {

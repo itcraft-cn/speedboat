@@ -33,6 +33,9 @@ public class CustomSerializer {
         registerType(6, cn.itcraft.speedboat.rpc.AppendEntriesResponse.class);
         registerType(7, cn.itcraft.speedboat.rpc.PreVoteRequest.class);
         registerType(8, cn.itcraft.speedboat.rpc.PreVoteResponse.class);
+        // 命名锁转发协议（2026-09-18 设计）：非 Leader 成员锁操作 → Leader
+        registerType(9, cn.itcraft.speedboat.rpc.LockOpRequest.class);
+        registerType(10, cn.itcraft.speedboat.rpc.LockOpResponse.class);
     }
     
     private void registerType(int id, Class<?> clazz) {

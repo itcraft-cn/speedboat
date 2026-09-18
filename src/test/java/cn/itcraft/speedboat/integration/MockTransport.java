@@ -8,6 +8,8 @@ import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
+import cn.itcraft.speedboat.rpc.LockOpRequest;
+import cn.itcraft.speedboat.rpc.LockOpResponse;
 import cn.itcraft.speedboat.transport.TransportLayer;
 
 import java.lang.reflect.Method;
@@ -29,6 +31,7 @@ public class MockTransport implements TransportLayer {
     private HeartbeatHandler heartbeatHandler;
     private AppendEntriesHandler appendEntriesHandler;
     private PreVoteHandler preVoteHandler;
+    private LockOpHandler lockOpHandler;
 
     public MockTransport() {
         this.nodeId = null;
@@ -148,6 +151,25 @@ public class MockTransport implements TransportLayer {
         return requestVoteHandler;
     }
 
+    @Override
+    public CompletableFuture<LockOpResponse> sendLockOp(String peerId, LockOpRequest request) {
+        MockTransport peerTransport = nodeTransports.get(peerId);
+        if (peerTransport != null && peerTransport.getLockOpHandler() != null) {
+            return peerTransport.getLockOpHandler().handle(request);
+        }
+        // 无 handler/目标不存在：ok=false 表示提案未收录，发起方按转发失败处理
+        return CompletableFuture.completedFuture(new LockOpResponse(request.getRequestId(), false, -1));
+    }
+
+    @Override
+    public void setLockOpHandler(LockOpHandler handler) {
+        this.lockOpHandler = handler;
+    }
+
+    public LockOpHandler getLockOpHandler() {
+        return lockOpHandler;
+    }
+
 
 
     public HeartbeatHandler getHeartbeatHandler() {
@@ -164,6 +186,7 @@ public class MockTransport implements TransportLayer {
         preVoteHandler = null;
         heartbeatHandler = null;
         appendEntriesHandler = null;
+        lockOpHandler = null;
     }
     
     public void registerRaftNode(String nodeId, Object raftNode) {

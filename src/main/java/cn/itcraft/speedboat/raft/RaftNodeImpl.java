@@ -11,6 +11,11 @@ import cn.itcraft.speedboat.rpc.PreVoteResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
+import cn.itcraft.speedboat.rpc.LockOpRequest;
+import cn.itcraft.speedboat.rpc.LockOpResponse;
+import cn.itcraft.speedboat.lock.LockCommand;
+import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
+import cn.itcraft.speedboat.serialize.SerializationException;
 import cn.itcraft.speedboat.strategy.group.GroupStrategy;
 import cn.itcraft.speedboat.raft.report.RaftNodeReport;
 import cn.itcraft.speedboat.statemachine.StateMachine;
@@ -260,6 +265,9 @@ public class RaftNodeImpl implements RaftNode {
                 onRaftThreadAsync(() -> doHandleAppendEntries(request)));
             transportLayer.setPreVoteHandler(request ->
                 onRaftThreadAsync(() -> doHandlePreVoteRequest(request)));
+            // 命名锁转发协议：Leader 侧裁决点（打点授权+propose）；非 Leader 侧直拒
+            transportLayer.setLockOpHandler(request ->
+                onRaftThreadAsync(() -> doHandleLockOp(request)));
         }
 
         resetElectionTimeout();
@@ -1354,6 +1362,67 @@ public class RaftNodeImpl implements RaftNode {
 
     private long getLastLogIndex() {
         return log.isEmpty() ? 0 : log.get(log.size() - 1).getIndex();
+    }
+
+    /**
+     * 锁操作转发裁决点（Leader 收到非 Leader 成员的锁命令时在 raft 线程执行）。
+     *
+     * <p>语义：只裁决"是否收录提案并回执日志索引"，不做互斥判定——
+     * 互斥判定在状态机 apply（全序）发生，所有副本按同一日志序得出同一结论；
+     * Leader 收录前仅做 <b>快速失败预检</b>（预检由申请方可选完成，此处仅校验提案本身）。</p>
+     *
+     * <p>授权打点：Leader 在 propose 前以自身时钟写入 grantTimestampMs，
+     * 随命令复制后全网到期点一致（多持有者租约语义的基石）。</p>
+     */
+    private LockOpResponse doHandleLockOp(LockOpRequest request) {
+        LockOpResponse rejected = new LockOpResponse(request.getRequestId(), false, -1);
+
+        if (!isLeader()) {
+            logger.debug("Node {} not leader, reject lock op: requestId={}", nodeId, request.getRequestId());
+            return rejected;
+        }
+
+        byte[] payload = request.getCommand();
+        if (payload == null || payload.length == 0) {
+            logger.warn("Node {} empty lock command payload: requestId={}", nodeId, request.getRequestId());
+            return rejected;
+        }
+
+        try {
+            LockCommand command = new ProtostuffSerializer().deserialize(payload, LockCommand.class);
+            if (command == null || command.getLockName() == null || command.getNodeId() == null
+                || command.getCommandType() == null) {
+                logger.warn("Node {} malformed lock command: requestId={}", nodeId, request.getRequestId());
+                return rejected;
+            }
+
+            // Leader 授权打点（提案内容重编排：原 requestId/lockName/申请者身份原样保留）
+            LockCommand stamped = new LockCommand(
+                command.getLockName(), command.getNodeId(), command.getCommandType(),
+                command.getRequestId(), command.getLeaseMs(), System.currentTimeMillis());
+
+            long entryIndex = doPropose(new ProtostuffSerializer().serialize(stamped));
+            logger.info("Node {} accepted lock op forwarding: requestId={}, lockName={}, entryIndex={}",
+                nodeId, request.getRequestId(), command.getLockName(), entryIndex);
+            return new LockOpResponse(request.getRequestId(), entryIndex > 0, entryIndex);
+        } catch (SerializationException e) {
+            logger.error("Node {} failed to decode lock command: requestId={}",
+                nodeId, request.getRequestId(), e);
+            return rejected;
+        }
+    }
+
+    @Override
+    public CompletableFuture<LockOpResponse> forwardLockOp(LockOpRequest request) {
+        if (transportLayer == null) {
+            return CompletableFuture.completedFuture(new LockOpResponse(request.getRequestId(), false, -1));
+        }
+        String leader = getLeaderId();
+        if (leader == null || leader.equals(nodeId)) {
+            // 无已知 Leader（选举中）或已恰好是 Leader：未来以"未收录"完成，调用方按需重试
+            return CompletableFuture.completedFuture(new LockOpResponse(request.getRequestId(), false, -1));
+        }
+        return transportLayer.sendLockOp(leader, request);
     }
 
     private long getLastLogTerm() {

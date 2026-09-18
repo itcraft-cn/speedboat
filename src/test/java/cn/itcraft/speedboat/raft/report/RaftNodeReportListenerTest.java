@@ -127,6 +127,18 @@ class RaftNodeReportListenerTest {
         }
 
         @Override
+        public java.util.concurrent.CompletableFuture<cn.itcraft.speedboat.rpc.LockOpResponse> sendLockOp(
+            String peerId, cn.itcraft.speedboat.rpc.LockOpRequest request) {
+            return java.util.concurrent.CompletableFuture.completedFuture(
+                new cn.itcraft.speedboat.rpc.LockOpResponse(request.getRequestId(), false, -1));
+        }
+
+        @Override
+        public void setLockOpHandler(cn.itcraft.speedboat.transport.TransportLayer.LockOpHandler handler) {
+            // 测试桩：不处理锁转发
+        }
+
+        @Override
         public java.util.concurrent.CompletableFuture<cn.itcraft.speedboat.rpc.HeartbeatResponse> sendHeartbeat(
             String peerId, cn.itcraft.speedboat.rpc.HeartbeatRequest request) {
             return java.util.concurrent.CompletableFuture.completedFuture(

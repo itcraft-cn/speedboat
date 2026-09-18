@@ -2,6 +2,8 @@ package cn.itcraft.speedboat.lock;
 
 import cn.itcraft.speedboat.config.SpeedboatConsts;
 import cn.itcraft.speedboat.raft.RaftNode;
+import cn.itcraft.speedboat.rpc.LockOpRequest;
+import cn.itcraft.speedboat.rpc.LockOpResponse;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
 import cn.itcraft.speedboat.serialize.SerializationException;
 import cn.itcraft.speedboat.util.NamedThreadFactory;
@@ -95,6 +97,8 @@ public class DistributedLockImpl implements DistributedLock {
     private static final long DEFAULT_LEASE_TIMEOUT_MS = SpeedboatConsts.DEFAULT_LEASE_TIMEOUT_MS;
     private static final long DEFAULT_WAIT_TIMEOUT_MS = 5000;
     private static final long RETRY_INTERVAL_MS = 100;
+    /** 转发等待上限：略大于传输层 5s 兜底，确保能收到显式失败而非超时异常 */
+    private static final long FORWARD_WAIT_TIMEOUT_MS = 6000;
 
     private final String lockName;
     private final String nodeId;
@@ -163,6 +167,10 @@ public class DistributedLockImpl implements DistributedLock {
     /**
      * 单次申请（每次调用生成独立 requestId，构成一次独立提案）。
      *
+     * <p><b>双路合一（命名锁设计）：</b>Leader 本地直接 propose（就地打点授权）；
+     * 非 Leader 经转发协议把命令送达 Leader propose——接收的授权打点是 Leader 时钟，
+     * 全网到期点一致。判定一律在状态机 apply（全序），本地视图仅作 Leader 侧快速失败。</p>
+     *
      * <p>返回值语义（旧 boolean 更化，避免调用方区分"未获授权"与"瞬时故障"）：</p>
      * <ul>
      *   <li>{@code >= 0}：授予成功，值即 fencing epoch；</li>
@@ -172,30 +180,62 @@ public class DistributedLockImpl implements DistributedLock {
     private long tryLockInternal() {
         logger.info("tryLockInternal: isLeader={}, lockName={}, nodeId={}", 
             raftNode.isLeader(), lockName, nodeId);
-        
-        if (!raftNode.isLeader()) {
-            logger.info("Not leader, cannot acquire lock directly");
-            return -1;
-        }
 
-        if (stateMachine.isLockAvailable(lockName, nodeId)) {
-            String requestId = java.util.UUID.randomUUID().toString();
-            // Leader 打点授权时刻：随命令复制后全网到期点一致（多持有者语义基石）
-            LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.LOCK,
-                requestId, DEFAULT_LEASE_TIMEOUT_MS, System.currentTimeMillis());
-            byte[] data = serializeCommand(command);
-
-            long entryIndex = raftNode.propose(data);
-            if (entryIndex > 0) {
-                logger.info("Lock command proposed at index {}, waiting for apply", entryIndex);
-                return waitForApplyResult(entryIndex, requestId);
-            } else {
-                logger.error("Failed to propose lock command, current node may not be leader");
+        if (raftNode.isLeader()) {
+            // Leader 本地快速失败（可选优化）：判定仍以 apply 结果为准
+            if (!stateMachine.isLockAvailable(lockName, nodeId)) {
+                logger.error("Lock not available, entry={}", stateMachine.getLockEntry(lockName));
+                return -1;
             }
-        } else {
-            logger.error("Lock not available, entry={}", stateMachine.getLockEntry(lockName));
+        }
+        // 非 Leader 无需预检：本地 applied 视图可能滞后，误拒反而恶化公平性
+
+        String requestId = java.util.UUID.randomUUID().toString();
+        LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.LOCK,
+            requestId, DEFAULT_LEASE_TIMEOUT_MS, 0L);
+
+        long entryIndex = proposeOrForward(command);
+        if (entryIndex > 0) {
+            logger.info("Lock command proposed at index {}, waiting for apply", entryIndex);
+            return waitForApplyResult(entryIndex, requestId);
         }
 
+        return -1;
+    }
+
+    /**
+     * 命令入日志的双路统一入口。
+     *
+     * <p>Leader 路径：本机即 Leader，以其自身时钟就地打点后 propose；
+     * 转发路（Leader 侧打点）。返回 proposal 日志索引或 -1（未收录，可安全重试）。</p>
+     */
+    private long proposeOrForward(LockCommand command) {
+        if (raftNode.isLeader()) {
+            // 本地 propose：打点即本人时刻（Leader 时钟的权威性与转发路径一致）
+            LockCommand stamped = new LockCommand(command.getLockName(), command.getNodeId(),
+                command.getCommandType(), command.getRequestId(), command.getLeaseMs(),
+                System.currentTimeMillis());
+            return raftNode.propose(serializeCommand(stamped));
+        }
+
+        // 非 Leader：转发给当前 Leader（无 Leader/转发失败返回 -1，调用方上层重试收敛）
+        LockOpRequest forwardRequest = new LockOpRequest(serializeCommand(command));
+        forwardRequest.setRoutingNodeId(nodeId);
+
+        try {
+            LockOpResponse response = raftNode.forwardLockOp(forwardRequest)
+                .get(FORWARD_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            if (response != null && response.isOk()) {
+                logger.info("Lock op forwarded & proposed: requestId={}, lockName={}, entryIndex={}",
+                    command.getRequestId(), command.getLockName(), response.getEntryIndex());
+                return response.getEntryIndex();
+            }
+            logger.info("Lock op forward not accepted (no leader / rejected): requestId={}", command.getRequestId());
+        } catch (java.util.concurrent.TimeoutException e) {
+            logger.warn("Lock op forward timeout: requestId={}", command.getRequestId());
+        } catch (Exception e) {
+            logger.warn("Lock op forward failed: requestId={}", command.getRequestId(), e);
+        }
         return -1;
     }
 
@@ -284,10 +324,6 @@ public class DistributedLockImpl implements DistributedLock {
     }
 
     private void renewLease() {
-        if (!raftNode.isLeader()) {
-            return;
-        }
-
         if (!stateMachine.isLockHeldBy(lockName, nodeId)) {
             logger.warn("Lock lost, stopping renew: {}", lockName);
             stopRenewTask();
@@ -296,15 +332,15 @@ public class DistributedLockImpl implements DistributedLock {
 
         String requestId = java.util.UUID.randomUUID().toString();
         LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.RENEW,
-            requestId, DEFAULT_LEASE_TIMEOUT_MS, System.currentTimeMillis());
-        byte[] data = serializeCommand(command);
-        long entryIndex = raftNode.propose(data);
+            requestId, DEFAULT_LEASE_TIMEOUT_MS, 0L);
+        long entryIndex = proposeOrForward(command);
 
         // 续期权威判定：被拒（RENEW_LOST）即锁已失守——立刻停止续期与业务持有预期，
         // 别等租约自然到期（宁可误停，不可双持）
         if (entryIndex > 0 && waitForRenewResult(requestId) != null) {
             logger.info("Renew confirmed for lock: {} by {}", lockName, nodeId);
         } else {
+            // 非致命（转发失败/判定未达）：剩余租约仍有效，下一周期重试
             logger.warn("Renew unconfirmed (propose failed or judgement missed), lock={} holder={}", lockName, nodeId);
         }
     }
@@ -348,20 +384,18 @@ public class DistributedLockImpl implements DistributedLock {
 
         String requestId = java.util.UUID.randomUUID().toString();
         LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.UNLOCK,
-            requestId, DEFAULT_LEASE_TIMEOUT_MS, System.currentTimeMillis());
+            requestId, DEFAULT_LEASE_TIMEOUT_MS, 0L);
         byte[] data = serializeCommand(command);
 
-        long entryIndex = raftNode.propose(data);
+        // 释放确认语义：close() 返回后调用方立即读到锁已释放（reproducible contract）
+        long entryIndex = proposeOrForward(command);
         if (entryIndex > 0) {
             logger.info("Lock released: {} by {}", lockName, nodeId);
-            // 等 UNLOCK 命令 committed & applied，提供"释放确认"语义：
-            // close() 返回后调用方立即读到锁已释放（reproducible contract）
             waitForRelease(1000, entryIndex);
         } else {
-            // propose 失败（如恰逢 leader 降级）：UNLOCK 未进入日志，
-            // 续期任务若仍在跑会在非 leader 上空转、锁状态悬而未决——
-            // 先停续期止血，本地锁状态交由租约过期自然失效（P2-20260914）
-            logger.warn("Unlock propose failed (may lose leadership), stopping renew task: {} by {}", lockName, nodeId);
+            // propose/转发失败（如恰逢 no-leader）：UNLOCK 未进入日志，
+            // 续期任务停止止血，本地锁状态交由租约过期自然失效（P2-20260914）
+            logger.warn("Unlock propose failed (may be no leader), stopping renew task: {} by {}", lockName, nodeId);
             stopRenewTask();
         }
 

@@ -8,6 +8,8 @@ import cn.itcraft.speedboat.rpc.HeartbeatRequest;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.rpc.PreVoteRequest;
 import cn.itcraft.speedboat.rpc.PreVoteResponse;
+import cn.itcraft.speedboat.rpc.LockOpRequest;
+import cn.itcraft.speedboat.rpc.LockOpResponse;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -87,15 +89,26 @@ public interface TransportLayer {
      * 发送预投票探测请求（Phase C 预投票协议）。
      */
     CompletableFuture<PreVoteResponse> sendPreVote(String peerId, PreVoteRequest request);
-    
+
+    /**
+     * 发送锁操作转发请求（非 Leader 成员 → Leader，命名锁设计）。
+     *
+     * <p>发送方与响应以 requestId 关联；响应仅含"提案是否被收录进日志"
+     * （ok + entryIndex），权威判定由发起方等待本地 apply 后从结果表读取。</p>
+     */
+    CompletableFuture<LockOpResponse> sendLockOp(String peerId, LockOpRequest request);
+
     void setRequestVoteHandler(RequestVoteHandler handler);
-    
+
     void setHeartbeatHandler(HeartbeatHandler handler);
-    
+
     void setAppendEntriesHandler(AppendEntriesHandler handler);
-    
+
     /** 注册预投票探测处理器（异步契约同 AppendEntries） */
     void setPreVoteHandler(PreVoteHandler handler);
+
+    /** 注册锁操作转发处理器（非 Leader 收到即回 NOT_LEADER；Leader 收录提案即回执） */
+    void setLockOpHandler(LockOpHandler handler);
     
     /**
      * 入站请求处理器契约（异步版）。
@@ -128,5 +141,15 @@ public interface TransportLayer {
     @FunctionalInterface
     interface PreVoteHandler {
         CompletableFuture<PreVoteResponse> handle(PreVoteRequest request);
+    }
+
+    /**
+     * 锁操作转发处理器：Leader 侧打点授权、propose、回执日志索引；
+     * 非 Leader 侧回执 ok=false（发起方应改投新 Leader）。逻辑在接收侧
+     * raft 单线程内完成，经 Future 异步回写。
+     */
+    @FunctionalInterface
+    interface LockOpHandler {
+        CompletableFuture<LockOpResponse> handle(LockOpRequest request);
     }
 }

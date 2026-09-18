@@ -257,6 +257,16 @@ class RaftNodeTest {
         }
 
         @Override
+        public CompletableFuture<cn.itcraft.speedboat.rpc.LockOpResponse> sendLockOp(String peerId, cn.itcraft.speedboat.rpc.LockOpRequest request) {
+            return CompletableFuture.completedFuture(new cn.itcraft.speedboat.rpc.LockOpResponse(request.getRequestId(), false, -1));
+        }
+
+        @Override
+        public void setLockOpHandler(cn.itcraft.speedboat.transport.TransportLayer.LockOpHandler handler) {
+            // 测试桩：不处理锁转发
+        }
+
+        @Override
         public CompletableFuture<AppendEntriesResponse> sendAppendEntries(String peerId, AppendEntriesRequest request) {
             return CompletableFuture.completedFuture(
                 new AppendEntriesResponse(request.getTerm(), true, request.getEntries().size())

@@ -57,6 +57,9 @@ class RpcMessageHandler extends ChannelInboundHandlerAdapter {
             } else if (obj instanceof AppendEntriesRequest && transport.getAppendEntriesHandler() != null) {
                 AppendEntriesRequest request = (AppendEntriesRequest) obj;
                 dispatch(ctx, transport.getAppendEntriesHandler().handle(request), request.getRequestId(), true, false);
+            } else if (obj instanceof LockOpRequest && transport.getLockOpHandler() != null) {
+                LockOpRequest request = (LockOpRequest) obj;
+                dispatchLockOp(ctx, transport.getLockOpHandler().handle(request), request.getRequestId());
             }
         } catch (Exception e) {
             logger.error("RpcMessageHandler channelRead error: {}", e.toString(), e);
@@ -105,5 +108,25 @@ class RpcMessageHandler extends ChannelInboundHandlerAdapter {
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         logger.error("RpcMessageHandler exceptionCaught: {}", cause.toString(), cause);
         ctx.close();
+    }
+
+    /**
+     * 锁转发请求的应答回写：响应以 requestId 关联（ok + entryIndex）。
+     * 判定（GRANTED/DENIED/epoch）不在此传递——发起方从本地 apply 结果读取。
+     */
+    private void dispatchLockOp(ChannelHandlerContext ctx,
+                                java.util.concurrent.CompletableFuture<LockOpResponse> future,
+                                String requestId) {
+        future.whenComplete((response, throwable) -> {
+            if (throwable != null || response == null) {
+                logger.debug("Lock op request processing failed, no response written: requestId={}", requestId);
+                return;
+            }
+            try {
+                ctx.writeAndFlush(serializer.wrap(new LockOpResponse(requestId, response.isOk(), response.getEntryIndex())));
+            } catch (Exception e) {
+                logger.error("dispatchLockOp write error: {}", e.toString(), e);
+            }
+        });
     }
 }
