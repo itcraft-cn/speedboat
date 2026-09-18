@@ -11,8 +11,20 @@ import org.slf4j.LoggerFactory;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * LockStateMachine 类。
- * 
+ * 锁状态机： Raft 日志全序 apply 的锁表权威裁决点。
+ *
+ * <p><b>裁决铁律（2026-09-18 命名锁设计）：</b></p>
+ * <ol>
+ *   <li>互斥的唯一裁判在 {@link #applyCommand}——LOCK/RENEW/UNLOCK 命令
+ *       按日志全序 apply，tryAcquire/renew/release 的返回值即命令结果，全网一致；</li>
+ *   <li>判定结果写入 {@link #opResults}（按 requestId 索引），
+ *       调用方（申请节点）apply 到位后读取，不再靠超时盲猜；</li>
+ *   <li>{@code appliedRequestIds} 提供重放幂等：同一条命令的本节点内重复应用
+ *       （理论不应发生，防御日志重放/测试注入）只记一次，重入计数不被重复累加；</li>
+ *   <li>租约到期点采用命令内 Leader 打点（grantTimestampMs + leaseMs），
+ *       全网一致，消除各副本本地打点漂移。</li>
+ * </ol>
+ *
  * @author speedboat
  * @since 1.0.0
  */
@@ -22,8 +34,22 @@ public class LockStateMachine implements StateMachine {
 
     /** 租约超时统一引用 {@link SpeedboatConsts#DEFAULT_LEASE_TIMEOUT_MS}（唯一权威定义，避免双副本漂移） */
     private static final long DEFAULT_LEASE_TIMEOUT_MS = SpeedboatConsts.DEFAULT_LEASE_TIMEOUT_MS;
+    /**
+     * 结果表/幂等表的"最近窗口"只保留 60 秒：调用方等待超时（默认 5s）
+     * 远小于窗口，清理不会误伤在途请求；同时也让重启/回放后旧结果自然淘汰。
+     */
+    private static final long RESULT_WINDOW_MILLIS = 60_000;
+    /** 结果表硬容量上限，超限立即按时间清理（当前节点 apply 频率远达不到该量级） */
+    private static final int RESULT_TABLE_MAX = 4096;
 
     private final ConcurrentHashMap<String, LockEntry> lockTable = new ConcurrentHashMap<>();
+    /** 命令判定结果表：requestId → 判定（GRANTED(epoch) / DENIED(原因)） */
+    private final ConcurrentHashMap<String, LockOpResult> opResults = new ConcurrentHashMap<>();
+    /**
+     * 命令幂等去重表：requestId → 首次应用墙钟。
+     * 仅在 raft 单线程 apply 路径访问（非防御共享，但用 ConcurrentHashMap 免起争议）。
+     */
+    private final ConcurrentHashMap<String, Long> appliedRequestIds = new ConcurrentHashMap<>();
     private final ProtostuffSerializer serializer = new ProtostuffSerializer();
     private volatile long lastAppliedIndex = 0;
 
@@ -67,28 +93,92 @@ public class LockStateMachine implements StateMachine {
     private void applyCommand(LockCommand command) {
         String lockName = command.getLockName();
         String nodeId = command.getNodeId();
+        String requestId = command.getRequestId();
+
+        // 幂等闸门：同一 requestId 只应用一次（防御重放/注入；正常路径每命令恰好 apply 一次）
+        if (requestId != null) {
+            if (appliedRequestIds.putIfAbsent(requestId, System.currentTimeMillis()) != null) {
+                logger.debug("Duplicate lock command skipped (idempotent): requestId={}", requestId);
+                return;
+            }
+        }
 
         LockEntry lockEntry = lockTable.computeIfAbsent(lockName, LockEntry::new);
 
+        // 授权打点：命令内 Leader stamp（>0 全网一致）；0 兜底本地墙钟（兼容历史/测试）
+        long grantPoint = command.getGrantTimestampMs() > 0 ? command.getGrantTimestampMs() : System.currentTimeMillis();
+        // 租约时长：命令携带优先；未携带回退全局默认（兼容旧命令格式）
+        long leaseMs = command.getLeaseMs() > 0 ? command.getLeaseMs() : DEFAULT_LEASE_TIMEOUT_MS;
+
         switch (command.getCommandType()) {
             case LOCK:
-                lockEntry.tryAcquire(nodeId, DEFAULT_LEASE_TIMEOUT_MS);
-                logger.info("Lock acquired: {} by {}", lockName, nodeId);
+                boolean acquired = lockEntry.tryAcquire(nodeId, leaseMs, grantPoint);
+                if (acquired) {
+                    recordResult(requestId, LockOpResult.granted(lockEntry.getEpoch()));
+                    logger.info("Lock acquired: {} by {} (epoch={})", lockName, nodeId, lockEntry.getEpoch());
+                } else {
+                    recordResult(requestId, LockOpResult.denied("DENIED_HELD_BY " + lockEntry.getNodeId()));
+                    logger.info("Lock acquire denied: {} by {}, holder={}", lockName, nodeId, lockEntry.getNodeId());
+                }
                 break;
 
             case UNLOCK:
-                lockEntry.release(nodeId);
-                logger.info("Lock released: {} by {}", lockName, nodeId);
+                boolean released = lockEntry.release(nodeId);
+                if (released) {
+                    recordResult(requestId, LockOpResult.granted(lockEntry.getEpoch()));
+                    logger.info("Lock released: {} by {}", lockName, nodeId);
+                } else {
+                    recordResult(requestId, LockOpResult.denied("NOT_HOLDER"));
+                    logger.info("Lock release denied (not holder): {} by {}", lockName, nodeId);
+                }
                 break;
 
             case RENEW:
-                lockEntry.renew(nodeId, DEFAULT_LEASE_TIMEOUT_MS);
-                logger.debug("Lock renewed: {} by {}", lockName, nodeId);
+                boolean renewed = lockEntry.renew(nodeId, leaseMs, grantPoint);
+                if (renewed) {
+                    recordResult(requestId, LockOpResult.granted(lockEntry.getEpoch()));
+                    logger.debug("Lock renewed: {} by {}", lockName, nodeId);
+                } else {
+                    recordResult(requestId, LockOpResult.denied("RENEW_LOST"));
+                    logger.warn("Lock renew rejected (lost holdership): {} by {}", lockName, nodeId);
+                }
                 break;
 
             default:
                 logger.warn("Unknown command type: {}", command.getCommandType());
         }
+        pruneTablesIfOverflow();
+    }
+
+    /** 幂等：requestId 为空（旧格式命令）时不记录，调用方退回"等到 apply 验持锁"（旧语义） */
+    private void recordResult(String requestId, LockOpResult result) {
+        if (requestId == null) {
+            return;
+        }
+        opResults.put(requestId, result);
+    }
+
+    /** 读取判定结果（不消费；消费侧用 {@link #removeLockOpResult}） */
+    public LockOpResult getLockOpResult(String requestId) {
+        return requestId == null ? null : opResults.get(requestId);
+    }
+
+    /** 移除并返回本节点结果（调用方授予确认后清理，节点归属制：删除仅影响本节点副本） */
+    public LockOpResult removeLockOpResult(String requestId) {
+        return requestId == null ? null : opResults.remove(requestId);
+    }
+
+    /**
+     * 惰性清理：表超过软容量时按时间窗口淘汰。
+     * 在 raft apply 线程调用，占用极小（高频锁场景下每 4096 次 apply 一次 O(n)）。
+     */
+    private void pruneTablesIfOverflow() {
+        if (opResults.size() < RESULT_TABLE_MAX && appliedRequestIds.size() < RESULT_TABLE_MAX) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        opResults.values().removeIf(r -> now - r.getStampMillis() > RESULT_WINDOW_MILLIS);
+        appliedRequestIds.values().removeIf(stamp -> now - stamp > RESULT_WINDOW_MILLIS);
     }
 
     public boolean isLockHeldBy(String lockName, String nodeId) {

@@ -141,10 +141,11 @@ public class DistributedLockImpl implements DistributedLock {
             logger.info("tryLock attempt {}: isLeader={}, lockName={}, nodeId={}", 
                 attempt, raftNode.isLeader(), lockName, nodeId);
                 
-            if (tryLockInternal()) {
+            long acquiredEpoch = tryLockInternal();
+            if (acquiredEpoch >= 0) {
                 startRenewTask();
-                logger.info("Lock acquired: {} by {}", lockName, nodeId);
-                return new LockHandleImpl(true, lockName, nodeId, this);
+                logger.info("Lock acquired: {} by {} (epoch={})", lockName, nodeId, acquiredEpoch);
+                return new LockHandleImpl(true, lockName, nodeId, this, acquiredEpoch);
             }
 
             try {
@@ -156,26 +157,38 @@ public class DistributedLockImpl implements DistributedLock {
         }
 
         logger.info("Lock acquire failed: {} by {} (timeout {}ms, attempts={})", lockName, nodeId, timeoutMs, attempt);
-        return new LockHandleImpl(false, lockName, nodeId, this);
+        return new LockHandleImpl(false, lockName, nodeId, this, -1L);
     }
 
-    private boolean tryLockInternal() {
+    /**
+     * 单次申请（每次调用生成独立 requestId，构成一次独立提案）。
+     *
+     * <p>返回值语义（旧 boolean 更化，避免调用方区分"未获授权"与"瞬时故障"）：</p>
+     * <ul>
+     *   <li>{@code >= 0}：授予成功，值即 fencing epoch；</li>
+     *   <li>{@code -1}：本论未获授权（含被拒/超时/停机），外层循环按退避重试。</li>
+     * </ul>
+     */
+    private long tryLockInternal() {
         logger.info("tryLockInternal: isLeader={}, lockName={}, nodeId={}", 
             raftNode.isLeader(), lockName, nodeId);
         
         if (!raftNode.isLeader()) {
             logger.info("Not leader, cannot acquire lock directly");
-            return false;
+            return -1;
         }
 
         if (stateMachine.isLockAvailable(lockName, nodeId)) {
-            LockCommand command = LockCommand.lock(lockName, nodeId);
+            String requestId = java.util.UUID.randomUUID().toString();
+            // Leader 打点授权时刻：随命令复制后全网到期点一致（多持有者语义基石）
+            LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.LOCK,
+                requestId, DEFAULT_LEASE_TIMEOUT_MS, System.currentTimeMillis());
             byte[] data = serializeCommand(command);
 
             long entryIndex = raftNode.propose(data);
             if (entryIndex > 0) {
                 logger.info("Lock command proposed at index {}, waiting for apply", entryIndex);
-                return waitForApply(1000, entryIndex);
+                return waitForApplyResult(entryIndex, requestId);
             } else {
                 logger.error("Failed to propose lock command, current node may not be leader");
             }
@@ -183,24 +196,41 @@ public class DistributedLockImpl implements DistributedLock {
             logger.error("Lock not available, entry={}", stateMachine.getLockEntry(lockName));
         }
 
-        return false;
+        return -1;
     }
 
-    private boolean waitForApply(long timeoutMs, long targetIndex) {
+    /**
+     * 等待命令 apply 并读取权威判定。
+     *
+     * <p>判定结果表（按 requestId）一旦出现即为终态：GRANTED 返回 epoch，
+     * DENIED 立即失败（新 tryLock(-1)，外层按需重试）——消除旧版"被拒仍等满超时"的盲等。
+     * requestId 缺失（旧格式命令兜底）时退化为持锁验证语义。</p>
+     */
+    private long waitForApplyResult(long targetIndex, String requestId) {
         long startTime = System.nanoTime();
-        logger.info("waitForApply: targetIndex={}, currentLastApplied={}, commitIndex={}, lockName={}, nodeId={}", 
-            targetIndex, raftNode.getLastApplied(), raftNode.getCommitIndex(), lockName, nodeId);
-        
+        long timeoutMs = 1000;
+
         while ((System.nanoTime() - startTime) / 1_000_000 < timeoutMs) {
-            long currentApplied = raftNode.getLastApplied();
-            long currentCommit = raftNode.getCommitIndex();
-            boolean heldBy = stateMachine.isLockHeldBy(lockName, nodeId);
-            logger.debug("waitForApply check: targetIndex={}, currentApplied={}, currentCommit={}, heldBy={}, lockEntry={}", 
-                targetIndex, currentApplied, currentCommit, heldBy, stateMachine.getLockEntry(lockName));
-                
-            if (heldBy && currentApplied >= targetIndex) {
-                logger.info("waitForApply success: targetIndex={}, currentApplied={}", targetIndex, currentApplied);
-                return true;
+            // 本地状态机已应用且写入判定结果 → 权威结论就地可得
+            LockOpResult result = stateMachine.getLockOpResult(requestId);
+            if (result != null) {
+                stateMachine.removeLockOpResult(requestId);
+                if (result.isSuccess()) {
+                    if (stateMachine.isLockHeldBy(lockName, nodeId)) {
+                        return result.getEpoch();
+                    }
+                    // 结果与持锁视图矛盾：视为异常判，退化为失败重试
+                    logger.warn("Result granted but not held locally, requestId={}, lockName={}", requestId, lockName);
+                    return -1;
+                }
+                logger.info("Lock acquire denied by state machine: requestId={}, err={}", requestId, result.getErrCode());
+                return -1;
+            }
+
+            // 兜底（请求无 requestId 或结果表尚未覆盖）：老语义——已 apply 且锁已被本节点持有
+            if (requestId == null && raftNode.getLastApplied() >= targetIndex
+                && stateMachine.isLockHeldBy(lockName, nodeId)) {
+                return 0;
             }
             try {
                 Thread.sleep(10);
@@ -209,9 +239,9 @@ public class DistributedLockImpl implements DistributedLock {
                 break;
             }
         }
-        logger.info("waitForApply timeout: targetIndex={}, finalApplied={}, finalCommit={}", 
-            targetIndex, raftNode.getLastApplied(), raftNode.getCommitIndex());
-        return false;
+        logger.info("waitForApplyResult timeout: targetIndex={}, finalApplied={}, requestId={}",
+            targetIndex, raftNode.getLastApplied(), requestId);
+        return -1;
     }
 
     /**
@@ -264,10 +294,49 @@ public class DistributedLockImpl implements DistributedLock {
             return;
         }
 
-        LockCommand command = LockCommand.renew(lockName, nodeId);
+        String requestId = java.util.UUID.randomUUID().toString();
+        LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.RENEW,
+            requestId, DEFAULT_LEASE_TIMEOUT_MS, System.currentTimeMillis());
         byte[] data = serializeCommand(command);
-        raftNode.propose(data);
-        logger.debug("Renewed lease for lock: {}", lockName);
+        long entryIndex = raftNode.propose(data);
+
+        // 续期权威判定：被拒（RENEW_LOST）即锁已失守——立刻停止续期与业务持有预期，
+        // 别等租约自然到期（宁可误停，不可双持）
+        if (entryIndex > 0 && waitForRenewResult(requestId) != null) {
+            logger.info("Renew confirmed for lock: {} by {}", lockName, nodeId);
+        } else {
+            logger.warn("Renew unconfirmed (propose failed or judgement missed), lock={} holder={}", lockName, nodeId);
+        }
+    }
+
+    /**
+     * 短窗等待续期判定（仅用于失守检测；本轮续期失败不代表立即失锁，
+     * 剩余租约仍为到期前的缓冲——真正的失守通知在下次续期或本地 expiry 发现）。
+     */
+    private LockOpResult waitForRenewResult(String requestId) {
+        long startTime = System.nanoTime();
+        long timeoutMs = 500;
+
+        while ((System.nanoTime() - startTime) / 1_000_000 < timeoutMs) {
+            LockOpResult result = stateMachine.getLockOpResult(requestId);
+            if (result != null) {
+                stateMachine.removeLockOpResult(requestId);
+                if (result.isSuccess()) {
+                    return result;
+                }
+                logger.warn("Renew rejected, lock may be lost: requestId={}, err={}, stopping renew: {}",
+                    requestId, result.getErrCode(), lockName);
+                stopRenewTask();
+                return null;
+            }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        return null;
     }
 
     @Override
@@ -277,7 +346,9 @@ public class DistributedLockImpl implements DistributedLock {
             return;
         }
 
-        LockCommand command = LockCommand.unlock(lockName, nodeId);
+        String requestId = java.util.UUID.randomUUID().toString();
+        LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.UNLOCK,
+            requestId, DEFAULT_LEASE_TIMEOUT_MS, System.currentTimeMillis());
         byte[] data = serializeCommand(command);
 
         long entryIndex = raftNode.propose(data);
@@ -303,7 +374,7 @@ public class DistributedLockImpl implements DistributedLock {
     /**
      * 等待指定日志索引被 commit 并 apply 完成（用于释放确认）。
      *
-     * <p>与 {@link #waitForApply(long, long)} 的区别：解锁场景是"期望锁被释放"
+     * <p>与 {@link #waitForApplyResult(long, String)} 的区别：解锁场景是"期望锁被释放"
      * —— 终止条件是 lastApplied >= target 且锁已不在此节点手中。
      * raft 线程与调用线程独立，仅做异步轮询，无阻塞风险。</p>
      */
@@ -383,13 +454,21 @@ public class DistributedLockImpl implements DistributedLock {
         private final boolean success;
         private final String lockName;
         private final String nodeId;
+        /** fencing token（未成功持锁为 -1） */
+        private final long epoch;
         private final DistributedLockImpl lock;
         private final AtomicBoolean closed = new AtomicBoolean(false);
 
         LockHandleImpl(boolean success, String lockName, String nodeId, DistributedLockImpl lock) {
+            this(success, lockName, nodeId, lock, -1L);
+        }
+
+        /** @param epoch fencing token（未成功持锁为 -1） */
+        LockHandleImpl(boolean success, String lockName, String nodeId, DistributedLockImpl lock, long epoch) {
             this.success = success;
             this.lockName = lockName;
             this.nodeId = nodeId;
+            this.epoch = epoch;
             this.lock = lock;
         }
 
@@ -406,6 +485,11 @@ public class DistributedLockImpl implements DistributedLock {
         @Override
         public String getNodeId() {
             return nodeId;
+        }
+
+        @Override
+        public long getEpoch() {
+            return epoch;
         }
 
         @Override
