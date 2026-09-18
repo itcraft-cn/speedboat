@@ -29,6 +29,7 @@ Speedboat is a minimalist Raft consensus algorithm implementation focused on mas
 - Distributed system master election
 - Cross-datacenter high-availability deployment
 - Microservice primary/standby failover
+- Per-subject exclusive publishing (named locks: quoting / opening ceremonies / scheduled jobs — exactly one active holder per subject)
 
 ---
 
@@ -126,6 +127,11 @@ election.cross.timeout.max=5000
 | `vote.weight.strategy` | ❌ | none | Weighted election: `prefer` / `even` / `none` |
 | `vote.weight.prefer` | ⚠️ for prefer | - | Node ID (format `node-<ip>-<port>`) that gets the extra weight |
 | `vote.weight.prefer.weight` | ❌ | 3 | Extra weight given to the preferred node |
+| `raft.persistence` | ❌ | mem | Persistence tier: `mmap` / `mem` (default) / `none` |
+| `raft.persistence.dir` | ❌ | `speedboat-data` | mmap tier persistence dir (auto sub-dir per `{nodeId}`) |
+| `raft.mmap.size.mb` | ❌ | 128 | mmap tier WAL region size cap (MB) |
+| `raft.mmap.file.name` | ❌ | `raft.mmap` | mmap file name (supports `{nodeId}` placeholder) |
+| `raft.max.log.size` | ❌ | 4096 | In-memory log cap (defect-20260918-01: the sole rebuild basis for restarted replicas; must not truncate too deep) |
 
 ### ⚠️ Vote Weight: cluster-wide consistency constraint
 
@@ -260,6 +266,59 @@ boolean running = Speedboat.isRunning()
 ```
 
 Returns whether the singleton instance is running.
+
+### Named Distributed Lock
+
+> **Semantics (as of the 2026-09-18 design)**: primacy and locking are orthogonal
+> abstractions — the Leader only serialises lock commands into the Raft log;
+> **any member** may apply for any named lock and holds it once consensus succeeds.
+> Each named lock has **at most one holder at any time** (mutual-exclusion hard
+> constraint); renew / release are supported; a holder lost → lease expires → a
+> contender takes over fairly (**non-preemptive**, no revocation).
+
+#### Get Lock Handle
+
+```java
+DistributedLock lock = Speedboat.getLock("forex")
+```
+
+- The lock name is the "subject" (forex / metals / commodity …). Multiple locks
+  coexist in one cluster with independent holders.
+- Leader-local and forwarded (follower) applications converge on one path; the
+  judgement happens only in the state-machine apply (log total order).
+
+#### Acquire / Release / Fencing Token
+
+```java
+LockHandle handle = lock.tryLock(5000);
+if (handle.isSuccess()) {
+    long epoch = handle.getEpoch();   // fencing token: owner generation, monotonic
+    // ... holding window (auto renewal at leaseMs/2; a rejected RENEW stops renewal)
+    handle.close();                   // release (effective cluster-wide on return)
+}
+```
+
+**Key semantics**:
+
+| Semantics | Guarantee |
+|-----------|-----------|
+| Mutual exclusion | ≤1 holder per named lock at any instant; a rejected acquire is observable immediately (no blind timeout) |
+| Epoch fencing | Downstream envelope shall carry `lockName + epoch` and reject a stale token by strict monotonic increase |
+| Non-preemption | A held lock is never revoked; the returning A must wait for the new holder's loss/release |
+| Migration latency | holder lost → ≤ leaseMs to takeover; leader crash adds ≤1 election timeout of state-change pause (lease countdown unaffected) |
+| Multi-lock coexistence | One node may hold several named locks at once (subjects never block each other) |
+
+#### Restart-replica boundary (resolved by the P4 persistence tiers)
+
+With `raft.persistence` tiers (**default `mem`**; `mmap` as the extreme-stability
+tier) a restarted process re-attaches checkpoint/WAL and rebuilds lock table and
+epoch deterministically — epoch monotonicity holds cluster-wide (verified on real
+network: the restarted replica's migration takeover epoch equals the long-lived
+replicas').
+
+- **mem (default)**: recoverable within the process; cross-process restart behaves like a first boot; best for long-lived processes;
+- **mmap** (`raft.persistence=mmap`, default dir `./speedboat-data/{nodeId}/`, default 128MB single file): attaches back on restart; lock/epoch survive restarts;
+- **none** (`raft.persistence=none`): `NopRaftStore` test baseline.
 
 ---
 

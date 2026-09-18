@@ -11,6 +11,8 @@
 - **集群视角配置**：用户只需配置 `datacenter + nodes`
 - **自动匹配**：系统自动检测本机 IP 并匹配节点
 - **自动模式**：单机房扁平模式，跨机房级联模式
+- **分布式命名锁**：任意成员可申请任意名目锁；恰好一个持有者；非抢占公平接管；epoch fencing
+- **持久化三档**：mem（默认）/ mmap（重启"挂回"）/ none，锁与 epoch 跨重启保真
 - **两套超时**：机房内/机房间独立配置
 - **零依赖配置**：默认 Properties，可选实现 JSON/YAML
 
@@ -99,6 +101,46 @@ vote.weight.prefer.weight=3
 实机 4 节点验证：权重 (3,1,1,1) → total 6 / required 4，
 三个普通节点永不能单独取胜，加权节点必须参与每次多数派。
 
+### 持久化三档（可选，默认 mem）
+
+```properties
+# raft.persistence=mem | mmap | none
+#   mem（缺省）：进程内可恢复，快速，无磁盘开销（稳定环境默认）
+#   mmap      ：128MB 单文件 mmap WAL——"丢了挂回"，跨进程重启可恢复（极稳定环境）
+#   none      ：NopRaftStore 测试基线
+raft.persistence=mmap
+raft.persistence.dir=speedboat-data        # mmap 目录（{nodeId} 自动分子目录）
+raft.mmap.size.mb=128                      # mmap 单文件大小上限
+raft.mmap.file.name=raft.mmap              # 文件名，可用 {nodeId} 占位
+raft.max.log.size=4096                     # 内存日志上限（重启副本重建依据）
+```
+
+## 分布式命名锁
+
+主与解耦设计：**任意成员**都可申请任意名目的锁（不只 Leader），日志共识成功即持有；
+同名目任意时刻**恰好一个持有者**（互斥硬约束）；可续期/可释放；
+持有者失联 → 租约到期 → 竞争者公平接管（**非抢占**，不夺回存量持有者）。
+
+```java
+DistributedLock lock = Speedboat.getLock("forex");   // 名目即锁名
+LockHandle handle = lock.tryLock(5000);
+if (handle.isSuccess()) {
+    long epoch = handle.getEpoch();   // fencing token：下游凭 lockName+epoch 单调拒旧主
+    // ... 业务持有期（框架自动续期；RENEW 被拒立即停发）
+    handle.close();
+}
+```
+
+| 语义 | 承诺 |
+|------|------|
+| 互斥 | 同名目锁任意时刻 ≤1 持有者，判定只在状态机 apply（日志全序） |
+| epoch fencing | 跨重启保真（mmap 档）；下游认 lockName+epoch 单调 |
+| 非抢占 | 持有者不失联不释放；A 恢复后不得夺回 |
+| 迁移 | 失联 → ≤ 租约到期 → 接管；Leader 宕机额外 ≤1 选举超时内锁状态变更暂停 |
+
+三名目报价场景（A 持外汇锁 / B 持贵金属锁 / C 持商品锁）**一个 Raft 组**即可承载，
+无需多进程/多端口。
+
 ## API
 
 ```java
@@ -115,15 +157,19 @@ Speedboat.isRunning();        // 运行状态
 
 // 停止
 Speedboat.stop();
+
+// 分布式命名锁
+Speedboat.getLock("forex");   // 名目即锁名
 ```
 
 ## 设计约束：单一集群
 
-> ⚠️ **一个进程 = 一个集群拓扑**。Speedboat 采用单例门面设计，
+> ⚠️ **一个进程 = 一个 Raft 集群拓扑**。Speedboat 采用单例门面设计，
 > 每个应用实例只维护**一套**集群的主次关系（同一集群可跨多个机房）。
 
 ```text
 ✅ 支持：一个应用参与一个集群（可单机房 / 跨多机房）
+✅ 支持：同级锁命名空间多名目（getLock("forex")/getLock("metals") 并存）
 ❌ 不支持：一个应用同时维护多个集群的主次关系
           （如同时保持 a/b/c 与 a/x/y 两套集群的 Leader）
 ```
@@ -133,9 +179,9 @@ Speedboat.stop();
 - `Speedboat.start(config)` 为单例模式，二次启动被忽略
 - 配置中只有一套 `nodes` 拓扑，本机 IP 仅匹配其中一次
 - 所有静态 API（`isMain()` / `getLock()` 等）均指向这唯一集群
-- 分布式锁与该集群的 Raft 日志绑定，不设命名空间隔离
+- 多名目互斥由**命名锁**承载（锁名即命名空间）；同名目锁互斥由日志全序保证
 
-**为什么这样设计**：多集群（multi-group / 命名空间）需求较为冷门，
+**为什么这样设计**：多集群（multi-group）需求较为冷门，
 为保持极简 API 与传输协议的简洁性，刻意不做支持。若确有此类需求，
 建议为每个集群独立部署进程，或自行扩展配置层与传输层（协议消息
 需增加 groupId 多路复用）。
