@@ -95,8 +95,11 @@ final class InboundAppendHandler {
             if (logStore.getLastLogIndex() < request.getPrevLogIndex()) {
                 logger.info("Follower {} log too short: {} < prevLogIndex {}",
                     ctx.nodeId, logStore.getLastLogIndex(), request.getPrevLogIndex());
-                // 返回 lastLogIndex，Leader 据此设置 nextIndex = matchIndex + 1，逐步回退
-                return new AppendEntriesResponse(ctx.term.getCurrent(), false, logStore.getLastLogIndex());
+                // 返回 expectedNextIndex 快速回退提示：首条日志 +1（日志太短 → leader
+                // 应从缺口的头部整段重发，替代原"返回 lastLogIndex 逐条回退"的慢路径；
+                // leader 侧仍按 ≤ current-1 钳制保证安全）
+                return new AppendEntriesResponse(ctx.term.getCurrent(), false, logStore.getLastLogIndex(),
+                    logStore.getFirstLogIndex() + 1);
             }
 
             LogEntry prevEntry = logStore.getEntryAt(request.getPrevLogIndex());
@@ -105,9 +108,10 @@ final class InboundAppendHandler {
                     ctx.nodeId, request.getPrevLogIndex(),
                     prevEntry != null ? prevEntry.getTerm() : "null",
                     request.getPrevLogTerm());
-                // 返回 lastLogIndex，Leader 逐步回退 nextIndex 直到找到一致点
-                // 这是标准 Raft 的做法，保证收敛；优化的快速回退需要额外协议支持
-                return new AppendEntriesResponse(ctx.term.getCurrent(), false, logStore.getLastLogIndex());
+                // 快速回退：计算本地冲突任期区间的起始 index 供 leader 一步对齐；
+                // 这是标准 Raft 逐条回退的优化（SOFAJRaft/Ratis 同款协议扩展）
+                return new AppendEntriesResponse(ctx.term.getCurrent(), false, logStore.getLastLogIndex(),
+                    logStore.conflictNextIndex(request.getPrevLogIndex(), request.getPrevLogTerm()));
             }
         }
 

@@ -134,12 +134,20 @@ final class ReplicationPump {
                 ctx.nodeId, peerId, response.getMatchIndex(), ctx.matchIndex);
             advanceCommitIndex();
         } else {
+            // 失配回退（Raft §5.3）：
+            //   1) 优先取接收方的 expectedNextIndex 快速回退（SOFAJRaft/Ratis 同款扩展）；
+            //   2) 无提示时退回 hint=matchIndex+1 为下界；每轮至少回退 1；
+            //   3) 仅取 hint/expected 会在"同索引不同 term"的分割日志（两任 leader 写同一
+            //      index）下恒等于当前 nextIndex、prevLog 探测死循环——故 end 强制钳制 ≤
+            //      current - 1，保证严格递减、永不卡死。
             long current = ctx.nextIndex.getOrDefault(peerId, 1L);
-            long hint = response.getMatchIndex() + 1;
-            long newNextIndex = Math.max(1, Math.min(hint, current - 1));
+            long expected = response.getExpectedNextIndex() > 0
+                ? response.getExpectedNextIndex()
+                : response.getMatchIndex() + 1;
+            long newNextIndex = Math.max(1, Math.min(expected, current - 1));
             ctx.nextIndex.put(peerId, newNextIndex);
-            logger.debug("Leader {} decrementing nextIndex for {} to {} (hint={}, current={})",
-                ctx.nodeId, peerId, newNextIndex, hint, current);
+            logger.debug("Leader {} decrementing nextIndex for {} to {} (expected={}, hint={}, current={})",
+                ctx.nodeId, peerId, newNextIndex, response.getExpectedNextIndex(), response.getMatchIndex() + 1, current);
         }
     }
 

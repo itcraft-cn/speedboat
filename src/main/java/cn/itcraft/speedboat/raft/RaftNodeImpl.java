@@ -437,6 +437,14 @@ public class RaftNodeImpl implements RaftNode {
         return lockOps.forwardLockOp(request);
     }
 
+    /**
+     * 锁操作 Leader 侧裁决入口（包内契约：与传输层 handler 同语义）。
+     * 经 {@code onRaftThread} 收敛后交 {@code LockOpGateway.doHandleLockOp} 裁决。
+     */
+    LockOpResponse handleLockOp(LockOpRequest request) {
+        return onRaftThread(() -> lockOps.doHandleLockOp(request));
+    }
+
     // ==================== 定时任务武装（心跳节拍归门面） ====================
 
     /** 投票权重计算（RequestVote 受理方视角；纯函数归 QuorumCalculator，委派保留） */

@@ -27,6 +27,12 @@ public class LockOpRequest extends RpcRequest {
         this.command = command;
     }
 
+    /** 指定 requestId 的构造（申请方幂等键；重试重放同 requestId） */
+    public LockOpRequest(String requestId, byte[] command) {
+        super(requestId);
+        this.command = command;
+    }
+
     /** 消息途经的可选路由信息（排障用） */
     public String getRoutingNodeId() {
         return routingNodeId;

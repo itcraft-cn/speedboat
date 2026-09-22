@@ -173,4 +173,64 @@ class RaftNodeLogReplicationTest {
         LogEntry firstEntry = leaderNode.getLogEntries().get(0);
         assertEquals("leader", firstEntry.getLeaderId());
     }
+
+    // ==================== expectedNextIndex 快速回退（SOFAJRaft/Ratis 同款协议扩展，2026-09-22）====================
+
+    @Test
+    void testFastBackfillHintWhenLogTooShort() {
+        // 已有 index 1、2 的日志（term 5）
+        followerNode.handleAppendEntries(new AppendEntriesRequest(
+            5, "leader", 0, 0, Arrays.asList(new LogEntry(1, 5, "leader"), new LogEntry(2, 5, "leader")), 0));
+
+        // leader 从 prevLogIndex=9 探测（尾部缺失）→ 应返回"日志过短"的快速回退提示
+        AppendEntriesRequest request = new AppendEntriesRequest(
+            5, "leader", 9, 5, Collections.emptyList(), 0);
+        AppendEntriesResponse response = followerNode.handleAppendEntries(request);
+
+        assertFalse(response.isSuccess());
+        assertEquals(2, response.getExpectedNextIndex(), "日志太短应建议从 firstLogIndex+1=2 开始重发（本地首条 1）");
+    }
+
+    @Test
+    void testFastBackfillHintOnTermMismatch() {
+        // 本地 term 3 a 2 条（index 1-2）；请求 term 5 的 prevLogIndex=1 但 prevLogTerm=4 → 冲突
+        followerNode.handleAppendEntries(new AppendEntriesRequest(
+            3, "oldLeader", 0, 0, Arrays.asList(new LogEntry(1, 3, "oldLeader"), new LogEntry(2, 3, "oldLeader")), 0));
+
+        AppendEntriesRequest request = new AppendEntriesRequest(
+            5, "leader", 1, 4, Collections.emptyList(), 0);
+        AppendEntriesResponse response = followerNode.handleAppendEntries(request);
+
+        assertFalse(response.isSuccess());
+        assertEquals(1, response.getExpectedNextIndex(), "term 不一致 → 应提示从本地该任期首条(index 1)回退");
+    }
+
+    @Test
+    void testFastBackfillHintOnSameIndexConflict() {
+        // 本地在 index 2 是 term 3 与请求 term 5 冲突 → 提示从本地该任期首条(index 2)重回退
+        followerNode.handleAppendEntries(new AppendEntriesRequest(
+            3, "oldLeader", 0, 0, Arrays.asList(new LogEntry(1, 3, "oldLeader"), new LogEntry(2, 3, "oldLeader")), 0));
+
+        AppendEntriesRequest request = new AppendEntriesRequest(
+            5, "leader", 2, 5, Collections.emptyList(), 0);
+        AppendEntriesResponse response = followerNode.handleAppendEntries(request);
+
+        assertFalse(response.isSuccess());
+        assertEquals(1, response.getExpectedNextIndex(), "同 index 冲突应提示从本地该任期区间的首条(index 1)回退");
+    }
+
+    @Test
+    void testFastBackfillHintWalksSameTermSpan() {
+        // 本地 index 1-3 都是 term 3；请求在 index 3 处 term=4 冲突 → 提示回退到该任期区间首条 index 1
+        followerNode.handleAppendEntries(new AppendEntriesRequest(
+            3, "oldLeader", 0, 0, Arrays.asList(
+            new LogEntry(1, 3, "oldLeader"), new LogEntry(2, 3, "oldLeader"), new LogEntry(3, 3, "oldLeader")), 0));
+
+        AppendEntriesRequest request = new AppendEntriesRequest(
+            5, "leader", 3, 5, Collections.emptyList(), 0);
+        AppendEntriesResponse response = followerNode.handleAppendEntries(request);
+
+        assertFalse(response.isSuccess());
+        assertEquals(1, response.getExpectedNextIndex(), "本地 3 条同任期冲突 → 建议从期首条=1 重发");
+    }
 }

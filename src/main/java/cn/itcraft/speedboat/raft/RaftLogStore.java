@@ -191,6 +191,60 @@ final class RaftLogStore {
     // ==================== 裁剪族 ====================
 
     /**
+     * 首条日志 index（裁剪后可能 > 1；空仓返回 0）。
+     * 用于"日志过短"场景的快速回退提示（expectedNextIndex 下界参考）。
+     */
+    long getFirstLogIndex() {
+        return ctx.log.isEmpty() ? 0 : ctx.log.get(0).getIndex();
+    }
+
+    /**
+     * 冲突条目起始 index（SOFAJRaft/Ratis 式快速回退）：
+     * 从 {@code fromIndex} 向前扫描，返回"与 {@code expectedTerm} 同任期"的
+     * 最小 index；扫描落入更早任期即停（Raft 论文 §5.3 的 conflict index）。
+     *
+     * <p>找不到同任期条目时退化为 {@code fromIndex}（保守逐步回退）。</p>
+     *
+     * @param fromIndex    prevLogIndex 一致性检查失败的位置
+     * @param expectedTerm prevLogTerm 中声明的任期
+     * @return 建议重发的下一条 index（考虑越界钳制后仍由 leader 手动钳制）
+     */
+    long conflictNextIndex(long fromIndex, long expectedTerm) {
+        // 位置越界（本地日志比预期望的还要靠前/靠后）：直接提示从首条开始
+        LogEntry start = getEntryAt(fromIndex);
+        if (start == null) {
+            long first = getFirstLogIndex();
+            return first > 0 ? first : 1;
+        }
+        // 本地该位置的任期与请求声明一致——说明冲突在此之前的更早条目，
+        // 沿本地任期一路向左延伸（返回该任期首条 + 1 后 leader 重新探测会再次命中
+        // 分歧点，最终由逐条语义兜底；此处只要给出可疑区间的起点即可）
+        if (start.getTerm() == expectedTerm) {
+            long i = fromIndex;
+            while (i > 1) {
+                LogEntry prev = getEntryAt(i - 1);
+                if (prev == null || prev.getTerm() != expectedTerm) {
+                    break;
+                }
+                i--;
+            }
+            long first = getFirstLogIndex();
+            return i > first ? i : first;
+        }
+        // 常规冲突（同 index 不同任期）：返回本地该任期的首条 index
+        long localTerm = start.getTerm();
+        long i = fromIndex;
+        while (i > 1) {
+            LogEntry prev = getEntryAt(i - 1);
+            if (prev == null || prev.getTerm() != localTerm) {
+                break;
+            }
+            i--;
+        }
+        return i;
+    }
+
+    /**
      * 内存日志裁剪（maxLogSize 生效路径，P4-M4 修正）。
      *
      * <p><b>历史缺陷</b>：旧逻辑"遇到已提交条目即 break"，提交推进后永不裁剪、

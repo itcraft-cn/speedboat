@@ -217,10 +217,12 @@ final class MembershipManager {
                 ctx.peerIds.add(peerId);
                 logger.info("Node {} added new peer {}", ctx.nodeId, peerId);
 
-                // 如果是 Leader，初始化 nextIndex 和 matchIndex
+                // 如果是 Leader，初始化复制进度 + 新鲜度表
+                // （内存纪律：所有簿记表在成员进出双向同步，防残留条目）
                 if (ctx.currentState == NodeState.LEADER) {
                     ctx.nextIndex.put(peerId, logStore.getLastLogIndex() + 1);
                     ctx.matchIndex.put(peerId, 0L);
+                    ctx.lastResponseNanos.put(peerId, System.nanoTime());
                 }
             }
         } else if (entry.getChangeType() == MemberChangeEntry.ChangeType.REMOVE) {
@@ -229,13 +231,15 @@ final class MembershipManager {
                 ctx.peerIds.remove(peerId);
                 logger.info("Node {} removed peer {}", ctx.nodeId, peerId);
 
-                // 如果是 Leader，清理状态
+                // 全量清理该 peer 的簿记状态（防表无限增长 / 陈旧统计干扰）：
+                // nextIndex/matchIndex/响应新鲜度/投票登记/预投票集合 + 故障记录
                 if (ctx.currentState == NodeState.LEADER) {
                     ctx.nextIndex.remove(peerId);
                     ctx.matchIndex.remove(peerId);
                 }
-
-                // 清理故障记录
+                ctx.lastResponseNanos.remove(peerId);
+                ctx.votesReceived.remove(peerId);
+                ctx.prevotesReceived.remove(peerId);
                 ctx.failureRecords.remove(peerId);
             }
         }

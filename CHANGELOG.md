@@ -4,6 +4,20 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)。
 
+## [Unreleased 3] - 2026-09-22
+
+### Added（SOFAJRaft/Ratis 可吸收点第一批落地）
+
+- **expectedNextIndex 快速回退**（SOFAJRaft/Ratis 同款协议扩展）：`AppendEntriesResponse` 新增 `expectedNextIndex` 失败提示；follower 三失败路径（日志过短→firstLogIndex+1 / 同岗任期冲突→任期区间首条）一步给出回退点；leader 侧采纳前仍强制 ≤ current-1 钳制（分割日志保护不回退）
+- **锁 op 幂等去重**（SOFAJRaft RequestMap 纪律）：`LockOpGateway` 增加 requestId→裁决结果 LRU 缓存（上界 4096）；"受理成功但应答丢失"重试幂等回放原 entryIndex，不再重复入日志；确定性拒绝同样缓存，非 Leader 条件性拒绝不缓存
+- **成员簿记表清理**（SOFAJRaft 内存纪律）：`MembershipManager.processMemberChange` ADD/REMOVE 双向同步清理 lastResponseNanos/votesReceived/prevotesReceived（nextIndex/matchIndex/failureRecords 原已覆盖）
+- **BoundedCache**（raft/util）：硬上界 + access-order LRU + 线程安全；用于锁 op 幂等缓存（后续所有"对不可控入参建簿记表"场景复用）
+- **RaftNodeMicrometerListener**（Ratis TlsConf/metrics 分层式外挂）：speedboat.raft.term/commitIndex/lastApplied/lastLogIndex/leader/followerMatch(peer tag) 指标族；micrometer-core `<optional>` 依赖，不引即零接触（核心零 metrics 库依赖保持）
+
+### Verified
+
+- 单元：532 全绿（+4 BoundedCacheTest / +3 LockOpGatewayDedupTest / +4 快速回退语义）
+
 ## [Unreleased 2] - 2026-09-18
 
 ### Added（P4 三档持久化）

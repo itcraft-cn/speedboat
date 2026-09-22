@@ -113,6 +113,13 @@
             <artifactId>netty-all</artifactId>
             <version>4.1.68.Final</version>
         </dependency>
+        <!-- 可选 metrics 外挂（Ratis 式分层：核心零依赖，需监控的应用侧显式引入 micrometer-core） -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <version>1.9.17</version>
+            <optional>true</optional>
+        </dependency>
     </dependencies>
 
     <properties>
