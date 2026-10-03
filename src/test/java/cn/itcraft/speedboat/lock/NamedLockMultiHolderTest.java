@@ -119,7 +119,8 @@ class NamedLockMultiHolderTest {
     void testFollowerCanAcquireAndReleaseViaForwarding() {
         String leaderId = getLeaderNodeId();
         String followerId = nodes.stream().map(TestNode::getNodeId)
-            .filter(id -> !id.equals(leaderId)).findFirst().orElseThrow();
+            .filter(id -> !id.equals(leaderId)).findFirst()
+            .orElseThrow(() -> new AssertionError("expected a non-leader node to exist"));
 
         DistributedLock followerLock = newLock(followerId, "forex");
         LockHandle handle = followerLock.tryLock(3000);
@@ -214,7 +215,8 @@ class NamedLockMultiHolderTest {
     void testNonPreemptionHolderKeepsLock() {
         String leaderId = getLeaderNodeId();
         String followerId = nodes.stream().map(TestNode::getNodeId)
-            .filter(id -> !id.equals(leaderId)).findFirst().orElseThrow();
+            .filter(id -> !id.equals(leaderId)).findFirst()
+            .orElseThrow(() -> new AssertionError("expected a non-leader node to exist"));
 
         DistributedLock followerLock = newLock(followerId, "commodity");
         DistributedLock leaderLock = newLock(leaderId, "commodity");
@@ -239,7 +241,8 @@ class NamedLockMultiHolderTest {
     void testLockMigratesAfterHolderLeaseExpires() throws Exception {
         String leaderId = getLeaderNodeId();
         String followerId = nodes.stream().map(TestNode::getNodeId)
-            .filter(id -> !id.equals(leaderId)).findFirst().orElseThrow();
+            .filter(id -> !id.equals(leaderId)).findFirst()
+            .orElseThrow(() -> new AssertionError("expected a non-leader node to exist"));
 
         DistributedLock leaderLock = newLock(leaderId, "commodity");
         LockHandle hA = leaderLock.tryLock(3000);
@@ -266,7 +269,8 @@ class NamedLockMultiHolderTest {
     void twoNodeCanHoldDifferentLocksSimultaneously() {
         String leaderId = getLeaderNodeId();
         String followerId = nodes.stream().map(TestNode::getNodeId)
-            .filter(id -> !id.equals(leaderId)).findFirst().orElseThrow();
+            .filter(id -> !id.equals(leaderId)).findFirst()
+            .orElseThrow(() -> new AssertionError("expected a non-leader node to exist"));
 
         DistributedLock lockA = newLock(leaderId, "forex");
         DistributedLock lockB = newLock(followerId, "metals");

@@ -72,7 +72,7 @@ class LockStateMachineCheckpointTest {
         sm1.snapshot(ckpt);
 
         // 撕裂 CRC：随机涂抹 payload 中一字节
-        Path target = java.nio.file.Path.of(ckpt);
+        Path target = java.nio.file.Paths.get(ckpt);
         byte[] bytes = Files.readAllBytes(target);
         new Random(42).nextBytes(new byte[0]);
         bytes[bytes.length - 5] = (byte) (bytes[bytes.length - 1 - 4] ^ 0x3F);

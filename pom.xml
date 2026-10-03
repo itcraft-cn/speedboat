@@ -132,6 +132,22 @@
 
     <build>
         <plugins>
+            <!--
+                Java 8 ABI 强约束：必须使用 maven-compiler-plugin 的 release=8 配置
+                （而非仅设置 source/target=8）。仅设 source/target 时，用新 JDK（9+）
+                编译仍会链接到新 API 的协变签名（如 MappedByteBuffer.duplicate() 在
+                JDK9+ 返回 MappedByteBuffer），产物在 Java 8 运行时抛
+                NoSuchMethodError（持久化 mmap 档曾因此导致选主停滞）。
+                release=8 强制按 Java 8 的 API 签名编译，杜绝此类运行期崩溃。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <release>8</release>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
