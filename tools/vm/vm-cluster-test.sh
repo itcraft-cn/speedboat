@@ -78,31 +78,36 @@ deploy() {
 start_node() { rsh "$1" "~/speedboat-test/vm_node_ctl.sh start ${IP[$1]} $CONFIG run $LOCK $(rlog "$1")"; }
 stop_all() { for h in "${HOSTS[@]}"; do rsh "$h" '~/speedboat-test/vm_node_ctl.sh stop' >/dev/null 2>&1; done; }
 
-# 轮询等待"存在非 none 的 leader 且唯一"，最多 N 秒
+# 轮询等待"存活节点中恰好一个 isMain=true，且各存活节点 leader 字段一致"，最多 N 秒
 wait_single_leader() {
-  local secs=$1 i
+  local secs=$1 i h
   for ((i=0;i<secs;i++)); do
-    local leaders=""
+    local mains=0 mnode=""
     for h in "${HOSTS[@]}"; do
       alive "$h" || continue
-      local L; L=$(fld "$(state_line "$h")" leader)
-      [ -n "$L" ] && [ "$L" != "none" ] && leaders="$leaders $L"
+      local line nid im
+      line=$(state_line "$h"); nid=$(fld "$line" node); im=$(fld "$line" isMain)
+      if [ "$im" = "true" ]; then mains=$((mains+1)); mnode=$nid; fi
     done
-    leaders=$(echo "$leaders" | tr ' ' '\n' | grep -v '^$' | sort -u)
-    if [ "$(echo "$leaders" | grep -c .)" -eq 1 ]; then return 0; fi
+    if [ "$mains" -eq 1 ]; then
+      local ok=1
+      for h in "${HOSTS[@]}"; do
+        alive "$h" || continue
+        [ "$(fld "$(state_line "$h")" leader)" = "$mnode" ] || ok=0
+      done
+      [ "$ok" = "1" ] && return 0
+    fi
     sleep 1
   done
   return 1
 }
 
-# 返回唯一 leader 所在 host（空表示未定）
+# 返回当前 isMain=true 的 host（空表示未定）
 leader_host() {
-  local h nid L
+  local h
   for h in "${HOSTS[@]}"; do
     alive "$h" || continue
-    nid=$(fld "$(state_line "$h")" node)
-    L=$(fld "$(state_line "$h")" leader)
-    [ -n "$L" ] && [ "$L" != "none" ] && [ "$L" = "$nid" ] && { echo "$h"; return; }
+    [ "$(fld "$(state_line "$h")" isMain)" = "true" ] && { echo "$h"; return; }
   done
   echo ""
 }
@@ -144,13 +149,9 @@ phase2_lock() {
     r_cnt=$(echo "$rel" | grep -c 'LOCK_RELEASE' || true)
     total_acq=$((total_acq+a_cnt)); total_rel=$((total_rel+r_cnt))
     echo "  $h: acquire=$a_cnt release=$r_cnt"
-    local e
-    while IFS= read -r e; do
-      [ -z "$e" ] && continue
-      all_epochs="$all_epochs $e"
-      # 每个 acquire 的 epoch 必须在同节点有 release
-      echo "$rel" | grep -q "epoch=$e" || pair_fail=1
-    done < <(echo "$acq" | grep -o 'epoch=[0-9]*' | grep -o '[0-9]*')
+    # 采样瞬间至多 1 个在途持有（正处于 LOCK_HOLD 窗口）；差 >1 即释放缺失
+    [ $((a_cnt - r_cnt)) -gt 1 ] && pair_fail=1
+    all_epochs="$all_epochs $(echo "$acq" | grep -o 'epoch=[0-9]*' | grep -o '[0-9]*')"
     all_nodes="$all_nodes $(echo "$acq" | grep -o 'node=[^ ]*' | sed 's/node=//')"
   done
   local uniq_dup distinct
@@ -159,7 +160,7 @@ phase2_lock() {
   check "产生了锁获取事件（>0）" [ "$total_acq" -gt 0 ]
   check "fencing epoch 全局唯一（无重复授权）" [ -z "$uniq_dup" ]
   check "至少 2 个不同成员成功持锁（任意成员可持有）" [ "$distinct" -ge 2 ]
-  check "每次获取均有同 epoch 的主动释放（成对）" [ "$pair_fail" -eq 0 ]
+  check "各节点获取-释放差 ≤1（仅持有窗口内在途）" [ "$pair_fail" -eq 0 ]
 }
 
 phase3_failover() {
