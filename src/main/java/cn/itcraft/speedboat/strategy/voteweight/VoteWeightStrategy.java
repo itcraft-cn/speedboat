@@ -52,4 +52,23 @@ import cn.itcraft.speedboat.raft.VoteContext;
 public interface VoteWeightStrategy {
     
     int calculateAdditionalWeight(VoteContext context);
+
+    /**
+     * 投票授予闸门：本节点<b>是否应当</b>把票投给该候选者。
+     *
+     * <p>缺省恒放行，既有策略（{@link DefaultVoteWeightStrategy}、
+     * {@link DatacenterVoteWeightStrategy} 等）行为完全不变。</p>
+     *
+     * <p><b>为什么需要它：</b>{@link #calculateAdditionalWeight} 只回答"权重是多少"，
+     * 回答不了"该不该投"。跨机房父组里这条区别是致命的——低优先级机房在对侧死亡期间
+     * 会持续发起选举导致 term 膨胀，对侧以空 term 重启后会被反向"收编"成下属，
+     * 使既定的机房优先级永久失效。参见
+     * {@link DatacenterPriorityVoteWeightStrategy} 的实现与说明。</p>
+     *
+     * @param candidate 候选者上下文（含候选者 ID 与机房标识）
+     * @return true 表示放行（不因本闸门拒绝）；false 表示本节点拒绝投票
+     */
+    default boolean shouldGrantVote(VoteContext candidate) {
+        return true;
+    }
 }

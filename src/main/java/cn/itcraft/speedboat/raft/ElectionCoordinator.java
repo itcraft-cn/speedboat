@@ -300,6 +300,14 @@ final class ElectionCoordinator {
      * </ol>
      */
     RequestVoteResponse doHandleRequestVote(RequestVoteRequest request) {
+        // 跨机房父组：未持有代表席位的节点不代表本机房投票。
+        // 否则同一机房会出现多份"代表"投票，父组票数被虚增、多数派判定失真。
+        if (!ctx.seatHeld) {
+            logger.debug("Node {} holds no representative seat, rejecting vote for {}",
+                ctx.nodeId, request.getCandidateId());
+            return new RequestVoteResponse(ctx.term.getCurrent(), false);
+        }
+
         if (ctx.term.isMonotonicViolation(request.getTerm())) {
             logger.info("Rejecting vote request from {} with lower term {}",
                 request.getCandidateId(), request.getTerm());
@@ -314,6 +322,27 @@ final class ElectionCoordinator {
             ctx.votedFor = null;
             ctx.votedForTerm = -1;
             ctx.leaderId = null;
+        }
+
+        // 机房优先级闸门：只把票投给"优先级不低于本机房"的候选者。
+        //
+        // 注意本闸门必须放在 term 对齐【之后】：若在此处提前拒绝且不抬 term，
+        // 本节点的 term 会长期低于对侧的膨胀 term，待本机房真正发起选举时
+        // 反而会被对方以 isMonotonicViolation 拒绝，永远无法按优先级当选。
+        //
+        // 缺省策略 shouldGrantVote() 恒放行，单机房与既有权重策略行为完全不变。
+        if (ctx.voteWeightStrategy != null) {
+            String candidateDatacenter = request.getDatacenter() != null
+                ? request.getDatacenter()
+                : ctx.datacenter;
+            VoteContext candidateContext = VoteContext.forDatacenter(
+                request.getCandidateId(), candidateDatacenter, request.getTerm());
+            if (!ctx.voteWeightStrategy.shouldGrantVote(candidateContext)) {
+                logger.info(
+                    "Node {} (dc={}) refuses vote to {} (dc={}): lower datacenter priority",
+                    ctx.nodeId, ctx.datacenter, request.getCandidateId(), candidateDatacenter);
+                return new RequestVoteResponse(ctx.term.getCurrent(), false);
+            }
         }
 
         // Phase C leader stickiness：现任 leader 心跳仍健康时不被同任期请求动摇
@@ -345,6 +374,14 @@ final class ElectionCoordinator {
      */
     void runElectionTimeout(long timeoutMs) {
         if (ctx.running && ctx.currentState != NodeState.LEADER) {
+            // 跨机房父组：未持有代表席位的节点不代表本机房参与选举。
+            // 父组成员是各机房的【子组 Leader】，同一机房同时只能有一个代表——
+            // 若非代表节点也参与竞选，父组成员数会随子组切换漂移，多数派判定失去意义。
+            if (!ctx.seatHeld) {
+                resetElectionTimeout();
+                return;
+            }
+
             long elapsedNanos = System.nanoTime() - ctx.lastHeartbeatNanos;
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(elapsedNanos);
             if (elapsedMs >= timeoutMs) {

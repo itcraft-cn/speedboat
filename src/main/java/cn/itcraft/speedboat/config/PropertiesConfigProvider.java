@@ -9,7 +9,9 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
 /**
@@ -234,6 +236,64 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
             }
         }
         return SpeedboatConfigProvider.super.getCrossDatacenterElectionTimeoutMax();
+    }
+
+    /**
+     * 父组端口偏移（跨机房级联用），对应配置键 {@code cross.port.offset}。
+     *
+     * @return 端口偏移量；未配置或非法时取接口缺省 1000
+     */
+    @Override
+    public int getCrossPortOffset() {
+        String value = properties.getProperty("cross.port.offset");
+        if (value != null) {
+            try {
+                int offset = Integer.parseInt(value.trim());
+                if (offset >= 0) {
+                    return offset;
+                }
+                logger.warn("Invalid cross.port.offset value: {} (must be >= 0), using default 1000", value);
+            } catch (NumberFormatException e) {
+                logger.warn("Invalid cross.port.offset value: {}, using default 1000", value);
+            }
+        }
+        return SpeedboatConfigProvider.super.getCrossPortOffset();
+    }
+
+    /**
+     * 机房权重显式配置，对应配置键前缀 {@code datacenter.weight.<机房标识>}。
+     *
+     * <p>示例：{@code datacenter.weight.dc-0=3}、{@code datacenter.weight.dc-1=1}。
+     * 返回空 Map 表示未显式配置，由门面按机房索引派生。</p>
+     *
+     * @return 机房标识 → 权重；无合法配置时为空 Map
+     */
+    @Override
+    public Map<String, Integer> getDatacenterWeights() {
+        final String prefix = "datacenter.weight.";
+        Map<String, Integer> weights = new HashMap<>();
+
+        for (String name : properties.stringPropertyNames()) {
+            if (!name.startsWith(prefix)) {
+                continue;
+            }
+            String datacenterId = name.substring(prefix.length());
+            if (datacenterId.isEmpty()) {
+                continue;
+            }
+            String value = properties.getProperty(name);
+            try {
+                int weight = Integer.parseInt(value.trim());
+                if (weight > 0) {
+                    weights.put(datacenterId, weight);
+                } else {
+                    logger.warn("Invalid {} value: {} (must be > 0), ignoring", name, value);
+                }
+            } catch (NumberFormatException e) {
+                logger.warn("Invalid {} value: {}, ignoring", name, value);
+            }
+        }
+        return weights;
     }
 
 

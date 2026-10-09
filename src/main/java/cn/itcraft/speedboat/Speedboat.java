@@ -2,14 +2,19 @@ package cn.itcraft.speedboat;
 
 import cn.itcraft.speedboat.config.SpeedboatConfigProvider;
 import cn.itcraft.speedboat.raft.ElectionTimeout;
+import cn.itcraft.speedboat.raft.NodeState;
 import cn.itcraft.speedboat.raft.RaftGroup;
 import cn.itcraft.speedboat.raft.RaftNode;
+import cn.itcraft.speedboat.raft.report.RaftNodeReport;
 import cn.itcraft.speedboat.persistence.MmapRaftStore;
 import cn.itcraft.speedboat.persistence.InMemoryRaftStore;
 import cn.itcraft.speedboat.persistence.NopRaftStore;
 import cn.itcraft.speedboat.persistence.RaftStore;
 import cn.itcraft.speedboat.serialize.CustomSerializer;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
+import cn.itcraft.speedboat.statemachine.NoopStateMachine;
+import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityVoteWeightStrategy;
+import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
 import cn.itcraft.speedboat.transport.NettyTransport;
 import cn.itcraft.speedboat.transport.NodeEndpoint;
 import cn.itcraft.speedboat.util.NetworkUtils;
@@ -21,7 +26,10 @@ import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -100,6 +108,23 @@ public class Speedboat {
     private RaftNode raftNode;
     private LockStateMachine lockStateMachine;
     private final ConcurrentHashMap<String, DistributedLock> lockCache = new ConcurrentHashMap<>();
+
+    // ==================== 跨机房级联：父组（跨机房层）====================
+    //
+    // 每个进程持有两套彼此完全独立的 Raft 实例：
+    //   子组（机房内层）——本机房 3 节点，选出"机房代表"
+    //   父组（跨机房层）——成员 = 各机房的子组 Leader，选出"全局主"
+    // 两组各有各的端口、term、日志与持久化目录，互不干扰。
+    // 单机房模式下以下字段恒为 null。
+
+    /** 父组传输层（绑定 localPort + cross.port.offset） */
+    private NettyTransport parentNettyTransport;
+    /** 父组 RaftNode */
+    private RaftNode parentRaftNode;
+    /** 父组节点标识（按父组端口推导，与子组 nodeId 区分） */
+    private String parentNodeId;
+    /** 父组绑定端口 */
+    private int parentPort;
     
     private volatile boolean running;
     
@@ -196,17 +221,22 @@ public class Speedboat {
     
     private void doStartCrossDatacenterMode() {
         logger.info("Starting in cross-datacenter (cascade) mode...");
-        
+
         List<List<String>> allNodes = config.getNodes();
+
+        // 父组必须先建：子组的报告监听器要引用父组节点来驱动"代表席位"门控
+        buildParentGroup(allNodes);
+
+        // ==================== 子组（机房内层）====================
         List<String> localDcNodes = allNodes.get(datacenterIndex);
         List<String> localDcPeerAddresses = new ArrayList<>();
-        
+
         for (String nodeAddr : localDcNodes) {
             if (!NetworkUtils.ipMatchesAddress(localIp, nodeAddr)) {
                 localDcPeerAddresses.add(nodeAddr);
             }
         }
-        
+
         List<NodeEndpoint> peerEndpoints = new ArrayList<>();
         List<String> peerIds = new ArrayList<>();
         for (String peerAddr : localDcPeerAddresses) {
@@ -214,20 +244,20 @@ public class Speedboat {
             int peerPort = NetworkUtils.parsePort(peerAddr);
             // 身份确定性：peer 与自身使用同一生成规则（ip:port 推导），跨进程身份一致
             String peerNodeId = NetworkUtils.generateNodeId(peerAddr);
-            
+
             peerEndpoints.add(new NodeEndpoint(peerNodeId, peerIp, peerPort));
             peerIds.add(peerNodeId);
         }
-        
+
         NodeEndpoint localEndpoint = new NodeEndpoint(nodeId, localIp, localPort);
         CustomSerializer serializer = new CustomSerializer(new ProtostuffSerializer());
         nettyTransport = new NettyTransport(localEndpoint, peerEndpoints, serializer);
-        
+
         ElectionTimeout intraTimeout = new ElectionTimeout(
             config.getIntraDatacenterElectionTimeoutMin(),
             config.getIntraDatacenterElectionTimeoutMax()
         );
-        
+
         raftNode = new RaftNode.Builder()
             .nodeId(nodeId)
             .peerIds(peerIds)
@@ -240,16 +270,151 @@ public class Speedboat {
             // 跨机房模式此前漏传投票权重策略，导致 DatacenterVoteWeightStrategy /
             // PreferNodeVoteWeightStrategy 在跨机房场景下完全不生效（等价于全员权重 1）
             .voteWeightStrategy(config.getVoteWeightStrategy())
+            // 子组角色变化 → 驱动父组代表席位门控（ROLE_CHANGE 事件驱动，非轮询）
+            .reportListener(this::onIntraRoleChange)
             .raftStore(buildRaftStore(config))
             .build();
-        
-        logger.info("Starting NettyTransport (intra-datacenter)...");
+
+        logger.info("Starting NettyTransport (intra-datacenter) on port {}...", localPort);
         nettyTransport.start();
-        
+
         logger.info("Starting RaftNode (intra-datacenter group)...");
         raftNode.start();
-        
-        logger.info("Cross-datacenter cascade mode initialized (inter-datacenter election will use cross timeout)");
+
+        // ==================== 父组（跨机房层）====================
+        // 初始不持有席位：只有本进程当选子组 Leader 后才代表本机房参与父组选举，
+        // 否则同一机房会有多份"代表"同时投票，父组成员数随子组切换漂移。
+        parentRaftNode.setSeatHeld(false);
+
+        logger.info("Starting NettyTransport (inter-datacenter) on port {}...", parentPort);
+        parentNettyTransport.start();
+
+        logger.info("Starting RaftNode (inter-datacenter group)...");
+        parentRaftNode.start();
+
+        logger.info("Cross-datacenter cascade initialized: intra(nodeId={}, port={}), "
+                + "inter(nodeId={}, port={}), weights={}",
+            nodeId, localPort, parentNodeId, parentPort, parentDatacenterWeights);
+    }
+
+    /** 父组生效的机房权重表（日志与运维查询用） */
+    private Map<String, Integer> parentDatacenterWeights = java.util.Collections.emptyMap();
+
+    /**
+     * 子组角色变化 → 驱动父组"代表席位"门控。
+     *
+     * <p>父组的投票成员是各机房的<b>子组 Leader</b>。同一机房同时只能有一个代表，
+     * 否则父组票数会被虚增、多数派判定失去意义。</p>
+     *
+     * <p>本回调在 raft 单线程上触发（{@code ReportReason.ROLE_CHANGE}），
+     * 因此是<b>事件驱动</b>而非轮询：子组切换到父组席位交接的时延接近 0，
+     * 不受周期报告间隔（10s）影响。</p>
+     *
+     * @param report 子组状态快照
+     */
+    private void onIntraRoleChange(RaftNodeReport report) {
+        if (parentRaftNode == null) {
+            return;
+        }
+        parentRaftNode.setSeatHeld(report.getRole() == NodeState.LEADER);
+    }
+
+    /**
+     * 构建父组（跨机房层）。
+     *
+     * <p>父组是与子组<b>完全独立</b>的 Raft 实例：独立端口（子组端口 + {@code cross.port.offset}）、
+     * 独立 term、独立日志与独立持久化目录。其投票成员是<b>各机房的子组 Leader</b>（"代表"），
+     * 由代表席位门控保证同一机房同时只有一个代表参与。</p>
+     *
+     * <p><b>peer 取对侧机房全部节点</b>而非仅对侧 Leader：广播后只有对侧的子组 Leader
+     * 会以活动态应答（非代表节点会拒绝投票），从而天然解决"对侧代表是谁"的发现问题，
+     * 无需任何额外的服务发现。</p>
+     *
+     * @param allNodes 全部机房的节点地址列表
+     */
+    private void buildParentGroup(List<List<String>> allNodes) {
+        final int offset = config.getCrossPortOffset();
+        this.parentPort = localPort + offset;
+        this.parentNodeId = NetworkUtils.generateNodeId(localIp + ":" + parentPort);
+
+        // 全部机房标识（按 nodes.<索引> 顺序）：权重派生与 peer 机房归属都依赖它
+        List<String> allDatacenterIds = new ArrayList<>();
+        for (int i = 0; i < allNodes.size(); i++) {
+            allDatacenterIds.add(resolveDatacenterId(config, i));
+        }
+
+        List<NodeEndpoint> parentPeerEndpoints = new ArrayList<>();
+        List<String> parentPeerIds = new ArrayList<>();
+        Map<String, String> parentPeerDatacenters = new HashMap<>();
+
+        for (int dcIdx = 0; dcIdx < allNodes.size(); dcIdx++) {
+            if (dcIdx == datacenterIndex) {
+                // 跳过本机房：父组成员是"本机房的代表"，不是本机房的所有节点
+                continue;
+            }
+            for (String nodeAddr : allNodes.get(dcIdx)) {
+                String peerIp = NetworkUtils.parseIp(nodeAddr);
+                int peerParentPort = NetworkUtils.parsePort(nodeAddr) + offset;
+                String peerParentId = NetworkUtils.generateNodeId(peerIp + ":" + peerParentPort);
+
+                parentPeerEndpoints.add(new NodeEndpoint(peerParentId, peerIp, peerParentPort));
+                parentPeerIds.add(peerParentId);
+                parentPeerDatacenters.put(peerParentId, allDatacenterIds.get(dcIdx));
+            }
+        }
+
+        if (parentPeerIds.isEmpty()) {
+            throw new IllegalStateException(
+                "cross-datacenter mode requires peers in other datacenters, but none were found "
+                    + "(datacenterIndex=" + datacenterIndex + ", offset=" + offset + ")");
+        }
+
+        // 机房权重：索引派生（权重 = 机房总数 - 索引，索引靠前权重高）为基底，
+        // 显式配置 datacenter.weight.<机房ID> 覆盖对应项，两者可部分混用。
+        Map<String, Integer> effectiveWeights =
+            new LinkedHashMap<String, Integer>(
+                DatacenterPriorityVoteWeightStrategy.deriveWeightsByIndex(allDatacenterIds));
+        effectiveWeights.putAll(config.getDatacenterWeights());
+        this.parentDatacenterWeights = effectiveWeights;
+
+        // 兜底权重 1：未登记的机房按最低权重，不会凭空获得多数派优势
+        VoteWeightStrategy parentStrategy =
+            new DatacenterPriorityVoteWeightStrategy(effectiveWeights, datacenterId, 1);
+
+        NodeEndpoint parentLocalEndpoint = new NodeEndpoint(parentNodeId, localIp, parentPort);
+        parentNettyTransport = new NettyTransport(
+            parentLocalEndpoint, parentPeerEndpoints, new CustomSerializer(new ProtostuffSerializer()));
+
+        ElectionTimeout crossTimeout = new ElectionTimeout(
+            config.getCrossDatacenterElectionTimeoutMin(),
+            config.getCrossDatacenterElectionTimeoutMax());
+
+        parentRaftNode = new RaftNode.Builder()
+            .nodeId(parentNodeId)
+            .peerIds(parentPeerIds)
+            .electionTimeout(crossTimeout)
+            .transportLayer(parentNettyTransport)
+            // 父组不复制业务状态（无锁表、无用户数据），但仍需状态机实例：
+            // Leader 心跳折叠为空 AppendEntries 照常走 apply 路径，为 null 会 NPE
+            .stateMachine(new NoopStateMachine())
+            .datacenter(datacenterId)
+            .voteWeightStrategy(parentStrategy)
+            .maxLogSize(config.getMaxLogSize())
+            .checkpointInterval(config.getRaftCheckpointInterval())
+            // 独立 store：父组 term/votedFor 与子组互不污染（按父组 nodeId 分目录）
+            .raftStore(buildRaftStore(config, parentNodeId))
+            .build();
+
+        // peer 机房归属：权重策略据此计算对侧机房权重。
+        // 未设置的 peer 会取本机房兜底，导致误判为同机房——故必须逐个登记。
+        for (Map.Entry<String, String> entry : parentPeerDatacenters.entrySet()) {
+            parentRaftNode.setPeerDatacenter(entry.getKey(), entry.getValue());
+        }
+
+        logger.info("Parent group built: nodeId={}, port={}, peers={}, datacenter={}, "
+                + "weights={}, crossTimeout=[{}..{}]ms",
+            parentNodeId, parentPort, parentPeerIds, datacenterId,
+            effectiveWeights, crossTimeout.getMinMs(), crossTimeout.getMaxMs());
     }
     
     private void doStop() {
@@ -267,6 +432,16 @@ public class Speedboat {
         }
         lockCache.clear();
         
+        // 父组先停：父组的"全局主"语义依赖子组席位，先拆上层再拆下层
+        if (parentRaftNode != null) {
+            parentRaftNode.shutdown();
+            parentRaftNode = null;
+        }
+        if (parentNettyTransport != null) {
+            parentNettyTransport.shutdown();
+            parentNettyTransport = null;
+        }
+
         if (raftNode != null) {
             raftNode.shutdown();
         }
@@ -275,23 +450,25 @@ public class Speedboat {
             nettyTransport.shutdown();
         }
 
-        // 持久化收尾（Mmap 档：msync 尾部 + 关闭映射；mem 档无操作）
-        if (raftStoreRef != null) {
+        // 持久化收尾（Mmap 档：msync 尾部 + 关闭映射；mem 档无操作）。
+        // 子组与父组各有一份 store，需全部关闭，否则父组的 mmap 映射会泄漏。
+        for (RaftStore store : raftStoreRefs) {
             try {
-                if (raftStoreRef instanceof MmapRaftStore) {
-                    ((MmapRaftStore) raftStoreRef).close();
+                if (store instanceof MmapRaftStore) {
+                    ((MmapRaftStore) store).close();
                 }
             } catch (Exception e) {
                 logger.warn("RaftStore close failed: {}", e.toString());
             }
-            raftStoreRef = null;
         }
+        raftStoreRefs.clear();
 
         running = false;
         logger.info("Speedboat stopped");
     }
 
-    private RaftStore raftStoreRef;
+    /** 本进程创建的全部 RaftStore（子组 + 父组），停机时统一收尾关闭 */
+    private final List<RaftStore> raftStoreRefs = new ArrayList<>();
 
     /**
      * 持久化三档解析（2026-09-18 P4-M5 收敛：**生产缺省 mmap**）。
@@ -307,29 +484,54 @@ public class Speedboat {
      * 库级 {@code RaftNode.Builder} 缺省保持 Nop（零副作用，档位由调用方显式选择）。
      */
     private RaftStore buildRaftStore(SpeedboatConfigProvider config) {
+        return buildRaftStore(config, nodeId);
+    }
+
+    /**
+     * 持久化三档解析（指定归属节点）。
+     *
+     * <p>跨机房级联模式下子组与父组<b>必须各有一份独立 store</b>：两组的 term/votedFor
+     * 互相独立，共用会让父组的任期污染子组（或反之），重启恢复时无法分辨属于哪一组。
+     * 故按 {@code storeOwnerId}（子组/父组各自的 nodeId）分目录。</p>
+     *
+     * @param config        配置提供者
+     * @param storeOwnerId  store 归属节点标识，用于分目录与文件名占位
+     * @return 解析出的 RaftStore，并登记到 {@link #raftStoreRefs} 供停机收尾
+     */
+    private RaftStore buildRaftStore(SpeedboatConfigProvider config, String storeOwnerId) {
         String type = config.getRaftPersistenceType() == null ? "mmap" : config.getRaftPersistenceType().trim();
         switch (type) {
             case "none":
                 return NopRaftStore.getInstance();
-            case "mem":
-                this.raftStoreRef = InMemoryRaftStore.createDefault();
-                return raftStoreRef;
+            case "mem": {
+                RaftStore store = InMemoryRaftStore.createDefault();
+                raftStoreRefs.add(store);
+                return store;
+            }
             case "mmap":
             default: {
                 String dir = config.getRaftPersistenceDir();
-                String fileName = config.getRaftMmapFileName().replace("{nodeId}", nodeId);
-                File dirFile = new File(dir, nodeId);
-                this.raftStoreRef = new MmapRaftStore(dirFile, fileName, config.getRaftMmapSizeMb());
-                logger.info("RaftStore resolved mmap (default): dir={}, file={}, sizeMb={}",
-                    dirFile.getAbsolutePath(), fileName, config.getRaftMmapSizeMb());
-                return raftStoreRef;
+                String fileName = config.getRaftMmapFileName().replace("{nodeId}", storeOwnerId);
+                File dirFile = new File(dir, storeOwnerId);
+                RaftStore store = new MmapRaftStore(dirFile, fileName, config.getRaftMmapSizeMb());
+                raftStoreRefs.add(store);
+                logger.info("RaftStore resolved mmap: ownerId={}, dir={}, file={}, sizeMb={}",
+                    storeOwnerId, dirFile.getAbsolutePath(), fileName, config.getRaftMmapSizeMb());
+                return store;
             }
         }
     }
     
     private boolean checkIsMain() {
         checkRunning();
-        return raftNode != null && raftNode.isLeader();
+        if (raftNode == null || !raftNode.isLeader()) {
+            return false;
+        }
+        // 跨机房级联：全局主 = 本进程既是子组（机房内）Leader，
+        // 又在父组（跨机房）中当选。两道条件缺一不可——
+        // 仅子组当选只代表"本机房代表"，不等于"全局主"。
+        // parentRaftNode 为 null 表示单机房模式，子组 Leader 即全局主。
+        return parentRaftNode == null || parentRaftNode.isLeader();
     }
     
     private String doGetLeaderId() {

@@ -170,6 +170,67 @@ class RaftNodeTest {
         assertEquals(3, dcNode.calculateVoteWeight(new RequestVoteRequest(1, "node-2", 1)));
     }
 
+    // ==================== 跨机房父组：代表席位门控 ====================
+
+    @Test
+    @DisplayName("席位门控 - 未持有席位的节点拒绝投票（防止同机房多份代表虚增票数）")
+    void seatGateRejectsVoteWhenNoSeat() {
+        node.setSeatHeld(false);
+
+        RequestVoteResponse response = node.handleRequestVote(new RequestVoteRequest(1, "candidate-1", 1));
+
+        assertFalse(response.isVoteGranted(), "无席位节点不代表本机房投票");
+    }
+
+    @Test
+    @DisplayName("席位门控 - 恢复席位后重新参与投票")
+    void seatGateRestoresVotingWhenSeatGranted() {
+        node.setSeatHeld(false);
+        assertFalse(node.handleRequestVote(new RequestVoteRequest(1, "candidate-1", 1)).isVoteGranted());
+
+        node.setSeatHeld(true);
+
+        assertTrue(node.handleRequestVote(new RequestVoteRequest(1, "candidate-1", 1)).isVoteGranted());
+    }
+
+    @Test
+    @DisplayName("席位门控 - 缺省持有席位，单机房行为不变")
+    void seatDefaultsToHeld() {
+        assertTrue(node.isSeatHeld(), "缺省必须持有席位，否则会静默破坏所有既有单机房集群");
+    }
+
+    @Test
+    @DisplayName("席位门控 - 失去席位时若已是 LEADER 则主动退位")
+    void seatGateStepsDownLeaderWhenSeatRevoked() throws InterruptedException {
+        transport.setVoteResponse(true);
+        node.start();
+        Thread.sleep(400);
+        assertEquals(NodeState.LEADER, node.getCurrentState());
+
+        node.setSeatHeld(false);
+
+        // 退位在 raft 单线程上异步执行，稍等再断言
+        Thread.sleep(100);
+        assertEquals(NodeState.FOLLOWER, node.getCurrentState(),
+            "失去代表资格后不得继续以 Leader 身份对外发心跳");
+        node.shutdown();
+    }
+
+    @Test
+    @DisplayName("席位门控 - 未持有席位的节点不发起选举")
+    void seatGateBlocksElectionWithoutSeat() throws InterruptedException {
+        transport.setVoteResponse(true);
+        node.setSeatHeld(false);
+        node.start();
+
+        // 若门控失效，本节点会在此窗口内竞选并登基（transport 已放行投票）
+        Thread.sleep(500);
+
+        assertEquals(NodeState.FOLLOWER, node.getCurrentState(), "无席位不得竞选");
+        assertEquals(0, node.getTerm().getCurrent(), "无席位不得推进 term");
+        node.shutdown();
+    }
+
     @Test
     @DisplayName("LEADER收到更高Term心跳应转为FOLLOWER")
     void testLeaderReceivesHigherTermHeartbeat() throws InterruptedException {

@@ -116,6 +116,29 @@ public interface RaftNode {
     void resetElectionTimeout();
 
     /**
+     * 设置本节点是否持有"代表席位"（跨机房级联父组专用）。
+     *
+     * <p>跨机房级联模式下，父组的投票成员是各机房的<b>子组 Leader</b>。一个进程内
+     * 只有一个父组 RaftNode 实例，但它只有在本进程当选子组 Leader 时才代表本机房参与
+     * 父组选举——否则该机房会有多份"代表"同时投票，父组成员数随子组切换漂移，
+     * 多数派判定即失去意义。</p>
+     *
+     * <p><b>语义：</b></p>
+     * <ul>
+     *   <li>{@code false} → 不发起选举、拒绝投票请求；若此刻已是 LEADER 则退位为 FOLLOWER；</li>
+     *   <li>{@code true}  → 恢复正常选举与投票参与。</li>
+     * </ul>
+     *
+     * <p>单机房模式恒为 {@code true}（缺省值），引入本方法不改变既有行为。</p>
+     *
+     * @param seatHeld 是否持有代表席位
+     */
+    void setSeatHeld(boolean seatHeld);
+
+    /** 本节点是否持有代表席位（跨机房级联父组用；单机房场景恒为 true）。 */
+    boolean isSeatHeld();
+
+    /**
      * 计算某条投票请求对应候选者的总权重（base + 策略加权）。
      */
     int calculateVoteWeight(RequestVoteRequest request);

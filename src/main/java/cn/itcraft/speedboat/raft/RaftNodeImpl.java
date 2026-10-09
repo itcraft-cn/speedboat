@@ -307,6 +307,37 @@ public class RaftNodeImpl implements RaftNode {
         election.resetElectionTimeout();
     }
 
+    @Override
+    public void setSeatHeld(boolean seatHeld) {
+        boolean previous = ctx.seatHeld;
+        ctx.seatHeld = seatHeld;
+
+        if (previous == seatHeld) {
+            return;
+        }
+
+        if (!seatHeld) {
+            // 失去代表资格：若此刻仍是本组 Leader 必须立即退位，
+            // 否则会以"非代表"身份继续对外发心跳/复制日志，对外呈现一个假 Leader。
+            // （跨机房父组下这正是"杀光主机房后备机房误判自己是全局主"的隐患）
+            onRaftThread(() -> {
+                if (!ctx.seatHeld && ctx.currentState == NodeState.LEADER) {
+                    logger.info("Node {} lost representative seat, stepping down from LEADER", ctx.nodeId);
+                    roles.doTransitionTo(NodeState.FOLLOWER);
+                }
+                return null;
+            });
+            logger.info("Node {} representative seat revoked", ctx.nodeId);
+        } else {
+            logger.info("Node {} representative seat granted", ctx.nodeId);
+        }
+    }
+
+    @Override
+    public boolean isSeatHeld() {
+        return ctx.seatHeld;
+    }
+
     public boolean isMain() {
         return roles.isMain();
     }

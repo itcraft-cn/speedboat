@@ -1,0 +1,146 @@
+package cn.itcraft.speedboat.strategy.voteweight;
+
+import cn.itcraft.speedboat.raft.VoteContext;
+
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+/**
+ * 机房优先级权重策略（跨机房父组专用）。
+ *
+ * <p><b>与 {@link DatacenterVoteWeightStrategy} 的本质区别：</b>
+ * 后者按"候选者是否与<b>本节点</b>同机房"提权/降权，权重取决于<b>观察者视角</b>；
+ * 本策略的权重由候选者<b>机房自身的属性</b>决定，与谁在观察无关。</p>
+ *
+ * <p>这个区别在父组上是<b>生死攸关</b>的：父组的投票成员恰好是"各机房的代表"，
+ * 每个代表看自己都是"同机房"，于是 {@code DatacenterVoteWeightStrategy} 会让
+ * 两侧的自身权重都变成 3、法定门槛都变成 2 → <b>两房都能单方成主 → 双主</b>，
+ * 直接违反"全局 Leader 只有一主或无主"的硬约束。</p>
+ *
+ * <h3>唯一性的数学基础</h3>
+ * <p>设机房权重为 {@code W}，父组总权重 {@code total = ΣW}，法定门槛
+ * {@code required = total/2 + 1}。双主要求两个机房代表<b>同时</b>满足
+ * {@code W_i ≥ required}。但由于 {@code required = total/2 + 1} 严格大于
+ * {@code total/2}，而两个权重之和恰为 {@code total}，两者不可能同时 ≥ total/2 + 1。
+ * 因此只要权重<b>不对称</b>，双主在结构上即不可能发生——与网络状态、超时长短无关。</p>
+ *
+ * <p>默认按机房索引派生：{@code 权重 = 机房总数 - 索引}，使索引靠前的机房（主机房）
+ * 权重最高。两机房拓扑下即 {@code W_main=2 / W_backup=1}，{@code required=2}：
+ * 主机房自身 2 ≥ 2 可单方成主，备机房自身 1 &lt; 2 不可。</p>
+ *
+ * @author speedboat
+ * @see VoteWeightStrategy
+ * @since 1.1.0
+ */
+public class DatacenterPriorityVoteWeightStrategy implements VoteWeightStrategy {
+
+    /** 机房权重下限：保证任何机房至少有 1 权重，避免 total 被压到 0 导致 required 失去意义 */
+    private static final int MIN_WEIGHT = 1;
+
+    private final Map<String, Integer> weightsByDatacenter;
+    private final String localDatacenter;
+    private final int defaultWeight;
+
+    /**
+     * @param weightsByDatacenter 机房标识 → 权重（null 视为空 Map）
+     * @param localDatacenter     本机房标识（候选者未自报机房时的兜底）
+     * @param defaultWeight       未在权重表中登记的机房所用权重（须 &gt;= {@value #MIN_WEIGHT}）
+     */
+    public DatacenterPriorityVoteWeightStrategy(Map<String, Integer> weightsByDatacenter,
+                                                String localDatacenter,
+                                                int defaultWeight) {
+        Objects.requireNonNull(localDatacenter, "localDatacenter cannot be null");
+        if (defaultWeight < MIN_WEIGHT) {
+            throw new IllegalArgumentException("defaultWeight must be >= " + MIN_WEIGHT + ", got " + defaultWeight);
+        }
+        this.weightsByDatacenter = weightsByDatacenter == null
+            ? Collections.<String, Integer>emptyMap()
+            : Collections.unmodifiableMap(new LinkedHashMap<String, Integer>(weightsByDatacenter));
+        this.localDatacenter = localDatacenter;
+        this.defaultWeight = defaultWeight;
+    }
+
+    /**
+     * 按机房索引派生权重表（未显式配置时的缺省策略）。
+     *
+     * <p>公式：{@code 权重 = 机房总数 - 索引}，即索引越靠前权重越高。
+     * 两机房 {@code [dc-0, dc-1]} 派生出 {@code {dc-0=2, dc-1=1}}，
+     * 正好对应设计文档要求的 {@code W_main=2 / W_backup=1}。</p>
+     *
+     * @param datacenterIds 机房标识列表，顺序即 {@code nodes.<索引>} 的索引顺序
+     * @return 机房标识 → 权重；入参为空时返回空 Map
+     */
+    public static Map<String, Integer> deriveWeightsByIndex(List<String> datacenterIds) {
+        if (datacenterIds == null || datacenterIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, Integer> derived = new LinkedHashMap<String, Integer>();
+        int total = datacenterIds.size();
+        for (int i = 0; i < total; i++) {
+            derived.put(datacenterIds.get(i), total - i);
+        }
+        return derived;
+    }
+
+    @Override
+    public int calculateAdditionalWeight(VoteContext context) {
+        // 基础权重 1 + 附加权重 = 机房权重，故附加 = 权重 - 1
+        return weightOf(candidateDatacenterOf(context)) - 1;
+    }
+
+    /**
+     * 投票授予闸门：只把票投给<b>优先级不低于本机房</b>的候选者。
+     *
+     * <p><b>为什么这条闸门是必需的（缺了就会击穿主机房优先）：</b></p>
+     *
+     * <p>父组只有两个投票成员，法定门槛 {@code required = (W_host + W_backup)/2 + 1}。
+     * 主机房死掉期间，备机房每次选举超时都会兜底进入正式选举、term 持续膨胀；
+     * 待主机房以空 term 重启后，备机房以高 term 的 {@code RequestVote} 打过去，
+     * 主机房会先对齐 term 再投票——于是备机房凑齐
+     * {@code self(1) + host(2)} ≥ required 而成主。此后主机房想靠自身权重翻身，
+     * 会被备机房"现任 leader 心跳健康即拒绝预票"的 sticky 规则永久挡住，
+     * 既定机房优先级就此失效。</p>
+     *
+     * <p>把"高优先级席位持有者不把票让给低优先级方"显式化后：
+     * 低优先级机房永远拿不到高优先级机房的票，因而永远凑不齐多数，
+     * 无法反向收编；而高优先级机房自身权重已 ≥ required，不依赖他人的票即可成主。
+     * 优先级顺序因而成为<b>确定性</b>结果，与 term 先后无关。</p>
+     */
+    @Override
+    public boolean shouldGrantVote(VoteContext candidate) {
+        String candidateDatacenter = candidateDatacenterOf(candidate);
+        // 同机房（含未自报机房）必然放行：机房内子组选举不受本闸门影响
+        if (candidateDatacenter.equals(localDatacenter)) {
+            return true;
+        }
+        return weightOf(candidateDatacenter) >= weightOf(localDatacenter);
+    }
+
+    /** 取候选者机房标识，未自报时回退为本机房 */
+    private String candidateDatacenterOf(VoteContext context) {
+        String candidateDatacenter = context.getCandidateDatacenter();
+        return candidateDatacenter == null || candidateDatacenter.isEmpty()
+            ? localDatacenter
+            : candidateDatacenter;
+    }
+
+    /** 取某机房的权重，未登记时用兜底权重，并钳制到下限 */
+    private int weightOf(String datacenter) {
+        Integer configured = weightsByDatacenter.get(datacenter);
+        int weight = configured == null ? defaultWeight : configured.intValue();
+        return Math.max(weight, MIN_WEIGHT);
+    }
+
+    /** 只读的权重表视图（日志与运维查询用） */
+    public Map<String, Integer> getWeightsByDatacenter() {
+        return weightsByDatacenter;
+    }
+
+    /** 本机房标识 */
+    public String getLocalDatacenter() {
+        return localDatacenter;
+    }
+}

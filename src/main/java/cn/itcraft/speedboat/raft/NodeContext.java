@@ -170,10 +170,31 @@ final class NodeContext {
     /** 触发水位：最近一次检查点覆盖的 appliedIndex */
     long lastCheckpointApplied = 0L;
 
+    // ==================== 跨机房级联：代表席位门控 ====================
+
+    /**
+     * 是否持有"代表席位"（volatile 快照，外部线程可写）。
+     *
+     * <p>跨机房级联模式下，父组（跨机房层）的投票成员是<b>各机房的子组 Leader</b>。
+     * 一个进程内只有一个父组 RaftNode 实例，但它<b>只有在本进程当选子组 Leader 时
+     * 才有资格</b>代表本机房参与父组选举——否则该机房就有多份"代表"参与投票，
+     * 父组成员数会随子组切换而漂移，多数派判定失去意义。</p>
+     *
+     * <p><b>门控语义：</b>席位未持有时，节点不发起选举、拒绝父组投票请求；
+     * 若此刻已是 LEADER 则主动退位为 FOLLOWER（避免已失去代表资格却仍对外发心跳）。
+     * 单机房模式下恒为 {@code true}，不影响既有行为。</p>
+     *
+     * <p>由 {@code Speedboat} 门面在子组角色变化时通过
+     * {@code RaftNode.setSeatHeld(boolean)} 写入。</p>
+     */
+    volatile boolean seatHeld;
+
     NodeContext(Builder builder) {
         this.nodeId = builder.nodeId;
         this.datacenter = builder.datacenter != null ? builder.datacenter : "";
         this.currentState = NodeState.FOLLOWER;
+        // 缺省持有席位：单机房/普通集群场景无需感知本标记，行为与引入前完全一致
+        this.seatHeld = true;
         this.term = new Term();
         this.votedFor = null;
         this.votedForTerm = -1;

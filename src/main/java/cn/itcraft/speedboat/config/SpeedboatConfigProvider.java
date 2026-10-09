@@ -198,4 +198,32 @@ public interface SpeedboatConfigProvider {
     default long getLockLeaseMs() {
         return 30000L;
     }
+
+    /**
+     * 父组端口偏移（跨机房级联用，缺省 1000）。
+     *
+     * <p>父组（跨机房层）绑定的端口 = 本节点子组端口 + 本偏移。
+     * 子组与父组必须<b>端口隔离</b>：两组是彼此独立的 Raft 实例，
+     * 各有各的 term、日志与选举定时器，共用端口会导致消息串组。</p>
+     *
+     * <p>注意：所有节点必须使用<b>相同</b>的偏移值，否则互不可达。</p>
+     */
+    default int getCrossPortOffset() {
+        return 1000;
+    }
+
+    /**
+     * 机房权重显式配置（跨机房父组用，键 = 机房标识，值 = 该机房在父组中的权重）。
+     *
+     * <p>返回空 Map 表示未显式配置，此时由门面按机房索引派生：
+     * {@code 权重 = 机房总数 - 索引}（即索引越靠前权重越高，主机房最高）。</p>
+     *
+     * <p><b>为什么父组需要权重而不是标准多数派：</b>两机房拓扑下父组只有 2 个投票成员，
+     * 标准多数派无法表达"主机房优先"。通过<b>不对称</b>权重（主机房权重 ≥ required、
+     * 备机房权重 &lt; required）可使主机房能单方成主而备机房不能，
+     * 从而在结构上排除"双主"——详见设计文档 §8.3。</p>
+     */
+    default java.util.Map<String, Integer> getDatacenterWeights() {
+        return java.util.Collections.emptyMap();
+    }
 }
