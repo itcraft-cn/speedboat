@@ -10,6 +10,7 @@
 #   P5 mmap 持久化挂回（优雅停/重启后 term 不回退、mmap 文件非空）
 #
 # 前置：三台 VM 已互信、Java8(Dragonwell) 就绪、互相可达（见 config-vm3.properties）。
+# 依赖：tools/vm/vm-test-lib.sh（SSH 通道、日志解析、唯一 Leader 判定、断言汇总）。
 # 用法：bash tools/vm/vm-cluster-test.sh [deploy|run|stop|all]
 #   deploy  仅下发资产并在远端编译测试节点
 #   run     仅执行测试（假定已部署）
@@ -19,6 +20,11 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# ---- 环境清单（source 公共库之前须定义）----
+SSH_USER=vboxuser
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no)
+SCP=(scp -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no)
 HOSTS=(vboxdeb001 vboxdeb002 vboxdeb003)
 declare -A IP=(
   [vboxdeb001]=192.168.77.101
@@ -27,6 +33,9 @@ declare -A IP=(
 )
 declare -A PORT=([vboxdeb001]=21001 [vboxdeb002]=21001 [vboxdeb003]=21001)
 
+# 公共库：SSH 通道、结构化日志解析、存活探测、唯一 Leader 等待、断言计数与汇总
+. "$REPO/tools/vm/vm-test-lib.sh"
+
 CONFIG=config-vm3.properties
 LOCK=vm-lock
 JAR="$REPO/target/speedboat-1.0-SNAPSHOT.jar"
@@ -34,41 +43,16 @@ LOGBACK="$REPO/tools/vm/logback-vm.xml"
 CTL="$REPO/tools/vm/vm_node_ctl.sh"
 RUNNER="$REPO/src/test/java/cn/itcraft/speedboat/sample/VmClusterNode.java"
 
-SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no)
-SCP=(scp -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no)
-
-PASS=0; FAIL=0; declare -a FAILURES
-
-ts() { date +%H:%M:%S; }
-log() { echo "[$(ts)] $*"; }
-rsh() { local h=$1; shift; "${SSH[@]}" "vboxuser@$h" "$@"; }
-
-check() {
-  local desc=$1; shift
-  if "$@"; then PASS=$((PASS+1)); echo "  [PASS] $desc"
-  else FAIL=$((FAIL+1)); FAILURES+=("$desc"); echo "  [FAIL] $desc"; fi
-}
-
-# 从一行结构化日志中取 key=value
-fld() { echo "$1" | sed -n "s/.*[[:space:]]$2=\([^[:space:]]*\).*/\1/p"; }
-
-# 各节点日志路径（远端）
-rlog() { echo "logs/$1.log"; }
-
-# 最近一条 STATE 行
-state_line() { rsh "$1" "grep 'event=STATE' ~/speedboat-test/$(rlog "$1") 2>/dev/null | tail -1"; }
-alive() { [ "$(rsh "$1" '~/speedboat-test/vm_node_ctl.sh alive' 2>/dev/null)" = "alive" ]; }
-
 deploy() {
   log "P0 部署资产到三台 VM"
   [ -f "$JAR" ] || { log "缺少 jar：$JAR（先 mvn package）"; exit 1; }
   for h in "${HOSTS[@]}"; do
     rsh "$h" 'mkdir -p ~/speedboat-test/{logs,run,runner}' || { log "$h mkdir 失败"; exit 1; }
-    "${SCP[@]}" "$JAR"     "vboxuser@$h:~/speedboat-test/speedboat.jar"
-    "${SCP[@]}" "$REPO/$CONFIG" "vboxuser@$h:~/speedboat-test/$CONFIG"
-    "${SCP[@]}" "$LOGBACK" "vboxuser@$h:~/speedboat-test/logback-vm.xml"
-    "${SCP[@]}" "$CTL"     "vboxuser@$h:~/speedboat-test/vm_node_ctl.sh"
-    "${SCP[@]}" "$RUNNER"  "vboxuser@$h:~/speedboat-test/VmClusterNode.java"
+    scph "$h" "$JAR"     "~/speedboat-test/speedboat.jar"
+    scph "$h" "$REPO/$CONFIG" "~/speedboat-test/$CONFIG"
+    scph "$h" "$LOGBACK" "~/speedboat-test/logback-vm.xml"
+    scph "$h" "$CTL"     "~/speedboat-test/vm_node_ctl.sh"
+    scph "$h" "$RUNNER"  "~/speedboat-test/VmClusterNode.java"
     rsh "$h" 'chmod +x ~/speedboat-test/vm_node_ctl.sh; cd ~/speedboat-test && ~/lang/dragonwell-8.29.28/bin/javac -cp speedboat.jar -d runner VmClusterNode.java' \
       || { log "$h 编译失败"; exit 1; }
     echo "  $h 部署+编译 OK"
@@ -78,39 +62,8 @@ deploy() {
 start_node() { rsh "$1" "~/speedboat-test/vm_node_ctl.sh start ${IP[$1]} $CONFIG run $LOCK $(rlog "$1")"; }
 stop_all() { for h in "${HOSTS[@]}"; do rsh "$h" '~/speedboat-test/vm_node_ctl.sh stop' >/dev/null 2>&1; done; }
 
-# 轮询等待"存活节点中恰好一个 isMain=true，且各存活节点 leader 字段一致"，最多 N 秒
-wait_single_leader() {
-  local secs=$1 i h
-  for ((i=0;i<secs;i++)); do
-    local mains=0 mnode=""
-    for h in "${HOSTS[@]}"; do
-      alive "$h" || continue
-      local line nid im
-      line=$(state_line "$h"); nid=$(fld "$line" node); im=$(fld "$line" isMain)
-      if [ "$im" = "true" ]; then mains=$((mains+1)); mnode=$nid; fi
-    done
-    if [ "$mains" -eq 1 ]; then
-      local ok=1
-      for h in "${HOSTS[@]}"; do
-        alive "$h" || continue
-        [ "$(fld "$(state_line "$h")" leader)" = "$mnode" ] || ok=0
-      done
-      [ "$ok" = "1" ] && return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
-
-# 返回当前 isMain=true 的 host（空表示未定）
-leader_host() {
-  local h
-  for h in "${HOSTS[@]}"; do
-    alive "$h" || continue
-    [ "$(fld "$(state_line "$h")" isMain)" = "true" ] && { echo "$h"; return; }
-  done
-  echo ""
-}
+# 本环境只有一个集群组，直接委托公共库（按全量 HOSTS 判定）
+leader_host() { leader_host_in "${HOSTS[@]}"; }
 
 phase1_election() {
   echo; log "P1 三节点选主"
@@ -118,7 +71,7 @@ phase1_election() {
   for h in "${HOSTS[@]}"; do rsh "$h" '~/speedboat-test/vm_node_ctl.sh clean' >/dev/null 2>&1; done
   for h in "${HOSTS[@]}"; do start_node "$h" >/dev/null; done
   sleep 3
-  if ! wait_single_leader 25; then check "集群在 25s 内选出唯一 Leader" false; return; fi
+  if ! wait_single_leader 25 "${HOSTS[@]}"; then check "集群在 25s 内选出唯一 Leader" false; return; fi
   check "集群在 25s 内选出唯一 Leader" true
 
   local leaders="" mains=0 main_node="" nodes_ok=1
@@ -172,7 +125,7 @@ phase3_failover() {
   echo "  当前 leader=$old_leader host=$lh term=$old_term"
   log "  kill -9 $lh 模拟崩溃"
   rsh "$lh" '~/speedboat-test/vm_node_ctl.sh kill9' >/dev/null
-  if wait_single_leader 25; then check "主节点崩溃后重新选出唯一 Leader" true; else check "主节点崩溃后重新选出唯一 Leader" false; return; fi
+  if wait_single_leader 25 "${HOSTS[@]}"; then check "主节点崩溃后重新选出唯一 Leader" true; else check "主节点崩溃后重新选出唯一 Leader" false; return; fi
   local nh; nh=$(leader_host)
   local new_line new_term new_leader
   new_line=$(state_line "$nh"); new_term=$(fld "$new_line" term); new_leader=$(fld "$new_line" leader)
@@ -194,7 +147,7 @@ phase4_rejoin() {
   start_node "$down" >/dev/null
   sleep 10
   check "被重启节点存活" alive "$down"
-  if wait_single_leader 15; then check "重加入后集群仍唯一 Leader" true; else check "重加入后集群仍唯一 Leader" false; return; fi
+  if wait_single_leader 15 "${HOSTS[@]}"; then check "重加入后集群仍唯一 Leader" true; else check "重加入后集群仍唯一 Leader" false; return; fi
   local line L im nid
   line=$(state_line "$down"); L=$(fld "$line" leader); im=$(fld "$line" isMain); nid=$(fld "$line" node)
   echo "  $down: node=$nid leader=$L isMain=$im"
@@ -224,7 +177,7 @@ phase5_persistence() {
   nT=$(fld "$(state_line "$fh")" term)
   echo "  重启后 term=$nT（停机前 term=$T）"
   check "重启后 term 不回退（mmap 挂回，非从 1 重来）" [ "${nT:-0}" -ge "${T:-0}" ]
-  if wait_single_leader 15; then check "重启后集群仍唯一 Leader" true; else check "重启后集群仍唯一 Leader" false; fi
+  if wait_single_leader 15 "${HOSTS[@]}"; then check "重启后集群仍唯一 Leader" true; else check "重启后集群仍唯一 Leader" false; fi
 }
 
 run_all() {
@@ -235,15 +188,7 @@ run_all() {
   phase5_persistence
   echo; log "P6 清理"
   stop_all
-  echo
-  echo "========================================"
-  echo "实机验证结果： $PASS 通过, $FAIL 失败"
-  if [ "$FAIL" -gt 0 ]; then
-    echo "失败项："
-    for f in "${FAILURES[@]}"; do echo "  - $f"; done
-  fi
-  echo "========================================"
-  [ "$FAIL" -eq 0 ]
+  report
 }
 
 case "${1:-all}" in
