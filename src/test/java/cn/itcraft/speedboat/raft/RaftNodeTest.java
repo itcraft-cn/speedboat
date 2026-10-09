@@ -15,8 +15,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -135,6 +137,37 @@ class RaftNodeTest {
         RequestVoteRequest request = new RequestVoteRequest(1, "node-1", 1);
         
         assertEquals(6, node.calculateVoteWeight(request));
+    }
+
+    @Test
+    @DisplayName("投票权重 - 候选者机房取请求方自报值，而非本节点机房")
+    void testVoteWeightUsesRequestDatacenter() {
+        // 记录策略实际看到的候选者机房，断言上下文传递的是请求方机房
+        List<String> seenCandidateDatacenters = new ArrayList<>();
+        VoteWeightStrategy dcAware = context -> {
+            seenCandidateDatacenters.add(context.getCandidateDatacenter());
+            // 同机房 +2 / 异机房 -1：据此可区分传入的到底是哪个机房
+            return "dc-A".equals(context.getCandidateDatacenter()) ? 2 : -1;
+        };
+
+        RaftNode dcNode = new RaftNode.Builder()
+            .nodeId("node-1")
+            .peerIds(Arrays.asList("node-2", "node-3"))
+            .electionTimeout(new ElectionTimeout(150, 300))
+            .datacenter("dc-A")
+            .voteWeightStrategy(dcAware)
+            .transportLayer(new TestTransportLayer())
+            .build();
+
+        // 请求方自报 dc-B（异机房）→ 应取 -1；若误取本节点机房 dc-A 则会得到 +2
+        assertEquals(0, dcNode.calculateVoteWeight(new RequestVoteRequest(1, "node-2", 1, "dc-B")));
+        assertEquals("dc-B", seenCandidateDatacenters.get(seenCandidateDatacenters.size() - 1));
+
+        // 请求方自报 dc-A（同机房）→ 应取 +2
+        assertEquals(3, dcNode.calculateVoteWeight(new RequestVoteRequest(1, "node-3", 1, "dc-A")));
+
+        // 请求方未自报机房（旧版本节点）→ 回退为本节点机房，保持既有行为不变
+        assertEquals(3, dcNode.calculateVoteWeight(new RequestVoteRequest(1, "node-2", 1)));
     }
 
     @Test

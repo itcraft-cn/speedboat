@@ -95,8 +95,9 @@ final class ElectionCoordinator {
         }
 
         for (String peerId : ctx.peerIds) {
+            // 自报机房：权重策略（如机房优先级权重）依赖此信息判断候选者机房归属
             RequestVoteRequest request = new RequestVoteRequest(
-                ctx.term.getCurrent(), ctx.nodeId, quorum.selfWeight(ctx.term.getCurrent())
+                ctx.term.getCurrent(), ctx.nodeId, quorum.selfWeight(ctx.term.getCurrent()), ctx.datacenter
             );
 
             ctx.transportLayer.sendRequestVote(peerId, request)
@@ -205,7 +206,8 @@ final class ElectionCoordinator {
         long lastLogTerm = logStore.getLastLogTerm();
         final long capturedProbeTerm = probeTerm;
         for (String peerId : ctx.peerIds) {
-            PreVoteRequest request = new PreVoteRequest(probeTerm, ctx.nodeId, lastLogIndex, lastLogTerm);
+            // 自报机房：与 RequestVote 保持一致，供对端权重策略判断候选者机房归属
+            PreVoteRequest request = new PreVoteRequest(probeTerm, ctx.nodeId, lastLogIndex, lastLogTerm, ctx.datacenter);
             ctx.transportLayer.sendPreVote(peerId, request)
                 .thenAccept(response -> ctx.executor.execute(
                     () -> doHandlePreVoteResponse(peerId, response, capturedProbeTerm)));

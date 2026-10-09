@@ -237,6 +237,9 @@ public class Speedboat {
             .maxLogSize(config.getMaxLogSize())
             .checkpointInterval(config.getRaftCheckpointInterval())
             .stateMachine(lockStateMachine)
+            // 跨机房模式此前漏传投票权重策略，导致 DatacenterVoteWeightStrategy /
+            // PreferNodeVoteWeightStrategy 在跨机房场景下完全不生效（等价于全员权重 1）
+            .voteWeightStrategy(config.getVoteWeightStrategy())
             .raftStore(buildRaftStore(config))
             .build();
         
@@ -371,14 +374,41 @@ public class Speedboat {
             "Local IP " + localIp + " not found in configured nodes");
     }
     
+    /**
+     * 解析本进程所属机房标识（实例入口，委托给静态纯函数以便单测）。
+     *
+     * @param config          配置提供者
+     * @param datacenterIndex 本机房在 {@code nodes.<索引>.*} 中的索引
+     * @return 本进程所属机房标识
+     * @see #resolveDatacenterId(String, boolean, int)
+     */
     private String resolveDatacenterId(SpeedboatConfigProvider config, int datacenterIndex) {
-        String configuredDcId = config.getDatacenter();
-        
-        if (configuredDcId != null) {
-            return configuredDcId;
+        return resolveDatacenterId(config.getDatacenter(), crossDatacenterMode, datacenterIndex);
+    }
+
+    /**
+     * 解析机房标识（静态纯函数，无副作用，便于穷举测试）。
+     *
+     * <p><b>单机房模式</b>：{@code datacenter=} 配置原样生效（保持既有部署的向后兼容），
+     * 未配置则回退为 {@code dc-<索引>}（单机房下恒为 {@code dc-0}）。</p>
+     *
+     * <p><b>跨机房模式</b>：机房标识<b>必须按索引唯一</b>。两个机房使用的是同一份配置文件，
+     * 若直接返回 {@code datacenter=} 配置值，主机房与备机房会解析出<b>同一个</b> ID，
+     * 导致一切按机房归属判权的策略（机房优先级权重、同城提权等）完全失效——
+     * 每个节点都会认为对端与自己同机房。故跨机房模式下在配置值后追加 {@code -<索引>}。</p>
+     *
+     * @param configuredDatacenter {@code datacenter=} 配置值，可为 null
+     * @param crossDatacenterMode  是否跨机房模式（{@code nodes} 存在多组）
+     * @param datacenterIndex      本机房在 {@code nodes.<索引>.*} 中的索引
+     * @return 本进程所属机房标识
+     */
+    static String resolveDatacenterId(String configuredDatacenter, boolean crossDatacenterMode, int datacenterIndex) {
+        if (!crossDatacenterMode) {
+            return configuredDatacenter != null ? configuredDatacenter : "dc-" + datacenterIndex;
         }
-        
-        return "dc-" + datacenterIndex;
+
+        String base = configuredDatacenter != null ? configuredDatacenter : "dc";
+        return base + "-" + datacenterIndex;
     }
     
     private List<String> collectPeerAddresses(List<List<String>> allNodes, String localIp) {

@@ -95,12 +95,19 @@ final class QuorumCalculator {
 
     /**
      * 对外旧的 calculateVoteWeight 语义保留：请求方基础权重 + 本地校验附加权重。
+     *
+     * <p>候选者机房以<b>请求方自报</b>的 {@code datacenter} 字段为准；旧版本节点
+     * 发出的请求不携带该字段（null）时，回退为本节点机房标识，保持既有行为不变。</p>
      */
     int calculateVoteWeight(RequestVoteRequest request) {
         int baseWeight = request.getVoteWeight();
         int additionalWeight = 0;
         if (ctx.voteWeightStrategy != null) {
-            VoteContext context = VoteContext.forDatacenter(request.getCandidateId(), ctx.datacenter, request.getTerm());
+            String candidateDatacenter = request.getDatacenter() != null
+                ? request.getDatacenter()
+                : ctx.datacenter;
+            VoteContext context = VoteContext.forDatacenter(
+                request.getCandidateId(), candidateDatacenter, request.getTerm());
             additionalWeight = ctx.voteWeightStrategy.calculateAdditionalWeight(context);
         }
         return baseWeight + additionalWeight;

@@ -363,11 +363,22 @@ public class RaftNodeImpl implements RaftNode {
         return quorum.peerIds();
     }
 
-    /** 兼容保留：RaftGroup 集成以 RaftGroup 门面持有（原占位 null 逻辑原样保留） */
+    /**
+     * 兼容保留：RaftGroup 门面引用。
+     *
+     * <p><b>注意：</b>返回 {@code null} 是刻意的设计结论，而非待完成的占位。
+     * {@link RaftGroup} 是<b>单进程模拟</b>的组管理器（组内多个 RaftNode 共享进程、
+     * 不接受 transport 参数），无法承载多进程部署下的跨机房级联。
+     *
+     * <p>跨机房级联的实际实现路径是：每个进程持有<b>两套</b>独立的
+     * {@link RaftNode} —— 子组（机房内）与父组（跨机房）—— 各自绑定独立端口、
+     * 独立 term 与独立持久化目录，由 {@code Speedboat} 门面编排。
+     * 因此本方法不返回任何组实例。</p>
+     *
+     * @return 恒为 {@code null}
+     */
     @Override
     public RaftGroup getGroup() {
-        // 需要查看 RaftGroup 的创建方式
-        // 暂时返回 null，后续 Phase 3 会实现
         return null;
     }
 

@@ -28,6 +28,14 @@ public class PreVoteRequest extends RpcRequest {
     /** 候选者本地日志最后索引对应的任期 */
     private long lastLogTerm;
 
+    /**
+     * 候选者所在机房标识（跨机房级联用）。
+     *
+     * <p><b>注意事项：</b>必须追加在类的<b>末尾</b>——Protostuff {@code RuntimeSchema}
+     * 按字段声明顺序分配 field ID，追加可保持线格式兼容，插入中间会导致字段 ID 错位。</p>
+     */
+    private String datacenter;
+
     public PreVoteRequest() {
         super();
     }
@@ -38,6 +46,20 @@ public class PreVoteRequest extends RpcRequest {
         this.candidateId = candidateId;
         this.lastLogIndex = lastLogIndex;
         this.lastLogTerm = lastLogTerm;
+    }
+
+    /**
+     * 带机房标识的构造（跨机房级联预投票用）。
+     *
+     * @param term        预投票探测的目标任期
+     * @param candidateId 候选者节点 ID
+     * @param lastLogIndex 候选者本地日志最后索引
+     * @param lastLogTerm  候选者本地日志最后索引对应任期
+     * @param datacenter   候选者所在机房标识；单机房场景可传 null
+     */
+    public PreVoteRequest(long term, String candidateId, long lastLogIndex, long lastLogTerm, String datacenter) {
+        this(term, candidateId, lastLogIndex, lastLogTerm);
+        this.datacenter = datacenter;
     }
 
     public long getTerm() {
@@ -54,5 +76,14 @@ public class PreVoteRequest extends RpcRequest {
 
     public long getLastLogTerm() {
         return lastLogTerm;
+    }
+
+    /**
+     * 候选者所在机房标识。
+     *
+     * @return 机房标识；旧版本节点发出的请求或单机房场景下为 null
+     */
+    public String getDatacenter() {
+        return datacenter;
     }
 }
