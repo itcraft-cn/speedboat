@@ -232,6 +232,33 @@ class RaftNodeTest {
     }
 
     @Test
+    @DisplayName("席位门控 - 公开入口 startElection / becomeLeader 不得越过席位")
+    void seatGateBlocksForcedElectionAndLeadershipWithoutSeat() throws InterruptedException {
+        transport.setVoteResponse(true);
+        node.setSeatHeld(false);
+        node.start();
+
+        // startElection() / becomeLeader() 绕过选举定时器，是"父组 learner 被直接推上
+        // Leader"的唯一通道；全网互联拓扑下学习者自身权重已达门槛，故必须在此把关。
+        node.startElection();
+        Thread.sleep(300);
+        assertEquals(NodeState.FOLLOWER, node.getCurrentState(), "startElection() 不得越席位");
+        assertEquals(0, node.getTerm().getCurrent(), "startElection() 不得推进 term");
+
+        node.becomeLeader();
+        Thread.sleep(200);
+        assertFalse(node.isLeader(), "becomeLeader() 不得越席位");
+
+        // 门控不是永久封禁：恢复席位后公开入口重新生效
+        node.setSeatHeld(true);
+        node.startElection();
+        Thread.sleep(300);
+        assertTrue(node.getCurrentState() == NodeState.CANDIDATE || node.isLeader(),
+            "持席位后 startElection() 应重新生效");
+        node.shutdown();
+    }
+
+    @Test
     @DisplayName("席位门控 - 预投票同样受席位门控（预票不得绕过代表资格）")
     void seatGateRejectsPreVoteWhenNoSeat() throws Exception {
         node.setSeatHeld(false);

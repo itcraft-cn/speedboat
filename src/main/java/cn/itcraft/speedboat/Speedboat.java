@@ -347,15 +347,34 @@ public class Speedboat {
         List<String> parentPeerIds = new ArrayList<>();
         Map<String, String> parentPeerDatacenters = new HashMap<>();
 
+        // 父组采用**全网互联**：peer 铺满所有机房的全部进程（仅本进程自身除外），
+        // 而不是只连对侧机房。
+        //
+        // 为什么不能跳过本机房：父组成员是各机房的"子组 Leader"，而对侧代表运行期才确定，
+        // 所以必须铺满对侧全部节点；但若因此把本机房的非代表进程也一并排除，它们就收不到
+        // 任何父组心跳（本机房内没有别的进程会向它发），后果有二：
+        //   1) parentLeader / parentTerm 在全网永不一致——非代表进程恒为 none / 0，
+        //      监控无法用"全网 parentLeader 是否一致"来判断父组已收敛；
+        //   2) 本机房子组换主后，新代表的父组 term 停在 0，只能靠逐轮选举一格格爬升才能
+        //      追上当前任期，期间产生多轮无谓抖动，席位交接不"平滑"。
+        //
+        // 连上本机房的非代表进程是安全的，三重闸门已封死它参与选举的路径：
+        //   1) 席位门控：不竞选（runElectionTimeout 已挡）、不投票、不授预票；
+        //   2) 分母聚合：QuorumCalculator 按机房去重，同机房 peer 的权重恒不计入，
+        //      故分母仍是 Σ机房权重，唯一性的数学推导完全不受影响；
+        //   3) 它们只接收复制，事实上等同 Raft 的 learner（只跟随、不投票）。
         for (int dcIdx = 0; dcIdx < allNodes.size(); dcIdx++) {
-            if (dcIdx == datacenterIndex) {
-                // 跳过本机房：父组成员是"本机房的代表"，不是本机房的所有节点
-                continue;
-            }
             for (String nodeAddr : allNodes.get(dcIdx)) {
                 String peerIp = NetworkUtils.parseIp(nodeAddr);
                 int peerParentPort = NetworkUtils.parsePort(nodeAddr) + offset;
                 String peerParentId = NetworkUtils.generateNodeId(peerIp + ":" + peerParentPort);
+
+                // 剔除自身（双保险：按配置条目比对 + 按推导出的父组 nodeId 比对）
+                if ((NetworkUtils.ipMatchesAddress(localIp, nodeAddr)
+                        && NetworkUtils.parsePort(nodeAddr) == localPort)
+                    || peerParentId.equals(parentNodeId)) {
+                    continue;
+                }
 
                 parentPeerEndpoints.add(new NodeEndpoint(peerParentId, peerIp, peerParentPort));
                 parentPeerIds.add(peerParentId);
@@ -365,7 +384,7 @@ public class Speedboat {
 
         if (parentPeerIds.isEmpty()) {
             throw new IllegalStateException(
-                "cross-datacenter mode requires peers in other datacenters, but none were found "
+                "cross-datacenter mode requires at least one other parent process, but none were found "
                     + "(datacenterIndex=" + datacenterIndex + ", offset=" + offset + ")");
         }
 

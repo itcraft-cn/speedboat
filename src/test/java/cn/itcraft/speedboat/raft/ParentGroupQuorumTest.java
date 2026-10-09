@@ -13,6 +13,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -86,6 +87,12 @@ class ParentGroupQuorumTest {
             for (String peerId : peerIds) {
                 quorum.setPeerDatacenter(peerId, peerDatacenter);
             }
+        }
+
+        ParentGroup(NodeContext ctx, QuorumCalculator quorum, List<String> peerIds) {
+            this.ctx = ctx;
+            this.quorum = quorum;
+            this.peerIds = peerIds;
         }
 
         /** 模拟"对侧全部 peer 都投了赞成票" */
@@ -236,5 +243,92 @@ class ParentGroupQuorumTest {
 
         // self(2) + 对侧机房一次(1) = 3，而非 2 + 3×1 = 5
         assertEquals(2 + 1, fresh, "对侧 3 个新鲜 peer 应聚合为一个机房席位");
+    }
+
+    // ==================== 全网互联拓扑（本机房非代表进程作为 peer） ====================
+
+    /**
+     * 构造全网互联拓扑下的父组：peer 覆盖**全部 5 个**其他进程，
+     * 其中 2 个与本进程同机房（子组的非代表进程，事实上的 Raft learner）。
+     *
+     * @param localDatacenter 本机房标识
+     * @return 装配好的父组
+     */
+    private static ParentGroup fullMesh(String localDatacenter) {
+        String peerDatacenter = MAIN_DC.equals(localDatacenter) ? BACKUP_DC : MAIN_DC;
+
+        // 前 2 个：与本进程**同机房**的非代表进程（事实上的 Raft learner）
+        // 后 3 个：对侧机房的全部进程
+        List<String> peerIds = new ArrayList<String>();
+        if (MAIN_DC.equals(localDatacenter)) {
+            peerIds.addAll(Arrays.asList(
+                "node-192.168.193.175-22001", "node-192.168.193.176-22001",
+                "node-192.168.193.51-22001", "node-192.168.193.53-22001",
+                "node-192.168.193.55-22001"));
+        } else {
+            peerIds.addAll(Arrays.asList(
+                "node-192.168.193.53-22001", "node-192.168.193.55-22001",
+                "node-192.168.193.174-22001", "node-192.168.193.175-22001",
+                "node-192.168.193.176-22001"));
+        }
+
+        RaftNode.Builder builder = new RaftNode.Builder()
+            .nodeId("node-192.168.193.174-22001")
+            .peerIds(peerIds)
+            .electionTimeout(new ElectionTimeout(3000, 5000))
+            .datacenter(localDatacenter)
+            .voteWeightStrategy(new DatacenterPriorityVoteWeightStrategy(
+                weightsByDatacenter(), localDatacenter, 1));
+
+        NodeContext ctx = new NodeContext(builder);
+        QuorumCalculator quorum = new QuorumCalculator(ctx);
+        for (int i = 0; i < peerIds.size(); i++) {
+            // 前 2 个与本进程同机房，后 3 个为对侧
+            quorum.setPeerDatacenter(peerIds.get(i), i < 2 ? localDatacenter : peerDatacenter);
+        }
+        return new ParentGroup(ctx, quorum, peerIds);
+    }
+
+    @Test
+    @DisplayName("全网互联不改变分母 - 本机房非代表进程的 peer 不计入 total")
+    void fullMeshKeepsDenominatorUnchanged() {
+        ParentGroup main = fullMesh(MAIN_DC);
+
+        assertEquals(5, main.peerIds.size(), "全网互联应有 5 个 peer（自身除外）");
+        assertEquals(3, main.quorum.totalWeight(),
+            "本机房 2 个 peer 与对侧 3 个 peer 都必须按机房去重，分母仍是 Σ机房权重");
+        assertEquals(2, main.quorum.requiredWeight());
+        assertEquals(2, main.quorum.selfWeight(1), "主机房自身权重仍为 2");
+        assertTrue(main.quorum.selfWeight(1) >= main.quorum.requiredWeight(),
+            "主机房单方成主的能力不得因全网互联而丧失");
+    }
+
+    @Test
+    @DisplayName("全网互联下唯一性不破 - 备机房仍凑不齐多数，两房不能同时达标")
+    void fullMeshPreservesUniqueness() {
+        ParentGroup main = fullMesh(MAIN_DC);
+        ParentGroup backup = fullMesh(BACKUP_DC);
+
+        assertEquals(main.quorum.totalWeight(), backup.quorum.totalWeight(), "两侧分母一致");
+        assertEquals(main.quorum.requiredWeight(), backup.quorum.requiredWeight(), "两侧门槛一致");
+
+        assertTrue(main.quorum.selfWeight(1) >= main.quorum.requiredWeight(),
+            "主机房可单方成主（场景④）");
+        assertTrue(backup.quorum.selfWeight(1) < backup.quorum.requiredWeight(),
+            "备机房不可单方成主（场景②必须退化为无主）");
+    }
+
+    @Test
+    @DisplayName("全网互联下看门狗 - 杀光对侧后同机房 peer 不把 freshWeight 抬离自身权重")
+    void fullMeshWatchdogCountsOnlyOtherDatacenter() {
+        ParentGroup main = fullMesh(MAIN_DC);
+
+        // 对侧全灭：仅本机房 2 个 peer 有新鲜响应
+        Set<String> onlyLocal = new HashSet<String>(main.peerIds.subList(0, 2));
+        assertEquals(2, main.quorum.freshWeight(onlyLocal, 1),
+            "同机房 peer 计入机房去重，不额外加分——freshWeight 恰等于 selfWeight");
+
+        // 对侧仍可达：self(2) + 对侧机房一次(1)
+        assertEquals(2 + 1, main.quorum.freshWeight(new HashSet<String>(main.peerIds), 1));
     }
 }

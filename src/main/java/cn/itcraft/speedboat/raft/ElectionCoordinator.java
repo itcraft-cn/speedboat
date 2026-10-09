@@ -60,6 +60,21 @@ final class ElectionCoordinator {
             return;
         }
 
+        // 跨机房父组：无代表席位的进程不得进入选举（把关在选举入口，而非只在定时器）。
+        //
+        // 父组是**全网互联**的，本机房的非代表进程也在 peer 列表中、仅作 learner。
+        // 它们虽由 runElectionTimeout 的席位门控拦住不会自发竞选，但 RaftNode.startElection()
+        // 是公开入口；按机房聚合分母后，主机房 learner 的自身权重(self=2)已足以单独达到
+        // required(2)，一旦被调用即成父组 Leader。后果不是双主而是**静默无主**：
+        // 真实子组代表因 isParentLeader=false 而 isMain=false，
+        // 该 learner 又因 isIntraLeader=false 而 isMain=false → 全网 isMain 恒为 0。
+        //
+        // 缺省 seatHeld=true（NodeContext 初值），故子组与单机房路径行为完全不变。
+        if (!ctx.seatHeld) {
+            logger.info("Node {} holds no representative seat, refusing to start election", ctx.nodeId);
+            return;
+        }
+
         roles.doTransitionTo(NodeState.CANDIDATE);
         logStore.persistTermState(ctx.term.getCurrent(), ctx.votedFor, ctx.leaderId);
         ctx.votesReceived.put(ctx.nodeId, true);
@@ -137,6 +152,13 @@ final class ElectionCoordinator {
     /** 登基编排（raft 线程内）：角色迁移 + leader-entry + 进度初始化 + 首轮复制。 */
     void doBecomeLeader() {
         if (ctx.currentState != NodeState.CANDIDATE) {
+            return;
+        }
+
+        // 席位门控（与 doStartElection 同一条不变式，此处为第二道入口）：
+        // RaftNode.becomeLeader() 也是公开 API，学习者不应能被直接推上父组 Leader。
+        if (!ctx.seatHeld) {
+            logger.info("Node {} holds no representative seat, refusing to become leader", ctx.nodeId);
             return;
         }
 

@@ -122,8 +122,10 @@ election.cross.timeout.max=5000
 | `datacenter` | ❌ | `dc-{index}` | 机房 ID |
 | `election.intra.timeout.min` | ❌ | 1000 | 机房内选举超时下限（ms） |
 | `election.intra.timeout.max` | ❌ | 2000 | 机房内选举超时上限（ms） |
-| `election.cross.timeout.min` | ❌ | 3000 | 机房间选举超时下限（ms） |
-| `election.cross.timeout.max` | ❌ | 5000 | 机房间选举超时上限（ms） |
+| `election.cross.timeout.min` | ❌ | 3000 | 机房间选举超时下限（ms）——**父组**选举窗口 |
+| `election.cross.timeout.max` | ❌ | 5000 | 机房间选举超时上限（ms）——**父组**选举窗口 |
+| `cross.port.offset` | ❌ | 1000 | 父组绑定端口 = 子组端口 + 本偏移（**全集群必须一致**，否则两组互不可达） |
+| `datacenter.weight.{机房ID}` | ❌ | 按索引派生 | 父组机房权重，键为机房 ID（如 `datacenter.weight.dc-0=2`）；未列出的机房走兜底权重 1 |
 | `vote.weight.strategy` | ❌ | none | 投票权重策略：`prefer` / `even` / `none` |
 | `vote.weight.prefer` | ⚠️ prefer 必填 | - | 享受额外权重的节点 ID（格式 `node-<ip>-<port>`） |
 | `vote.weight.prefer.weight` | ❌ | 3 | 该节点获得的额外权重 |
@@ -234,7 +236,41 @@ String leaderId = Speedboat.getLeaderId()
 long term = Speedboat.getTerm()
 ```
 
-返回当前 Raft 任期号。
+返回当前 Raft 任期号（跨机房级联下为**子组**任期）。
+
+#### 跨机房级联：双层观测 API
+
+跨机房级联模式下每个进程持有**两套彼此独立的 Raft**：
+
+- **子组**（机房内层，端口 `21001`）→ 选出"本机房代表"
+- **父组**（跨机房层，端口 `21001 + cross.port.offset`）→ 各机房代表角逐"全局主"
+
+因此状态分两组暴露，两组 `term` **各自单调、互不污染**，没有换算关系。
+
+| 方法 | 说明 |
+|---|---|
+| `boolean isIntraLeader()` | 是否**子组** Leader，即"本机房代表" |
+| `boolean isParentLeader()` | 是否**父组** Leader（单机房无父组，恒为 `true`） |
+| `long getIntraTerm()` | 子组（机房内）任期 |
+| `long getParentTerm()` | 父组（跨机房）任期；单机房返回 `0` |
+| `String getIntraLeaderId()` | 子组当前已知 Leader 的 nodeId |
+| `String getParentLeaderId()` | 父组当前已知 Leader 的**父组** nodeId；单机房返回 `null` |
+| `String getParentNodeId()` | 本进程的父组 nodeId（按父组端口推导）；单机房返回 `null` |
+| `int getParentPort()` | 父组绑定端口；单机房返回 `0` |
+
+**三者关系**：`isMain() == isIntraLeader() && isParentLeader()`。
+
+```java
+// 备机房在主机房存活期间的【预期形态】，不是故障
+Speedboat.isIntraLeader();   // true  —— 我是本机房代表
+Speedboat.isParentLeader();  // false —— 但未在父组当选
+Speedboat.isMain();          // false —— 故不构成全局主
+```
+
+> ⚠️ **监控口径**：`getParentLeaderId()` 与 `getIntraLeaderId()` 取值域**不同**
+> （前者按父组端口推导，如 `node-x.x.x.x-22001`），两者不可混用比较。
+> 只看 `leader` 字段会把"两房各有一个 Leader"误判为正常，
+> **全局唯一性必须以 `isMain() == true` 的计数为准**：任意时刻 ≤ 1。
 
 #### 获取本节点 ID
 
@@ -342,35 +378,54 @@ java -jar your-app.jar
 #### 环境要求
 
 - JDK 8+
-- 机房间网络可达
+- 机房间网络可达，且**子组与父组两个端口都要放行**（见下）
 - 机房内网络低延迟
 
 #### 部署步骤
 
-1. **创建配置文件** `config.properties`：
+1. **创建配置文件** `config.properties`（**两机房共用同一份**，机房 ID 才能保证唯一）：
 
 ```properties
-datacenter=hangzhou001
-
-# 杭州机房
+# 杭州机房（机房0）
 nodes.0.0=192.168.10.1:3000
 nodes.0.1=192.168.10.2:3000
 nodes.0.2=192.168.10.3:3000
 
-# 北京机房
+# 北京机房（机房1）
 nodes.1.0=10.3.1.1:3000
 nodes.1.1=10.3.1.2:3000
 nodes.1.2=10.3.1.3:3000
 
+# 父组端口 = 子组端口 + 偏移 → 3000 + 1000 = 4000（全集群必须一致）
+cross.port.offset=1000
+
+# 父组机房权重：主机房 2、备机房 1（键 = 机房 ID，未配置时按索引派生：权重 = 机房总数 - 索引）
+datacenter.weight.dc-0=2
+datacenter.weight.dc-1=1
+
+# 子组（机房内）选举超时：同机房低延迟，可用短窗口
 election.intra.timeout.min=1000
 election.intra.timeout.max=2000
+# 父组（跨机房）选举超时：跨机房链路抖动大，需更长窗口避免 term 膨胀
 election.cross.timeout.min=3000
 election.cross.timeout.max=5000
 ```
 
-2. **杭州机房**：配置 `datacenter=hangzhou001`，分发到 3 台机器。
+> **不要**给两机房配置不同的 `datacenter=` 值——跨机房模式下机房 ID 由
+> `datacenter` 配置值 **自动追加 `-<机房索引>`** 生成，两份配置若基准值不同，
+> 或两机房被解析到同一 ID，都会让按机房判权的策略失效。
+> **推荐不配置 `datacenter`**，直接得到 `dc-0` / `dc-1`，并在 `event=START` 日志的 `dc=` 字段核对。
 
-3. **北京机房**：配置 `datacenter=beijing001`，分发到 3 台机器。
+2. **防火墙**：放行**两个**端口的机房间互访——
+
+   | 组 | 端口 | 用途 |
+   |---|---|---|
+   | 子组 | `3000` | 机房内选举与复制 |
+   | 父组 | `3000 + cross.port.offset` = `4000` | 跨机房级联选举（`isMain` 判定） |
+
+   父组端口不通时**不会报错**，表现为父组永远选不出主、`isMain` 恒为 `false`。
+
+3. **分发配置**：同一份 `config.properties` 分发到全部 6 台机器。
 
 4. **启动应用**：所有机器执行：
 
@@ -378,7 +433,17 @@ election.cross.timeout.max=5000
 java -jar your-app.jar
 ```
 
-5. **验证**：检查日志确认两级选举完成。
+5. **验证**：检查日志确认两级选举完成——
+
+```text
+Parent group built: nodeId=node-x.x.x.x-4000, port=4000, peers=[...], weights={dc-0=2, dc-1=1}
+```
+
+   随后确认**全局唯一主**：`isMain == true` 的进程数必须 ≤ 1（详见「跨机房级联：双层观测 API」）。
+
+> ⚠️ **父组唯一性语义**：主机房凭权重 2 ≥ required 2 可**单方成主**（杀光备机房仍为 1 主）；
+> 备机房权重 1 < 2 **不可**单方成主，故**杀光主机房会退化为「无主」而非备机房接管**。
+> 这是"绝不允许双主"硬约束的必然代价，属**预期行为**，需按 P1 告警处置并走人工介入。
 
 ### 容器化部署
 
