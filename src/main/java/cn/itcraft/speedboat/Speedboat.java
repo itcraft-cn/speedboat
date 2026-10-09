@@ -543,7 +543,75 @@ public class Speedboat {
         checkRunning();
         return raftNode != null ? raftNode.getTerm().getCurrent() : 0;
     }
-    
+
+    // ==================== 跨机房级联：双层观测 ====================
+
+    /**
+     * 本进程是否为<b>子组（机房内层）Leader</b>，即"本机房代表"。
+     *
+     * <p>拥有本标志只代表被本机房推举为发言人，<b>不等于</b>全局主——
+     * 仍需在父组中当选才构成 {@link #isMain()}。备机房在主机房存活期间
+     * 通常长期 {@code isIntraLeader()=true} 但 {@code isMain()=false}，属预期形态。</p>
+     *
+     * @return 是否子组 Leader；单机房模式下与 {@link #isMain()} 同义
+     */
+    private boolean doIsIntraLeader() {
+        checkRunning();
+        return raftNode != null && raftNode.isLeader();
+    }
+
+    /**
+     * 本进程是否为<b>父组（跨机房层）Leader</b>。
+     *
+     * <p>父组成员是各机房的子组 Leader，因此非代表进程恒为 false。
+     * 单机房模式无父组，恒为 true（此时子组 Leader 即全局主）。</p>
+     *
+     * @return 是否父组 Leader
+     */
+    private boolean doIsParentLeader() {
+        checkRunning();
+        return parentRaftNode == null || parentRaftNode.isLeader();
+    }
+
+    /** 子组（机房内层）term —— 与父组 term 完全独立、各自单调。 */
+    private long doGetIntraTerm() {
+        return doGetTerm();
+    }
+
+    /** 父组（跨机房层）term；单机房模式无父组，返回 0。 */
+    private long doGetParentTerm() {
+        checkRunning();
+        return parentRaftNode != null ? parentRaftNode.getTerm().getCurrent() : 0L;
+    }
+
+    /** 子组当前已知 Leader（机房内视角）；单机房模式即全局 Leader。 */
+    private String doGetIntraLeaderId() {
+        return doGetLeaderId();
+    }
+
+    /** 父组当前已知 Leader 的父组 nodeId；单机房模式无父组，返回 null。 */
+    private String doGetParentLeaderId() {
+        checkRunning();
+        return parentRaftNode != null ? parentRaftNode.getLeaderId() : null;
+    }
+
+    /**
+     * 父组（跨机房层）节点标识。
+     *
+     * <p>按父组端口推导（{@code ip:(子组端口 + cross.port.offset)}），与子组 nodeId
+     * 同规则但不同值——两组是彼此独立的节点身份，必须可区分。</p>
+     *
+     * @return 父组 nodeId；单机房模式无父组，返回 null
+     */
+    private String doGetParentNodeId() {
+        return parentNodeId;
+    }
+
+    /** 父组绑定端口；单机房模式返回 0。 */
+    private int doGetParentPort() {
+        return parentPort;
+    }
+
     private DistributedLock doGetLock(String lockName) {
         checkRunning();
         Objects.requireNonNull(lockName, "lockName cannot be null");
@@ -671,6 +739,99 @@ public class Speedboat {
     public static long getTerm() {
         checkSingletonRunning();
         return instance.doGetTerm();
+    }
+
+    /**
+     * 本进程是否为子组（机房内层）Leader，即"本机房代表"。
+     *
+     * <p>跨机房级联模式下它<b>不等于</b> {@link #isMain()}：代表还需在父组当选才构成全局主。
+     * 单机房模式下与 {@link #isMain()} 同义。</p>
+     *
+     * @return 是否子组 Leader
+     */
+    public static boolean isIntraLeader() {
+        checkSingletonRunning();
+        return instance.doIsIntraLeader();
+    }
+
+    /**
+     * 本进程是否为父组（跨机房层）Leader。
+     *
+     * <p>{@code isMain() == isIntraLeader() && isParentLeader()}。</p>
+     *
+     * @return 是否父组 Leader；单机房模式恒为 true
+     */
+    public static boolean isParentLeader() {
+        checkSingletonRunning();
+        return instance.doIsParentLeader();
+    }
+
+    /**
+     * 子组（机房内层）term，与父组 term 完全独立、各自单调。
+     *
+     * @return 子组当前任期
+     */
+    public static long getIntraTerm() {
+        checkSingletonRunning();
+        return instance.doGetIntraTerm();
+    }
+
+    /**
+     * 父组（跨机房层）term，与子组 term 完全独立、各自单调。
+     *
+     * <p>用于验证两组任期互不污染：子组选举推进子组 term，父组选举推进父组 term，
+     * 二者没有换算关系。单机房模式无父组，返回 0。</p>
+     *
+     * @return 父组当前任期
+     */
+    public static long getParentTerm() {
+        checkSingletonRunning();
+        return instance.doGetParentTerm();
+    }
+
+    /**
+     * 子组当前已知 Leader 的 nodeId（机房内视角）。
+     *
+     * @return 子组 Leader nodeId；无则返回 null
+     */
+    public static String getIntraLeaderId() {
+        checkSingletonRunning();
+        return instance.doGetIntraLeaderId();
+    }
+
+    /**
+     * 父组当前已知 Leader 的<b>父组</b> nodeId（跨机房视角）。
+     *
+     * <p>注意其取值域与 {@link #getIntraLeaderId()} 不同（按父组端口推导），两者不可混用比较。
+     * 单机房模式无父组，返回 null。</p>
+     *
+     * @return 父组 Leader nodeId；无则返回 null
+     */
+    public static String getParentLeaderId() {
+        checkSingletonRunning();
+        return instance.doGetParentLeaderId();
+    }
+
+    /**
+     * 父组（跨机房层）节点标识，按父组端口推导，与子组 {@link #getNodeId()} 可区分。
+     *
+     * @return 父组 nodeId；单机房模式无父组，返回 null
+     */
+    public static String getParentNodeId() {
+        checkSingletonRunning();
+        return instance.doGetParentNodeId();
+    }
+
+    /**
+     * 父组绑定端口（{@code 子组端口 + cross.port.offset}）。
+     *
+     * <p>用于部署侧核对防火墙/端口清单；单机房模式返回 0。</p>
+     *
+     * @return 父组端口
+     */
+    public static int getParentPort() {
+        checkSingletonRunning();
+        return instance.doGetParentPort();
     }
     
     public static String getNodeId() {

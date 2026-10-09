@@ -232,6 +232,31 @@ class RaftNodeTest {
     }
 
     @Test
+    @DisplayName("席位门控 - 预投票同样受席位门控（预票不得绕过代表资格）")
+    void seatGateRejectsPreVoteWhenNoSeat() throws Exception {
+        node.setSeatHeld(false);
+        node.start();
+
+        // 预投票经 RpcBridge 注册到传输层处理器，可从测试桩直接驱动
+        TransportLayer.PreVoteHandler handler = transport.preVoteHandler;
+        assertNotNull(handler, "start() 应注册预投票处理器");
+
+        // 探测 term 取 100：本节点选举最多推进到 1，故绝不会命中"陈旧探测"规则，
+        // 使断言严格落在席位门控上而非被任期比较掩盖。
+        PreVoteResponse rejected = handler
+            .handle(new PreVoteRequest(100, "candidate-1", 0, 0, "dc-0"))
+            .get(2, TimeUnit.SECONDS);
+        assertFalse(rejected.isVoteGranted(), "无席位节点不代表本机房应答预票");
+
+        node.setSeatHeld(true);
+        PreVoteResponse granted = handler
+            .handle(new PreVoteRequest(100, "candidate-1", 0, 0, "dc-0"))
+            .get(2, TimeUnit.SECONDS);
+        assertTrue(granted.isVoteGranted(), "持有席位时预票应放行，否则会静默掐死跨机房选举");
+        node.shutdown();
+    }
+
+    @Test
     @DisplayName("LEADER收到更高Term心跳应转为FOLLOWER")
     void testLeaderReceivesHigherTermHeartbeat() throws InterruptedException {
         transport.setVoteResponse(true);

@@ -119,6 +119,25 @@ public class DatacenterPriorityVoteWeightStrategy implements VoteWeightStrategy 
         return weightOf(candidateDatacenter) >= weightOf(localDatacenter);
     }
 
+    /**
+     * 父组法定多数派必须按<b>机房聚合</b>，否则分母被虚增、基线就选不出主。
+     *
+     * <p>父组的 {@code peerIds} 铺满对侧机房<b>全部</b>节点（为把消息送达尚未确定的
+     * 代表），但对侧真正持席的代表只有一个。逐节点累加会把 3 条投递路径当成 3 个投票
+     * 席位，使 {@code required} 抬到 3，而主机房单方权重仅 2 —— 永远达不到。
+     * 聚合后同一机房的多个 peer 共享一个席位，分母回到 {@code Σ机房权重}。</p>
+     *
+     * <p>缺省的 {@link VoteWeightStrategy#quorumByDatacenter()} 为 {@code false}，
+     * 故单机房模式与既有策略的行为<b>逐字节不变</b>。</p>
+     *
+     * @return 恒为 true
+     * @see VoteWeightStrategy#quorumByDatacenter()
+     */
+    @Override
+    public boolean quorumByDatacenter() {
+        return true;
+    }
+
     /** 取候选者机房标识，未自报时回退为本机房 */
     private String candidateDatacenterOf(VoteContext context) {
         String candidateDatacenter = context.getCandidateDatacenter();

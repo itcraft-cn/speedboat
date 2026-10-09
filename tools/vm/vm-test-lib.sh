@@ -109,6 +109,120 @@ count_main_in() {
   echo "$n"
 }
 
+# ------------------------------------------------------------------
+# 跨机房级联（双层 Raft）专用判据
+#
+# 双层结构下"机房内唯一代表"与"全网唯一主"是两个不同判据，不能混用：
+#   子组（机房内层）→ intra=true 表示本进程是该机房推举的代表
+#   父组（跨机房层）→ isMain=true 表示既是子组代表、又在父组当选（全局主）
+# 备机房在主机房存活期间长期 intra=true 但 isMain=false，属预期形态而非故障。
+#
+# 旧的 wait_single_leader 要求集合内所有节点的 leader 字段等于全局主，
+# 在双层下会因备机房子组 leader 与全局主不同而永不命中，故单机房三机脚本
+# 继续使用旧函数，跨机房脚本改用本节函数。
+# ------------------------------------------------------------------
+
+# 给定 host 集合内 intra=true 的数量（机房代表计数）
+count_intra_in() {
+  local -a hs=("$@")
+  local h n=0
+  for h in "${hs[@]}"; do
+    alive "$h" || continue
+    [ "$(fld "$(state_line "$h")" intra)" = "true" ] && n=$((n + 1))
+  done
+  echo "$n"
+}
+
+# 返回给定 host 集合内当前 intra=true 的 host（空表示该机房暂无代表）
+intra_host_in() {
+  local -a hs=("$@")
+  local h
+  for h in "${hs[@]}"; do
+    alive "$h" || continue
+    [ "$(fld "$(state_line "$h")" intra)" = "true" ] && { echo "$h"; return; }
+  done
+  echo ""
+}
+
+# 轮询等待"给定 host 集合内恰好一个 intra=true"（机房内唯一代表）。
+# 用法：wait_single_intra <秒> <host...>；命中返回 0，超时返回 1。
+# 判定用 intra 而非 isMain：杀光对侧机房后本机房仍需有代表，但不再持有全局席位。
+wait_single_intra() {
+  local secs=$1; shift
+  local -a hs=("$@")
+  local i h
+  for ((i = 0; i < secs; i++)); do
+    local n=0
+    for h in "${hs[@]}"; do
+      alive "$h" || continue
+      [ "$(fld "$(state_line "$h")" intra)" = "true" ] && n=$((n + 1))
+    done
+    [ "$n" -eq 1 ] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# 轮询等待"全网恰好一个 isMain=true，且所有存活节点的父组 Leader 视角收敛一致"。
+# 用法：wait_single_global_leader <秒> <host...>；命中返回 0，超时返回 1。
+#
+# 两级判据缺一不可：
+#   1) isMain 计数 == 1          → 唯一性（防双主）
+#   2) parentLeader 全网一致     → 父组已收敛到同一 leader，而非两房各持一词
+# 仅判计数可能在父组尚未收敛的中间态误通过，故补第 2 条。
+wait_single_global_leader() {
+  local secs=$1; shift
+  local -a hs=("$@")
+  local i h
+  for ((i = 0; i < secs; i++)); do
+    local mains=0 ref=""
+    for h in "${hs[@]}"; do
+      alive "$h" || continue
+      local line pl
+      line=$(state_line "$h")
+      if [ "$(fld "$line" isMain)" = "true" ]; then mains=$((mains + 1)); fi
+      pl=$(fld "$line" parentLeader)
+      [ -n "$pl" ] || continue
+      if [ -z "$ref" ]; then ref=$pl; elif [ "$pl" != "$ref" ]; then ref="DIVERGED"; fi
+    done
+
+    if [ "$mains" -eq 1 ] && [ -n "$ref" ] && [ "$ref" != "DIVERGED" ] && [ "$ref" != "none" ]; then
+      # 父组 Leader 必须按父组端口推导，与子组 nodeId 端口不同（两组身份分离）
+      case "$ref" in
+        *-22001) return 0 ;;
+        *) ;;
+      esac
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# 等待"全网无主"（isMain 计数 == 0）并保持稳定 <稳定秒>。
+# 用于断言杀光主机房后退化为无主、且不是短暂抖动。
+# 用法：wait_no_global_leader <保持秒> <超时秒> <host...>
+wait_no_global_leader() {
+  local hold=$1 timeout=$2; shift 2
+  local -a hs=("$@")
+  local i h seen=0
+  for ((i = 0; i < timeout; i++)); do
+    local n=0
+    for h in "${hs[@]}"; do
+      alive "$h" || continue
+      [ "$(fld "$(state_line "$h")" isMain)" = "true" ] && n=$((n + 1))
+    done
+    if [ "$n" -eq 0 ]; then
+      seen=$((seen + 1))
+      [ "$seen" -ge "$hold" ] && return 0
+    else
+      # 期间出现主即判定未达成（对侧机房已死却仍报主 = 违反唯一性预期）
+      return 1
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 # nodeId 推导校验：node-<ip>-<port>（身份确定性）
 node_id_ok() {
   local h=$1 nid

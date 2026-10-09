@@ -51,17 +51,20 @@ final class HeartbeatWatchdog {
         }
         long thresholdNanos = TimeUnit.MILLISECONDS.toNanos(ctx.quorumCheckTimeoutMillis);
         long now = System.nanoTime();
-        long freshWeight = 1;  // 自己代表新鲜的 leader 响应
+
+        // 权重计算统一交回 QuorumCalculator，看门狗只负责"筛出哪些 peer 新鲜"。
+        // 若看门狗自成一派按节点计数，会与选举侧（按权重、父组按机房聚合）口径分裂：
+        // 不对称机房权重下主机房 self=2，杀光备机房后若仍按节点数累计
+        // freshWeight < required，主机房父组 Leader 会被误降级，场景④退化为无主。
+        java.util.Set<String> freshPeers = new java.util.HashSet<String>();
         for (String peerId : ctx.peerIds) {
             Long last = ctx.lastResponseNanos.get(peerId);
             if (last != null && (now - last) <= thresholdNanos) {
-                freshWeight += 1;
-                if (ctx.voteWeightStrategy != null) {
-                    VoteContext context = VoteContext.forDatacenter(peerId, quorum.peerDatacenter(peerId), ctx.term.getCurrent());
-                    freshWeight += ctx.voteWeightStrategy.calculateAdditionalWeight(context);
-                }
+                freshPeers.add(peerId);
             }
         }
+
+        long freshWeight = quorum.freshWeight(freshPeers, ctx.term.getCurrent());
         long required = quorum.requiredWeight();
         if (freshWeight < required) {
             logger.warn("Node {} check-quorum FAILED (freshWeight={} < required={}), demoting to follower",

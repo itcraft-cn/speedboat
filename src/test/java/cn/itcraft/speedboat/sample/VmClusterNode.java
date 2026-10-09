@@ -18,8 +18,10 @@ import org.slf4j.LoggerFactory;
  *
  * <p>日志为结构化 key=value，统一前缀 {@code SPEEDBOAT-VM}，供外部编排脚本解析：</p>
  * <ul>
- *   <li>{@code event=START node=<> dc=<> mode=<>} 启动完成</li>
- *   <li>{@code event=STATE node=<> term=<> leader=<> isMain=<>} 状态采样（约 1s 一次）</li>
+ *   <li>{@code event=START node=<> dc=<> mode=<> parentPort=<>} 启动完成</li>
+ *   <li>{@code event=STATE node=<> term=<> leader=<> isMain=<> intra=<> parent=<> parentTerm=<> parentLeader=<> parentPort=<>}
+ *       状态采样（约 1s 一次）；{@code term/leader} 为子组（机房内）视角，{@code parent*} 为父组（跨机房）视角，
+ *       两组 term 独立单调，{@code isMain = intra && parent}</li>
  *   <li>{@code event=LOCK_ACQUIRE node=<> lock=<> epoch=<>} 成功持锁（含 fencing epoch）</li>
  *   <li>{@code event=LOCK_RELEASE node=<> lock=<> epoch=<>} 主动释放</li>
  *   <li>{@code event=LOCK_REJECT node=<> lock=<>} 本轮未获授权</li>
@@ -86,8 +88,8 @@ public class VmClusterNode {
 
         // 1. 官方门面：一行启动
         Speedboat.start(new PropertiesConfigProvider(configPath));
-        logger.info("{} event=START node={} dc={} mode={}", MARK,
-            Speedboat.getNodeId(), Speedboat.getDatacenterId(), mode);
+        logger.info("{} event=START node={} dc={} mode={} parentPort={}", MARK,
+            Speedboat.getNodeId(), Speedboat.getDatacenterId(), mode, Speedboat.getParentPort());
 
         DistributedLock lock = Speedboat.getLock(lockName);
 
@@ -133,12 +135,29 @@ public class VmClusterNode {
         }
     }
 
-    /** 结构化状态采样：leader 字段为空时输出 none，便于脚本稳定解析。 */
+    /** 结构化状态采样：leader 字段为空时输出 none，便于脚本稳定解析。
+     *
+     * <p><b>双层字段口径：</b>跨机房级联下每个进程持有子组（机房内）与父组（跨机房）两套
+     * Raft，故状态分两组输出，且两组 term 各自独立：</p>
+     * <ul>
+     *   <li>{@code term}/{@code leader} —— 子组（机房内层）视角，既有字段名保持不变；</li>
+     *   <li>{@code intra}/{@code parent} —— 是否子组 Leader / 是否父组 Leader；</li>
+     *   <li>{@code parentTerm}/{@code parentLeader}/{@code parentPort} —— 父组专属维度。</li>
+     * </ul>
+     * <p>{@code isMain = intra && parent}，即全局唯一主。备机房在主机房存活期间
+     * 通常 {@code intra=true, parent=false, isMain=false}，属预期形态而非故障。</p>
+     */
     private static void logState() {
         String leader = Speedboat.getLeaderId();
-        logger.info("{} event=STATE node={} term={} leader={} isMain={}",
+        String parentLeader = Speedboat.getParentLeaderId();
+        logger.info("{} event=STATE node={} term={} leader={} isMain={} intra={} parent={} " +
+                "parentTerm={} parentLeader={} parentPort={}",
             MARK, Speedboat.getNodeId(), Speedboat.getTerm(),
-            leader == null ? "none" : leader, Speedboat.isMain());
+            leader == null ? "none" : leader, Speedboat.isMain(),
+            Speedboat.isIntraLeader(), Speedboat.isParentLeader(),
+            Speedboat.getParentTerm(),
+            parentLeader == null ? "none" : parentLeader,
+            Speedboat.getParentPort());
     }
 
     private static String safeNodeId() {

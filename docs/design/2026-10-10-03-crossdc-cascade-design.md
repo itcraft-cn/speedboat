@@ -361,7 +361,8 @@ total = 3*2 + 3*1 = 9，required = 9/2 + 1 = 5
 
 ### 决策一：实现形态 → **中策 B（父组真 Raft）+ 机房权重**
 
-父组实现为**完整的 Raft 组**，每进程两套 `RaftNode` + 两套 `NettyTransport`（子组 21001、父组 21002）。
+父组实现为**完整的 Raft 组**，每进程两套 `RaftNode` + 两套 `NettyTransport`
+（子组 21001、父组 22001 = 子组端口 + `cross.port.offset`，缺省偏移 1000）。
 同时**必须叠加机房权重**——双机房场景下仅靠标准多数派无法表达"主机房优先"。
 
 > ⚠️ **父组不能复用 `DatacenterVoteWeightStrategy`。**
@@ -383,6 +384,19 @@ total = 3*2 + 3*1 = 9，required = 9/2 + 1 = 5
 
 `LockStateMachine` 行为维持现状（各机房本地处理），仅让 `isMain` 从"每房一个"收敛为"全局唯一"。
 锁的跨机房语义后续单独出设计。
+
+### 决策四：父组法定多数 → **按机房聚合分母**（实现期发现，必须修正）
+
+`peerIds` 在 Raft 里同时是**消息投递集合**与**多数派分母的成员集合**，而父组对侧代表
+是**运行期才确定**的——为送达未定的代表，peer 必须铺满对侧机房全部节点，于是分母被虚增：
+逐节点累加得到 `total=4 / required=3`，主机房 `self=2` 永远不够，**父组连基线都选不出主**。
+
+因此多数派口径改为**按机房聚合**：同一机房的多个 peer 是**同一席位的多条投递路径**，权重只计一次，
+`total` 回到 `Σ机房权重`，与 §8.3 的唯一性推导对齐。开关为 `VoteWeightStrategy.quorumByDatacenter()`
+（缺省 `false`），仅父组的 `DatacenterPriorityVoteWeightStrategy` 启用，**既有单机房行为逐字节不变**。
+
+同步修正 `HeartbeatWatchdog` 的自身权重硬编码（原为 `1`，会把主机房误降级）。
+详见 §8.3.1。
 
 ---
 
@@ -438,6 +452,55 @@ required  = total / 2 + 1      = 2
 两个权重不可能同时 ≥ 其和的一半加一（除非两者相等，此时各自 = `req - 1`）。
 权重不对称 ⇒ 结构上**不可能双主**，与超时、网络状态无关。
 
+#### 8.3.1 分母口径：`peerIds` 的双重身份冲突（实现期发现）
+
+§8.3 把父组当作"2 个投票成员"，但**实现层面 `peerIds` 放不了 2 个**：
+
+- 父组成员是各机房的**子组 Leader**，而对侧代表**运行在哪个进程、由谁当选是运行期才确定的**；
+- 为把 RequestVote / AppendEntries 送达对侧**尚未确定的**代表，peer 列表必须铺满对侧机房**全部节点**；
+- 但 `peerIds` 在 Raft 里同时是**多数派分母的成员集合**。
+
+两者天然冲突。若仍按节点逐个累加权重：
+
+```
+主机房父组节点：self = 2（机房权重），对侧 3 个 peer 各 1
+total    = 1（自身硬编码） + 3×1 = 4
+required = 4/2 + 1 = 3
+self(2) < 3 → 永远凑不齐多数 → 父组连基线都选不出主，整套级联直接失效
+```
+
+**修正**：法定多数按**机房聚合**——同一机房的多个 peer 视为**同一席位的多条投递路径**，权重只计一次：
+
+```
+total    = Σ(机房权重) = W_main + W_backup = 3
+required = 3/2 + 1 = 2          ← 回到 §8.3 的原始推导
+```
+
+开关挂在 `VoteWeightStrategy.quorumByDatacenter()`（缺省 `false`），只有父组使用的
+`DatacenterPriorityVoteWeightStrategy` 返回 `true`，**单机房与既有权重策略的分母计算逐字节不变**。
+
+必须**同口径**修正的位置——否则会出现"选举按权重判多数、看门狗按节点计数判多数"的分裂：
+
+| 位置 | 职责 |
+|---|---|
+| `QuorumCalculator.totalWeight` | 分母，按机房去重 |
+| `QuorumCalculator.receivedWeight` | 已收票，自身按 `selfWeight` 计 + 按机房去重 |
+| `QuorumCalculator.grantedWeight` | 预投票票数，同上 |
+| `QuorumCalculator.matchedWeight` | 复制多数，同上 |
+| `QuorumCalculator.freshWeight`（新增） | check-quorum 新鲜权重，同上 |
+| `HeartbeatWatchdog` | 只负责筛出"哪些 peer 新鲜"，权重计算交回 `QuorumCalculator` |
+
+> **`HeartbeatWatchdog` 曾把自身权重硬编码为 `1`**：主机房 `self=2`，杀光备机房后
+> `freshWeight(1) < required(2)` 会被**误降级**，场景④退化为无主。这正是两个口径分裂的典型后果。
+
+**配套门控**：预投票应答侧 `doHandlePreVoteRequest` 同样受**代表席位门控**与**机房优先级闸门**约束。
+缺了它们，对侧 3 个进程会各应一票、凭空凑成多数，使低优先级机房的探测恒通过、
+随后反复进入正式选举抬 `term`（虽因 RequestVote 闸门不会真正当选，但会造成无谓抖动）。
+
+> 依赖关系：预投票探测**不修改** term/持久状态，故闸门无需像 `RequestVote` 那样
+> "先对齐 term 再拒绝"（那条顺序是为了让本节点 term 不落后于对侧）。
+> 同时 `doStartPreVote` 的"探测超时兜底转正式选举"保证了加门控不伤活性。
+
 ### 8.4 各场景行为（硬约束达成情况）
 
 | 场景 | 父组行为 | 全局主数量 |
@@ -463,8 +526,14 @@ required  = total / 2 + 1      = 2
 
 因此父组分母**固定**为两房代表，`required` 恒定，与可达性无关。
 
-> **相应代价**：父组禁用 PreVote。标准 PreVote 要求对侧同意才允许升 term，
-> 在父组两成员且一侧死亡时会**永久阻塞**选举；且分母固定后 PreVote 防 term 膨胀的收益已不存在。
+> **PreVote 处置：父组保留 PreVote，不禁用。**
+> 标准 PreVote 要求对侧同意才允许升 `term`，在父组两成员且一侧死亡时确实会阻塞**正常**路径；
+> 但 `ElectionCoordinator.doStartPreVote` 已实现「探测超时兜底转正式选举」——多数派拒绝或失联
+> 超时后自动进入正式选举，**活性不回退**；同时 PreVote 仍能挡住"分区恢复节点以暴涨 `term`
+> 打奔现行 leader"的收益，故不禁用。
+>
+> 与之配套，预投票**应答侧**必须受代表席位门控与机房优先级闸门约束，否则对侧多个进程会
+> 各应一票凭空凑成多数（详见 §8.3.1「配套门控」）。
 
 ### 8.6 人工升级 API（运维兜底）
 

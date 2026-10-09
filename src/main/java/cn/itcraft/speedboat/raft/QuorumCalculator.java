@@ -60,13 +60,48 @@ final class QuorumCalculator {
     /**
      * 集群全体权重和（含自身）。
      * 复制多数派判定的分母来源（Ratis 式"required 语义"）。
+     *
+     * <p>分母口径由 {@link cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy#quorumByDatacenter()}
+     * 决定：缺省逐节点累加（行为不变）；父组按机房去重聚合，见
+     * {@link #totalWeightByDatacenter()}。</p>
      */
     int totalWeight() {
+        if (byDatacenter()) {
+            return totalWeightByDatacenter();
+        }
         int totalWeight = 1;
         for (String peerId : ctx.peerIds) {
             totalWeight += nodeWeight(peerId, ctx.term.getCurrent());
         }
         return totalWeight;
+    }
+
+    /**
+     * 分母按机房聚合：自身权重 + 每个<b>不同对侧机房</b>各计一次权重。
+     *
+     * <p>自身先以 {@link #selfWeight(long)} 计入（基础 1 + 本机房策略附加），再对 peer 按
+     * {@link #peerDatacenter(String)} 去重——同一机房的多个 peer 是"同一席位的多条投递路径"，
+     * 只取首个出现者的权重。这样两机房各 3 节点的父组得到 {@code total = 2 + 1 = 3}、
+     * {@code required = 2}，与设计文档的唯一性推导一致。</p>
+     *
+     * @return 按机房聚合后的全体权重和
+     */
+    private int totalWeightByDatacenter() {
+        long term = ctx.term.getCurrent();
+        java.util.Set<String> countedDatacenters = new java.util.HashSet<String>();
+        countedDatacenters.add(ctx.datacenter);
+        int total = selfWeight(term);
+        for (String peerId : ctx.peerIds) {
+            if (countedDatacenters.add(peerDatacenter(peerId))) {
+                total += nodeWeight(peerId, term);
+            }
+        }
+        return total;
+    }
+
+    /** 是否启用"分母按机房聚合"口径（仅跨机房父组为 true，见策略接口说明）。 */
+    boolean byDatacenter() {
+        return ctx.voteWeightStrategy != null && ctx.voteWeightStrategy.quorumByDatacenter();
     }
 
     /**
@@ -84,6 +119,9 @@ final class QuorumCalculator {
      * @return 已收到的权重和
      */
     int receivedWeight(Map<String, Boolean> votesReceived) {
+        if (byDatacenter()) {
+            return receivedWeightByDatacenter(votesReceived);
+        }
         int receivedWeight = 1;
         for (String peerId : ctx.peerIds) {
             if (votesReceived.containsKey(peerId)) {
@@ -91,6 +129,31 @@ final class QuorumCalculator {
             }
         }
         return receivedWeight;
+    }
+
+    /**
+     * 已收投票权重（机房聚合口径）：自身 + 每个<b>已投票</b>的不同机房各计一次。
+     *
+     * <p>这是父组选举能收敛的关键：主机房代表只需本机房权重 2 ≥ required 2 即可免票成主；
+     * 备机房代表即使拿到对侧全部票，也只会因"同一机房只计一次"而止步于
+     * {@code self(1) + host(2) = 3 ≥ 2}——但闸门
+     * {@link cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy#shouldGrantVote}
+     * 已使主机房根本不把票投给低优先级机房，故备机房实际只能停在 1 &lt; 2。</p>
+     *
+     * @param votesReceived 投票记录（key=peerId，值恒为 true）
+     * @return 按机房聚合后的已收投票权重和
+     */
+    private int receivedWeightByDatacenter(Map<String, Boolean> votesReceived) {
+        long term = ctx.term.getCurrent();
+        java.util.Set<String> countedDatacenters = new java.util.HashSet<String>();
+        countedDatacenters.add(ctx.datacenter);
+        int weight = selfWeight(term);
+        for (String peerId : ctx.peerIds) {
+            if (votesReceived.containsKey(peerId) && countedDatacenters.add(peerDatacenter(peerId))) {
+                weight += nodeWeight(peerId, term);
+            }
+        }
+        return weight;
     }
 
     /**
@@ -122,6 +185,21 @@ final class QuorumCalculator {
      * @return 含自身的权重和
      */
     int grantedWeight(java.util.Set<String> grantedPeers, long termRef) {
+        if (byDatacenter()) {
+            // 机房聚合口径：自身按 selfWeight 计，对侧各机房只取首个已授票 peer 的权重
+            java.util.Set<String> countedDatacenters = new java.util.HashSet<String>();
+            countedDatacenters.add(ctx.datacenter);
+            int aggregated = selfWeight(termRef);
+            for (String grantedPeer : grantedPeers) {
+                if (grantedPeer.equals(ctx.nodeId)) {
+                    continue;
+                }
+                if (countedDatacenters.add(peerDatacenter(grantedPeer))) {
+                    aggregated += weightOfPeer(grantedPeer, termRef);
+                }
+            }
+            return aggregated;
+        }
         int weight = 1;
         for (String grantedPeer : grantedPeers) {
             if (grantedPeer.equals(ctx.nodeId)) {
@@ -137,6 +215,52 @@ final class QuorumCalculator {
         return weight;
     }
 
+    /** 单个 peer 的权重（基础 1 + 策略附加），等价于 {@link #nodeWeight(String, long)}。 */
+    private int weightOfPeer(String peerId, long termRef) {
+        if (ctx.voteWeightStrategy == null) {
+            return 1;
+        }
+        VoteContext context = VoteContext.forDatacenter(peerId, peerDatacenter(peerId), termRef);
+        return 1 + ctx.voteWeightStrategy.calculateAdditionalWeight(context);
+    }
+
+    /**
+     * 看门狗口径：给定"最近有响应的 peer 集合"求权重和（含自身）。
+     *
+     * <p>与选举侧必须严格同口径——自身按 {@link #selfWeight(long)} 计、分母按机房聚合，
+     * 否则会出现"选举按权重判多数、check-quorum 按节点计数判多数"的分裂：
+     * 杀光备机房后主机房 {@code self=2}，若此处仍按节点数算则 {@code freshWeight} 只有
+     * 对侧残余的计数，一旦跌破 {@code required} 便误降级，场景④退化为无主。</p>
+     *
+     * @param freshPeers 最近一次心跳有响应的 peer 集合
+     * @param termRef    权重策略上下文任期
+     * @return 含自身的权重和
+     */
+    int freshWeight(java.util.Set<String> freshPeers, long termRef) {
+        if (byDatacenter()) {
+            java.util.Set<String> countedDatacenters = new java.util.HashSet<String>();
+            countedDatacenters.add(ctx.datacenter);
+            int aggregated = selfWeight(termRef);
+            for (String freshPeer : freshPeers) {
+                if (freshPeer.equals(ctx.nodeId)) {
+                    continue;
+                }
+                if (countedDatacenters.add(peerDatacenter(freshPeer))) {
+                    aggregated += weightOfPeer(freshPeer, termRef);
+                }
+            }
+            return aggregated;
+        }
+        int weight = 1;
+        for (String freshPeer : freshPeers) {
+            if (freshPeer.equals(ctx.nodeId)) {
+                continue;
+            }
+            weight += weightOfPeer(freshPeer, termRef);
+        }
+        return weight;
+    }
+
     /**
      * 给定"matchIndex 覆盖索引"的复制权重求和（advanceCommitIndex 的内联第 4 变体归一）。
      *
@@ -146,6 +270,19 @@ final class QuorumCalculator {
      * @return 含自身的权重和
      */
     int matchedWeight(Map<String, Long> matchIndex, long threshold, long termRef) {
+        if (byDatacenter()) {
+            // 机房聚合口径：自身 + 每个"已达阈值"的不同机房各计一次
+            java.util.Set<String> countedDatacenters = new java.util.HashSet<String>();
+            countedDatacenters.add(ctx.datacenter);
+            int aggregated = selfWeight(termRef);
+            for (String peerId : ctx.peerIds) {
+                Long m = matchIndex.get(peerId);
+                if (m != null && m >= threshold && countedDatacenters.add(peerDatacenter(peerId))) {
+                    aggregated += weightOfPeer(peerId, termRef);
+                }
+            }
+            return aggregated;
+        }
         int weight = 1;
         for (String peerId : ctx.peerIds) {
             Long m = matchIndex.get(peerId);

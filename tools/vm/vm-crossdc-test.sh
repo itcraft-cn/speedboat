@@ -5,15 +5,23 @@
 # 拓扑（config-vm6-crossdc.properties）：
 #   主机房 机房0 = 192.168.193.174 / .175 / .176（aarch64）
 #   备机房 机房1 = 192.168.193.51 / .53 / .55（x86_64）
-# 两组在 cross-datacenter 模式下各自独立成组（见 Speedboat.doStartCrossDatacenterMode）。
+# 每个进程持有两套独立 Raft（见 Speedboat.doStartCrossDatacenterMode）：
+#   子组（机房内层）端口 21001 → 选出"本机房代表"（intra=true）
+#   父组（跨机房层）端口 22001 → 各机房代表角逐"全局主"（isMain=true）
+# 父组采用不对称机房权重（主机房 2 / 备机房 1，门槛 required=2），
+# 故主机房可单方成主而备机房不可，从而在结构上排除双主。
 #
 # 覆盖（官方门面路径 Speedboat.start，逐项断言 + 拓扑探测）：
-#   P0 基线    两机房各选出唯一 Leader；nodeId / 机房归属正确
-#   P1 场景1   杀主机房 Leader → 主机房重选（优先在主机房），备机房不受牵动
-#   P2 场景2   杀光主机房 → 备机房仍维持唯一 Leader
-#   P3 场景3   重启主机房 → 重新加入并选主，恢复双 Leader 形态
-#   P4 场景4   杀光备机房 → 主机房仍维持唯一 Leader
-#   P5 拓扑探测 由 P0/P1/P2 证据判定两机房是否真有跨机房联动
+#   P0 基线    两机房各出唯一代表；主机房当选全局唯一主（isMain=1）
+#   P1 场景1   杀主机房 Leader → 主机房重选并接替父组席位，全局唯一主仍在主机房
+#   P2 场景2   杀光主机房 → 备机房子组正常运转，但全局退化为【无主】（isMain=0）
+#   P3 场景3   重启主机房 → 重新加入并夺回全局席位，恢复 isMain=1
+#   P4 场景4   杀光备机房 → 主机房凭权重【单方成主】，维持 isMain=1
+#   P5 判定    唯一性是否全程成立（任意时刻 isMain ≤ 1）、父组 term 是否独立单调
+#
+# 硬约束（设计文档 §7 决策二）：全局 Leader 必须"只有一主或无主"，绝不允许双主。
+# 因此 P2 的"无主"是刻意设计的结果，不是缺陷——它是一致性优先取舍的必然代价，
+# 运维兜底手段（人工升级 API）见设计文档 §8.6。
 #
 # 前置：六台已单向信任、互相可达；主机房（17x）无 javac，故测试节点由宿主机
 #       预编译为字节码（架构无关）后下发，目标机仅需 java。
@@ -74,20 +82,55 @@ RUNNER_DIR="$REPO/target/vm-runner"
 RUNNER_JAR="$REPO/target/vm-runner.jar"
 
 # ------------------------------------------------------------------ 跨阶段状态
-# 由各 phase 在观测点写入，供 P5 拓扑探测汇总口径使用
-BASELINE_MAIN=0     # P0 基线全网 isMain 数
-NO_COUPLING_P1=0    # P1 杀主机房 Leader 后备机房 leader/term 均未变 -> 1
-NO_COUPLING_P2=0    # P2 主机房全灭后备机房 leader/term 均未变 -> 1
-BAK_NODE_P2=""      # P2 结束时备机房 Leader 节点，供 P3 断言"未被打断"
-MAIN_LAST_TERM=0    # 主机房最后一次可观测 term（P1/P2 后记录，P3 用于 mmap 挂回断言）
+# 由各 phase 在观测点写入，供 P5 唯一性/联动汇总口径使用
+BASELINE_MAIN=0     # P0 基线全网 isMain 数（期望 1：主机房当选全局唯一主）
+BASELINE_PT=0       # P0 结束时全网 parentTerm 最大值（父组任期推进的比较基线）
+BAK_NODE_P2=""      # P2 结束时备机房子组代表 nodeId，供 P3 断言"未被打断"
+BAK_TERM_P2=0       # P2 结束时备机房子组 term，供 P3 断言机房内未被牵动
+MAIN_LAST_TERM=0    # 主机房子组最后一次可观测 term（P1 后记录，P3 用于 mmap 挂回断言）
+GLOBAL_MAINS=()     # 各 phase 观测到的全网 isMain 计数，P5 汇总断言"全程唯一"
 
 # ============================ 机房维度辅助 ============================
-dc_leader_host() { case "$1" in 0) leader_host_in "${DC0[@]}";; *) leader_host_in "${DC1[@]}";; esac; }
-dc_wait_leader() { case "$1" in 0) wait_single_leader "$2" "${DC0[@]}";; *) wait_single_leader "$2" "${DC1[@]}";; esac; }
+# 双层结构下"机房代表"与"全局主"是两个不同概念，口径必须分开：
+#   dc_leader_host / dc_wait_leader  → 子组代表（intra=true），机房内概念
+#   dc_main_host  / dc_count_main    → 全局主（isMain=true），跨机房概念
+# 备机房在主机房存活期间长期有代表但无全局席位，属预期形态。
+dc_leader_host() { case "$1" in 0) intra_host_in "${DC0[@]}";; *) intra_host_in "${DC1[@]}";; esac; }
+dc_wait_leader() { case "$1" in 0) wait_single_intra "$2" "${DC0[@]}";; *) wait_single_intra "$2" "${DC1[@]}";; esac; }
 dc_count_main() { case "$1" in 0) count_main_in "${DC0[@]}";; *) count_main_in "${DC1[@]}";; esac; }
+dc_main_host() { case "$1" in 0) leader_host_in "${DC0[@]}";; *) leader_host_in "${DC1[@]}";; esac; }
 
 # 全网 isMain 总数
 total_main() { echo "$(( $(dc_count_main 0) + $(dc_count_main 1) ))"; }
+
+# 全网子组代表总数（应恒等于机房数 = 2）
+total_intra() { echo "$(( $(count_intra_in "${DC0[@]}") + $(count_intra_in "${DC1[@]}") ))"; }
+
+# 全网 parentTerm 最大值——父组任期推进的直接证据（两组 term 各自独立）
+max_parent_term() {
+  local h m=0 t
+  for h in "${HOSTS[@]}"; do
+    alive "$h" || continue
+    t=$(h_field "$h" parentTerm)
+    case "$t" in ''|*[!0-9]*) continue;; esac
+    [ "$t" -gt "$m" ] && m=$t
+  done
+  echo "$m"
+}
+
+# 全网 parentLeader 取值（全网一致时返回该值，否则返回 DIVERGED）
+# 用于断言父组已收敛到同一 leader，而非两房各持一词。
+global_parent_leader() {
+  local h pl ref=""
+  for h in "${HOSTS[@]}"; do
+    alive "$h" || continue
+    pl=$(h_field "$h" parentLeader)
+    [ -n "$pl" ] || continue
+    if [ -z "$ref" ]; then ref=$pl
+    elif [ "$pl" != "$ref" ]; then echo "DIVERGED"; return; fi
+  done
+  echo "${ref:-none}"
+}
 
 # 节点启动时 event=START 行（含 dc= 机房归属，STATE 行不含该字段）
 start_line() { rsh "$1" "grep 'event=START' ~/speedboat-test/$(rlog "$1") 2>/dev/null | tail -1"; }
@@ -129,7 +172,7 @@ deploy() {
 
 # ============================ P0 基线 ============================
 phase0_baseline() {
-  echo; log "P0 基线：启动 6 节点，两机房各自选主"
+  echo; log "P0 基线：启动 6 节点，主机房当选全局唯一主"
   local h
   for h in "${HOSTS[@]}"; do stop_host "$h"; clean_host "$h"; done
   for h in "${HOSTS[@]}"; do start_node "$h" >/dev/null; done
@@ -138,71 +181,114 @@ phase0_baseline() {
   local ok0=1 ok1=1
   dc_wait_leader 0 30 || ok0=0
   dc_wait_leader 1 30 || ok1=0
-  check "主机房（174/175/176）在 30s 内选出唯一 Leader" [ "$ok0" = 1 ]
-  check "备机房（51/53/55）在 30s 内选出唯一 Leader" [ "$ok1" = 1 ]
+  check "主机房（174/175/176）在 30s 内选出唯一子组代表" [ "$ok0" = 1 ]
+  check "备机房（51/53/55）在 30s 内选出唯一子组代表" [ "$ok1" = 1 ]
 
-  local nodes_ok=1 dc_ok=1
+  local nodes_ok=1 dc_ok=1 port_ok=1
   for h in "${HOSTS[@]}"; do
-    echo "  $h: node=$(h_field "$h" node) dc=$(fld "$(start_line "$h")" dc) term=$(h_field "$h" term) leader=$(h_field "$h" leader) isMain=$(h_field "$h" isMain)"
+    echo "  $h: node=$(h_field "$h" node) dc=$(fld "$(start_line "$h")" dc) term=$(h_field "$h" term) intra=$(h_field "$h" intra) parent=$(h_field "$h" parent) isMain=$(h_field "$h" isMain) parentPort=$(h_field "$h" parentPort)"
     node_id_ok "$h" || nodes_ok=0
     [ "$(fld "$(start_line "$h")" dc)" = "dc-${DC[$h]}" ] || dc_ok=0
+    [ "$(h_field "$h" parentPort)" = "22001" ] || port_ok=0
   done
   check "六节点 nodeId 均按 ip:port 确定性推导" [ "$nodes_ok" = 1 ]
   check "六节点机房归属 dc 与配置一致（dc-0/dc-1）" [ "$dc_ok" = 1 ]
-  check "主机房恰好一个 isMain" [ "$(dc_count_main 0)" = 1 ]
-  check "备机房恰好一个 isMain" [ "$(dc_count_main 1)" = 1 ]
-  check "基线全网 isMain=2（两机房各选各主）" [ "$(total_main)" = 2 ]
+  check "六节点父组端口均为 22001（子组 21001 + cross.port.offset 1000）" [ "$port_ok" = 1 ]
+
+  check "主机房恰好一个子组代表（intra=1）" [ "$(count_intra_in "${DC0[@]}")" = 1 ]
+  check "备机房恰好一个子组代表（intra=1）" [ "$(count_intra_in "${DC1[@]}")" = 1 ]
+  check "全网子组代表总数=2（每房各一，父组成员数稳定）" [ "$(total_intra)" = 2 ]
+
   BASELINE_MAIN=$(total_main)
+  check "基线全网 isMain=1（主机房当选，全局唯一主——硬约束基线）" [ "$BASELINE_MAIN" = 1 ]
+
+  # 全局主必须落在主机房，且同时持有子组与父组两道席位
+  local mh; mh=$(dc_main_host 0)
+  check "全局主落在主机房（机房优先级生效）" [ -n "$mh" ]
+  check "全局主持有主机房子组代表身份（isMain ⊂ intra）" [ "$(h_field "$mh" intra)" = "true" ]
+  check "全局主持有父组席位（parent=true）" [ "$(h_field "$mh" parent)" = "true" ]
+  check "备机房代表未持有全局席位（预期 intra=true / isMain=false）" \
+    [ "$(h_field "$(dc_leader_host 1)" isMain)" = "false" ]
+
+  # 父组收敛：全网 parentLeader 指向同一父组节点，且该节点按父组端口推导
+  local ok_g=1
+  wait_single_global_leader 30 "${HOSTS[@]}" || ok_g=0
+  check "父组 30s 内收敛（全网唯一主 + parentLeader 全网一致）" [ "$ok_g" = 1 ]
+
+  BASELINE_PT=$(max_parent_term)
+  echo "  基线：全网 isMain=$(total_main) parentTerm(max)=$BASELINE_PT parentLeader=$(global_parent_leader)"
+  GLOBAL_MAINS+=("$(total_main)")
 }
 
 # ============================ P1 场景1：杀主机房 Leader ============================
 phase1_kill_main_leader() {
-  echo; log "P1 场景1：杀主机房 Leader，看选举是否优先在主机房"
-  local lh; lh=$(dc_leader_host 0)
-  local bh; bh=$(dc_leader_host 1)
-  if [ -z "$lh" ] || [ -z "$bh" ]; then check "场景1前两机房均有 Leader" false; return; fi
+  echo; log "P1 场景1：杀主机房 Leader，看全局唯一主是否仍在主机房"
+  local lh; lh=$(dc_leader_host 0)      # 主机房子组代表（同时也是全局主）
+  local bh; bh=$(dc_leader_host 1)      # 备机房子组代表（无全局席位）
+  if [ -z "$lh" ] || [ -z "$bh" ]; then check "场景1前两机房均有子组代表" false; return; fi
 
   local old_node old_term bak_node bak_term
   old_node=$(h_field "$lh" node); old_term=$(h_field "$lh" term)
   bak_node=$(h_field "$bh" node); bak_term=$(h_field "$bh" term)
-  echo "  主机房 leader=$old_node term=$old_term host=$lh"
-  echo "  备机房 leader=$bak_node term=$bak_term host=$bh"
+  echo "  主机房代表=$old_node term=$old_term host=$lh（当前全局主）"
+  echo "  备机房代表=$bak_node term=$bak_term host=$bh（无全局席位）"
+  [ "$(h_field "$lh" isMain)" = "true" ] || { check "场景1前主机房代表就是全局主" false; return; }
+  local pt_before; pt_before=$(max_parent_term)
 
   log "  kill -9 $lh（模拟主机房主节点崩溃）"
   kill9_host "$lh"
 
-  if dc_wait_leader 0 30; then check "主机房崩溃后重新选出唯一 Leader" true
-  else check "主机房崩溃后重新选出唯一 Leader" false; return; fi
+  if dc_wait_leader 0 30; then check "主机房崩溃后重新选出唯一子组代表" true
+  else check "主机房崩溃后重新选出唯一子组代表" false; return; fi
 
   local nh; nh=$(dc_leader_host 0)
   local new_node new_term
   new_node=$(h_field "$nh" node); new_term=$(h_field "$nh" term)
-  echo "  新 leader=$new_node host=$nh term=$new_term"
-  MAIN_LAST_TERM=$new_term
+  echo "  新代表=$new_node host=$nh term=$new_term"
 
-  check "新 Leader 落在主机房内（host 属于机房0）" [ "${DC[$nh]}" = 0 ]
-  check "新 Leader 与被杀节点不同（已换主）" [ "$new_node" != "$old_node" ]
-  check "主机房任期严格递增（term 增长）" [ "$new_term" -gt "$old_term" ]
+  check "新子组代表落在主机房内（host 属于机房0）" [ "${DC[$nh]}" = 0 ]
+  check "新子组代表与被杀节点不同（已换主）" [ "$new_node" != "$old_node" ]
+  check "主机房子组任期严格递增（term 增长）" [ "$new_term" -gt "$old_term" ]
 
-  # ---- 拓扑探测：两机房是否联动 ----
+  # ---- 全局席位交接：新代表必须重新夺得父组席位，且全局仍唯一 ----
+  local ok_g=1
+  wait_single_global_leader 30 "${HOSTS[@]}" || ok_g=0
+  check "席位交接后父组重新收敛（全网唯一主 + parentLeader 一致）" [ "$ok_g" = 1 ]
+  check "全局唯一主仍是主机房成员（机房优先级在换代后仍成立）" \
+    [ "$(h_field "$nh" isMain)" = "true" ]
+  check "全网 isMain=1（席位交接期间未出现双主）" [ "$(total_main)" = 1 ]
+
+  # ---- 双层证据：机房内隔离 + 跨机房联动 ----
   local b2; b2=$(dc_leader_host 1)
   local bak2_node bak2_term
   bak2_node=$(h_field "$b2" node); bak2_term=$(h_field "$b2" term)
-  echo "  备机房（未受影响）leader=$bak2_node term=$bak2_term"
-  if [ "$bak2_node" = "$bak_node" ] && [ "$bak2_term" = "$bak_term" ]; then NO_COUPLING_P1=1; fi
-  check "拓扑探测：备机房 Leader 未被主机房故障牵动（仍为原节点）" [ "$bak2_node" = "$bak_node" ]
-  check "拓扑探测：备机房 term 未因主机房换主而变化（两组无跨机房联动）" [ "$bak2_term" = "$bak_term" ]
-  check "全网 isMain=2（每房各一，双组并存）" [ "$(total_main)" = 2 ]
+  echo "  备机房（未受牵动）代表=$bak2_node term=$bak2_term"
+  check "隔离：备机房子组代表未被主机房故障牵动（仍为原节点）" [ "$bak2_node" = "$bak_node" ]
+  check "隔离：备机房子组 term 未变（机房内选举不受对侧影响）" [ "$bak2_term" = "$bak_term" ]
+
+  # 联动：备机房的【父组】Leader 应已切到主机房新代表的父组身份（端口 22001）
+  local expect_parent="node-${IP[$nh]}-22001"
+  check "联动：备机房父组 Leader 已切换为主机房新代表（父组认识新代表）" \
+    [ "$(h_field "$b2" parentLeader)" = "$expect_parent" ]
+
+  # 联动：父组任期因换代而推进，子组任期不受对侧影响
+  local pt_after; pt_after=$(max_parent_term)
+  check "联动：父组 term 因主机房换代而推进（$pt_before -> $pt_after）" \
+    [ "$pt_after" -gt "$pt_before" ]
+
+  MAIN_LAST_TERM=$new_term
+  GLOBAL_MAINS+=("$(total_main)")
 }
 
 # ============================ P2 场景2：杀光主机房 ============================
 phase2_kill_all_main() {
-  echo; log "P2 场景2：杀光主机房，看备机房选举"
+  echo; log "P2 场景2：杀光主机房，断言全局退化为【无主】"
   local bh; bh=$(dc_leader_host 1)
-  if [ -z "$bh" ]; then check "场景2前备机房存在 Leader" false; return; fi
+  if [ -z "$bh" ]; then check "场景2前备机房存在子组代表" false; return; fi
   local bak_node bak_term
   bak_node=$(h_field "$bh" node); bak_term=$(h_field "$bh" term)
-  echo "  备机房基线 leader=$bak_node term=$bak_term"
+  echo "  备机房代表基线：$bak_node term=$bak_term"
+  check "场景2前全局主在主机房（isMain=1）" [ "$(total_main)" = 1 ]
 
   log "  kill -9 主机房全部三台"
   local h
@@ -213,23 +299,36 @@ phase2_kill_all_main() {
   for h in "${DC0[@]}"; do alive "$h" && all_dead=0; done
   check "主机房三节点均已停止" [ "$all_dead" = 1 ]
 
-  if dc_wait_leader 1 20; then check "备机房仍维持唯一 Leader" true
-  else check "备机房仍维持唯一 Leader" false; return; fi
+  # ---- 机房内：备机房应照常运转，仍只有一份代表 ----
+  if dc_wait_leader 1 20; then check "备机房子组仍维持唯一代表（机房内正常运转）" true
+  else check "备机房子组仍维持唯一代表（机房内正常运转）" false; fi
 
   local n2; n2=$(dc_leader_host 1)
   local bak2_node bak2_term
   bak2_node=$(h_field "$n2" node); bak2_term=$(h_field "$n2" term)
-  echo "  备机房（主机房全灭后）leader=$bak2_node term=$bak2_term"
+  echo "  备机房（主机房全灭后）代表=$bak2_node term=$bak2_term"
+  check "备机房代表与故障前一致（主机房全灭未触发其子组重选）" [ "$bak2_node" = "$bak_node" ]
+  check "备机房子组 term 未变（无跨机房子组牵动）" [ "$bak2_term" = "$bak_term" ]
+
+  # ---- 全局：唯一性硬约束的必然结果——无主，而非备机房接管 ----
+  #
+  # 父组两成员权重 主机房2/备机房1，required=(2+1)/2+1=2。
+  # 主机房死透后备机房 self=1 < 2，永远凑不齐多数 → 无主。
+  # 这是"绝不允许双主"取舍的直接代价：宁可无主，也不允许降级接管产生第二个主。
+  # 若放任降级接管，两机房网络分区时两侧会同时降权、同时当选 → 双主。
+  local ok_none=1
+  wait_no_global_leader 5 20 "${HOSTS[@]}" || ok_none=0
+  check "全局退化为无主并稳定 5s（isMain=0，符合唯一性硬约束）" [ "$ok_none" = 1 ]
+  check "主机房全灭时全网 isMain=0（未出现降级接管的第二个主）" [ "$(total_main)" = 0 ]
+
   BAK_NODE_P2=$bak2_node
-  if [ "$bak2_node" = "$bak_node" ] && [ "$bak2_term" = "$bak_term" ]; then NO_COUPLING_P2=1; fi
-  check "备机房 Leader 与故障前一致（主机房全灭未触发其重选）" [ "$bak2_node" = "$bak_node" ]
-  check "备机房 term 未因主机房全灭而变化（无跨机房联动）" [ "$bak2_term" = "$bak_term" ]
-  check "全网 isMain=1（仅备机房，主机房已无主）" [ "$(total_main)" = 1 ]
+  BAK_TERM_P2=$bak2_term
+  GLOBAL_MAINS+=("$(total_main)")
 }
 
 # ============================ P3 场景3：重启主机房 ============================
 phase3_restart_main() {
-  echo; log "P3 场景3：重启全部主机房，看是否正常加入"
+  echo; log "P3 场景3：重启全部主机房，看是否重新夺回全局席位"
   local h
   for h in "${DC0[@]}"; do start_node "$h" >/dev/null; done
   sleep 5
@@ -238,68 +337,158 @@ phase3_restart_main() {
   for h in "${DC0[@]}"; do alive "$h" || all_alive=0; done
   check "主机房三节点均已存活（重启成功）" [ "$all_alive" = 1 ]
 
-  if dc_wait_leader 0 30; then check "主机房重新加入并选出唯一 Leader" true
-  else check "主机房重新加入并选出唯一 Leader" false; return; fi
+  if dc_wait_leader 0 30; then check "主机房重新加入并选出唯一子组代表" true
+  else check "主机房重新加入并选出唯一子组代表" false; return; fi
 
   local nh; nh=$(dc_leader_host 0)
   local new_term; new_term=$(h_field "$nh" term)
-  echo "  主机房重新加入后 leader=$(h_field "$nh" node) host=$nh term=$new_term（灭房前 term=$MAIN_LAST_TERM）"
-  check "主机房 Leader 落在主机房内" [ "${DC[$nh]}" = 0 ]
-  check "主机房 term 不低于灭房前（mmap 持久化挂回，非从 1 重来）" [ "$new_term" -ge "$MAIN_LAST_TERM" ]
-  check "全网 isMain=2（恢复双 Leader 形态）" [ "$(total_main)" = 2 ]
+  echo "  主机房重新加入后代表=$(h_field "$nh" node) host=$nh term=$new_term（灭房前 term=$MAIN_LAST_TERM）"
+  check "主机房子组代表落在主机房内" [ "${DC[$nh]}" = 0 ]
+  check "主机房子组 term 不低于灭房前（mmap 持久化挂回，非从 1 重来）" [ "$new_term" -ge "$MAIN_LAST_TERM" ]
 
-  # ---- 备机房应全程未被打断 ----
-  # 注意：dc_leader_host 返回 host 短名，须再取 nodeId 才能与 BAK_NODE_P2 比较
+  # ---- 全局席位夺回 ----
+  local ok_g=1
+  wait_single_global_leader 30 "${HOSTS[@]}" || ok_g=0
+  check "主机房重入后父组重新收敛" [ "$ok_g" = 1 ]
+  check "全局主夺回到主机房（机房优先级在重启后仍成立）" \
+    [ "$(h_field "$nh" isMain)" = "true" ]
+  check "全网 isMain=1（恢复为唯一主，未产生双主）" [ "$(total_main)" = 1 ]
+
+  local expect_parent="node-${IP[$nh]}-22001"
+  check "父组 Leader 指向主机房新代表" \
+    [ "$(global_parent_leader)" = "$expect_parent" ]
+
+  # ---- 备机房应全程未被打断（机房内隔离）----
   local bh; bh=$(dc_leader_host 1)
   if [ -z "$bh" ]; then
-    check "备机房 Leader 在主机房重入期间未被打断（仍为原节点）" false
+    check "备机房代表在主机房重入期间未被打断（仍为原节点）" false
   else
-    check "备机房 Leader 在主机房重入期间未被打断（仍为原节点）" [ "$(h_field "$bh" node)" = "$BAK_NODE_P2" ]
+    check "备机房代表在主机房重入期间未被打断（仍为原节点）" \
+      [ "$(h_field "$bh" node)" = "$BAK_NODE_P2" ]
+    check "备机房子组 term 仍未被牵动" [ "$(h_field "$bh" term)" = "$BAK_TERM_P2" ]
   fi
+  GLOBAL_MAINS+=("$(total_main)")
 }
 
 # ============================ P4 场景4：杀光备机房 ============================
 phase4_kill_all_backup() {
-  echo; log "P4 场景4：杀光备机房，看主机房"
-  local mh; mh=$(dc_leader_host 0)
-  if [ -z "$mh" ]; then check "场景4前主机房存在 Leader" false; return; fi
-  local m_node m_term
-  m_node=$(h_field "$mh" node); m_term=$(h_field "$mh" term)
-  echo "  主机房基线 leader=$m_node term=$m_term"
+  echo; log "P4 场景4：杀光备机房，断言主机房凭权重【单方成主】"
+  local mh; mh=$(dc_main_host 0)
+  if [ -z "$mh" ]; then check "场景4前主机房存在全局主" false; return; fi
+  local m_node m_term m_pt
+  m_node=$(h_field "$mh" node); m_term=$(h_field "$mh" term); m_pt=$(h_field "$mh" parentTerm)
+  echo "  主机房基线（全局主）：$m_node term=$m_term parentTerm=$m_pt"
+  check "场景4前全网 isMain=1" [ "$(total_main)" = 1 ]
 
   log "  kill -9 备机房全部三台"
   local h
   for h in "${DC1[@]}"; do kill9_host "$h"; done
-  sleep 4
+
+  # 必须跨过 check-quorum 判定窗口（quorumCheckTimeout 默认 5000ms）再断言：
+  # 若 self 权重口径有误，主机房父组 Leader 会在此窗口内被误降级，导致本场景退化为无主。
+  sleep 8
 
   local all_dead=1
   for h in "${DC1[@]}"; do alive "$h" && all_dead=0; done
   check "备机房三节点均已停止" [ "$all_dead" = 1 ]
 
-  if dc_wait_leader 0 20; then check "主机房仍维持唯一 Leader" true
-  else check "主机房仍维持唯一 Leader" false; return; fi
+  # ---- 核心：不对称权重使主机房无需对侧任何选票即可维持多数 ----
+  local n2; n2=$(dc_main_host 0)
+  if [ -z "$n2" ]; then
+    check "主机房凭权重单方成主（self=2 ≥ required=2，无需对侧选票）" false
+  else
+    local m2_node m2_term m2_pt
+    m2_node=$(h_field "$n2" node); m2_term=$(h_field "$n2" term); m2_pt=$(h_field "$n2" parentTerm)
+    echo "  主机房（备机房全灭后）=$m2_node term=$m2_term parentTerm=$m2_pt"
 
-  local n2; n2=$(dc_leader_host 0)
-  local m2_node m2_term
-  m2_node=$(h_field "$n2" node); m2_term=$(h_field "$n2" term)
-  echo "  主机房（备机房全灭后）leader=$m2_node term=$m2_term"
-  check "主机房 Leader 与故障前一致（备机房全灭未触发其重选）" [ "$m2_node" = "$m_node" ]
-  check "主机房 term 未因备机房全灭而变化（无跨机房联动）" [ "$m2_term" = "$m_term" ]
-  check "全网 isMain=1（仅主机房，备机房已无主）" [ "$(total_main)" = 1 ]
+    check "主机房单方成主且全局 isMain=1（备机房全灭未触发无主）" [ "$(total_main)" = 1 ]
+    check "全局主仍是同一节点（备机房全灭未触发主机房重选）" [ "$m2_node" = "$m_node" ]
+    check "主机房子组 term 未变（机房内不受对侧影响）" [ "$m2_term" = "$m_term" ]
+    check "父组 term 未变（check-quorum 未误降级、父组未被扰动）" [ "$m2_pt" = "$m_pt" ]
+    check "主机房代表仍持有父组席位（parent=true）" [ "$(h_field "$n2" parent)" = "true" ]
+  fi
+
+  GLOBAL_MAINS+=("$(total_main)")
 }
 
-# ============================ P5 拓扑探测结论 ============================
+# ============================ P4b 恢复备机房：不得抢夺全局席位 ============================
+phase4b_restore_backup() {
+  echo; log "P4b 恢复备机房，断言其不得抢夺主机房的全局席位"
+  local mh; mh=$(dc_main_host 0)
+  if [ -z "$mh" ]; then check "P4b 前主机房仍持有全局席位" false; return; fi
+  local m_node; m_node=$(h_field "$mh" node)
+
+  local h
+  for h in "${DC1[@]}"; do start_node "$h" >/dev/null; done
+  sleep 5
+
+  local all_alive=1
+  for h in "${DC1[@]}"; do alive "$h" || all_alive=0; done
+  check "备机房三节点均已恢复存活" [ "$all_alive" = 1 ]
+
+  if dc_wait_leader 1 30; then check "备机房重新选出唯一子组代表" true
+  else check "备机房重新选出唯一子组代表" false; fi
+
+  # 给父组足够时间观察备机房重入（跨机房选举超时 3-5s，取 12s 覆盖多轮）
+  sleep 12
+
+  local ok_g=1
+  wait_single_global_leader 20 "${HOSTS[@]}" || ok_g=0
+  check "备机房重入后父组仍收敛（全网唯一主 + parentLeader 一致）" [ "$ok_g" = 1 ]
+  check "全局 isMain 仍为 1（备机房重入未产生双主）" [ "$(total_main)" = 1 ]
+
+  local n2; n2=$(dc_main_host 0)
+  check "全局主仍在主机房（低权重机房重入不抢夺席位，无抖动）" [ -n "$n2" ]
+  check "全局主节点未因备机房重入而改变" [ "$(h_field "$n2" node)" = "$m_node" ]
+  check "备机房代表未持有全局席位（intra=true / isMain=false）" \
+    [ "$(h_field "$(dc_leader_host 1)" isMain)" = "false" ]
+
+  GLOBAL_MAINS+=("$(total_main)")
+}
+
+# ============================ P5 汇总判定 ============================
 phase5_topology_verdict() {
-  echo; log "P5 拓扑探测结论（两机房是否真有跨机房联动）"
-  echo "  证据1：P0 基线全网 isMain=2 —— 两机房各自独立选出 Leader"
-  echo "  证据2：P1 杀主机房 Leader 后，备机房 term 不变"
-  echo "  证据3：P2 主机房全灭后，备机房 leader/term 均不变"
-  echo "  代码依据：Speedboat.doStartCrossDatacenterMode 只以 allNodes.get(datacenterIndex)"
-  echo "            建组，peer 列表仅含本机房节点；election.cross.timeout 被读取但未接入；"
-  echo "            单机房模式传入的 voteWeightStrategy 在跨机房模式未传；级联父组未实现。"
-  check "拓扑探测：两机房各自独立成组（基线即 2 个 Leader）" [ "$BASELINE_MAIN" = 2 ]
-  check "拓扑探测：主机房故障未向备机房传播 term（两组无联动）" [ "$NO_COUPLING_P1" = 1 ]
-  check "拓扑探测：主机房全灭后备机房未被牵动（两组无联动）" [ "$NO_COUPLING_P2" = 1 ]
+  echo; log "P5 汇总判定（唯一性硬约束 + 双层级联是否达成）"
+  echo "  设计：isMain = 子组 Leader && 父组 Leader；父组权重 主机房2/备机房1，required=2"
+  echo "  各阶段全网 isMain 计数：${GLOBAL_MAINS[*]-（无采样）}"
+  echo "  P0 基线 isMain=$BASELINE_MAIN；父组 term 基线(max)=$BASELINE_PT；终态(max)=$(max_parent_term)"
+
+  # ---- V1：基线从"两房各一主"收敛为"全局唯一主" ----
+  check "V1 基线全局 isMain 计数 = 1（由历史值 2 收敛为 1）" [ "$BASELINE_MAIN" = 1 ]
+
+  # ---- V7：全程任意时刻全局 isMain ≤ 1（硬约束，绝无双主）----
+  local uniq=1 n=0
+  for n in "${GLOBAL_MAINS[@]-}"; do
+    case "$n" in ''|*[!0-9]*) continue;; esac
+    [ "$n" -le 1 ] || uniq=0
+  done
+  check "V7 全程任意时刻全局 isMain ≤ 1（绝不允许双主）" [ "$uniq" = 1 ]
+
+  # ---- V2：父组 term 独立单调，且因跨机房事件推进（证明父组是活的独立实例）----
+  local pt_final; pt_final=$(max_parent_term)
+  check "V2 父组 term 独立推进且不回退（$BASELINE_PT -> $pt_final）" [ "$pt_final" -gt "$BASELINE_PT" ]
+
+  # ---- 两组身份与端口分离（父子组不共用端口/身份，避免消息串组）----
+  local sep=1
+  for h in "${HOSTS[@]}"; do
+    [ "$(h_field "$h" parentPort)" = "22001" ] || sep=0
+    local nid pid
+    nid=$(h_field "$h" node); pid=$(h_field "$h" parentLeader)
+    # 父组身份按父组端口推导，与子组身份端口必然不同
+    case "$nid" in *-21001) ;; *) sep=0;; esac
+    case "$pid" in *-22001|none) ;; *) sep=0;; esac
+  done
+  check "父子两组端口分离（子组 21001 / 父组 22001），身份互不串组" [ "$sep" = 1 ]
+
+  # ---- 机房内隔离贯穿全程：两房各自始终恰好一份代表 ----
+  check "结束时全网仍保持每房各一份子组代表（共 2 份）" [ "$(total_intra)" = 2 ]
+
+  echo
+  echo "  结论："
+  echo "    唯一性   —— 全程 isMain 计数 ${GLOBAL_MAINS[*]-} 均 ≤ 1，双主在结构上被排除"
+  echo "    机房优先 —— 所有有主阶段全局主均在主机房；主机房可单方成主（杀光备机房仍唯一）"
+  echo "    退化取舍 —— 杀光主机房时全局为【无主】而非备机房接管（唯一性硬约束的必然代价）"
+  echo "               运维兜底：人工升级 API 见设计文档 §8.6"
 }
 
 # ============================ 主流程 ============================
@@ -309,6 +498,7 @@ run_all() {
   phase2_kill_all_main
   phase3_restart_main
   phase4_kill_all_backup
+  phase4b_restore_backup
   phase5_topology_verdict
 
   echo; log "P6 清理"

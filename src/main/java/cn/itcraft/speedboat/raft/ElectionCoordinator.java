@@ -260,6 +260,16 @@ final class ElectionCoordinator {
      * </ol>
      */
     PreVoteResponse doHandlePreVoteRequest(PreVoteRequest request) {
+        // 跨机房父组：未持有代表席位的节点不代表本机房应答预票。
+        // 与 doHandleRequestVote 的席位门控对称——预票虽不改任何持久状态，
+        // 但对侧据以判断"本机房是否同意开选"；若机房内三个进程各应一票，
+        // 会凭空凑成多数，使低优先级机房的探测恒通过、随后反复进入正式选举抬 term。
+        if (!ctx.seatHeld) {
+            logger.debug("Node {} holds no representative seat, rejecting pre-vote from {}",
+                ctx.nodeId, request.getCandidateId());
+            return new PreVoteResponse(request.getRequestId(), ctx.term.getCurrent(), false);
+        }
+
         long localTerm = ctx.term.getCurrent();
         if (request.getTerm() <= localTerm) {
             logger.debug("Node {} rejects pre-vote from {} (stale probe term {} <= {})",
@@ -285,7 +295,33 @@ final class ElectionCoordinator {
             return new PreVoteResponse(request.getRequestId(), localTerm, false);
         }
 
+        // 机房优先级闸门：与 doHandleRequestVote 同口径，低优先级机房的探测在第一关即被挡下。
+        //
+        // 预票不修改 term/持久状态，故此处无需像 RequestVote 那样"先对齐 term 再拒绝"——
+        // 那条顺序要求是为了让本节点 term 不落后于对侧，而探测根本不推进任期。
+        // 挡在预票阶段的收益是：低优先级机房连正式选举都不会进入，term 不再空转攀升。
+        //
+        // 缺省策略 shouldGrantVote() 恒放行，单机房与既有权重策略行为完全不变。
+        if (ctx.voteWeightStrategy != null) {
+            String candidateDatacenter = request.getDatacenter() != null
+                ? request.getDatacenter()
+                : ctx.datacenter;
+            VoteContext candidateContext = VoteContext.forDatacenter(
+                request.getCandidateId(), candidateDatacenter, probeTermOf(request));
+            if (!ctx.voteWeightStrategy.shouldGrantVote(candidateContext)) {
+                logger.info(
+                    "Node {} (dc={}) refuses pre-vote to {} (dc={}): lower datacenter priority",
+                    ctx.nodeId, ctx.datacenter, request.getCandidateId(), candidateDatacenter);
+                return new PreVoteResponse(request.getRequestId(), localTerm, false);
+            }
+        }
+
         return new PreVoteResponse(request.getRequestId(), localTerm, true);
+    }
+
+    /** 预投票上下文任期：优先取探测自带的 probe term，缺失时回退本地当前任期。 */
+    private long probeTermOf(PreVoteRequest request) {
+        return request.getTerm() > 0 ? request.getTerm() : ctx.term.getCurrent();
     }
 
     // ==================== 投票受理 ====================

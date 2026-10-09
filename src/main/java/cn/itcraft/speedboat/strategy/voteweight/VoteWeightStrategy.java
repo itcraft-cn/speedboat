@@ -71,4 +71,27 @@ public interface VoteWeightStrategy {
     default boolean shouldGrantVote(VoteContext candidate) {
         return true;
     }
+
+    /**
+     * 法定多数派的分母是否按<b>机房聚合</b>计算。
+     *
+     * <p>缺省 {@code false}，既有逐节点累加行为完全不变。仅
+     * {@link DatacenterPriorityVoteWeightStrategy}（跨机房级联父组）置为 {@code true}。</p>
+     *
+     * <p><b>为什么父组必须按机房聚合：</b>{@code peerIds} 在 Raft 里同时承担两个职责——
+     * 消息投递集合，与多数派分母的成员集合。父组里这两者<b>天然冲突</b>：为保证请求能
+     * 送达对侧"尚未确定是谁"的代表，peer 列表必须铺满对侧机房的<b>全部</b>节点；但对侧
+     * 真正持有席位的代表只有<b>一个</b>。若仍按节点累加，分母会被虚增——以两机房各 3 节点
+     * 为例，主机房自身权重 2、对侧 3 个 peer 各 1，逐节点累加得 total=4、required=3，
+     * 而主机房单方仅 2，<b>永远凑不齐多数</b>，整个父组连基线都选不出主。</p>
+     *
+     * <p>按机房聚合后，同一机房的多个 peer 视为<b>同一席位的多条投递路径</b>，权重只计一次：
+     * total = 主机房 2 + 备机房 1 = 3，required = 3/2+1 = 2。此时主机房 self=2 ≥ 2 可单方成主，
+     * 备机房 self=1 &lt; 2 不可单方成主——正是不对称权重排除双主的原始推导。</p>
+     *
+     * @return true 表示分母按机房去重聚合；false 表示按节点逐个累加（缺省）
+     */
+    default boolean quorumByDatacenter() {
+        return false;
+    }
 }
