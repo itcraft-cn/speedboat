@@ -85,7 +85,29 @@
 
 **合计 33 通过 / 0 失败。**
 
-## 6. 结论与建议
+## 6. 附带发现：dependabot 错配升级阻断 Java 8
+
+本次验证首次跑通用的是 10-03 构建的 jar。为了确认结果对应当前 HEAD，从 HEAD 重建后**在 Java 8 上直接崩溃**：
+
+```
+java.lang.UnsupportedClassVersionError: ch/qos/logback/core/joran/spi/JoranException
+has been compiled by a more recent version of the Java Runtime (class file version 55.0)
+```
+
+成因：上游 dependabot 在 10-08 把两个 logback 组件**各自独立升级**，造成配对错配：
+
+| 组件 | PR#2 / PR#3 之前 | 之后 | class major | 要求 |
+|------|------------------|------|-------------|------|
+| `logback-classic` | 1.2.9 | **1.2.13** | 50 | Java 6/8 + SLF4J 1.7 |
+| `logback-core` | 1.2.9 | **1.5.34** | **55** | **Java 11** + SLF4J 2.x |
+
+classic 仍钉在 1.2.13（面向 SLF4J 1.7），core 却跳到 1.5.34（面向 SLF4J 2.x），两者既**跨 Java 基线**又**跨 SLF4J 主线**，而项目目标是 Java 8 + SLF4J 1.7.32。两个 dependabot 提交信息中均**未引用任何安全通告**，属于常规版本跳跃，因此按 Java 8 基线把 core 对齐回 classic 的 1.2.13。
+
+回归：`mvn clean test` **532/532 通过**；随后用修正后的 jar 重跑六机验证，仍 **33/33 通过**。
+
+> 启示：依赖树里"同一 groupId 下互相依赖的组件"必须成对升级；单看 dependabot 的单组件 PR 无法发现这类错配。若日后要上 logback 1.5.x，需同时升级 classic 与 slf4j-api 到 2.x，并把 Java 基线提升到 11。
+
+## 7. 结论与建议
 
 四个场景"全部通过"的**真实原因**是两机房各自独立成组，而非跨机房级联容错生效——这一点必须与"跨机房能力已具备"区分开。若业务诉求是"主机房优先 + 备机房独立存活"，当前实现可满足；若诉求是"单个集群跨两机房、机房级故障仍有多数派"，当前实现**不满足**，需补齐级联父组或机房权重 quorum。
 
@@ -95,7 +117,7 @@
 - 修正跨机房模式漏传 `voteWeightStrategy`，使 `DatacenterVoteWeightStrategy` / `PreferNodeVoteWeightStrategy` 在跨机房场景生效；
 - 明确 `datacenter=` 配置语义：当前设置后两个机房会拿到**同一个** ID，`resolveDatacenterId` 未按索引区分。
 
-## 7. 环境注意事项
+## 8. 环境注意事项
 
 - 六台主机**时区不一致**（17x 为 UTC+8、5x 为 UTC），日志时间戳相差 8 小时；本验证不依赖跨机时间比较，但若后续要做跨机时序断言需先统一时钟。
 - vbox 三机环境在本次验证期间处于关机状态，为回归公共库抽取而临时拉起，验证完成后未主动关机。
