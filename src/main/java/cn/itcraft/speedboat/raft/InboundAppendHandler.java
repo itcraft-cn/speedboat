@@ -1,15 +1,13 @@
 package cn.itcraft.speedboat.raft;
-
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
-import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import cn.itcraft.speedboat.rpc.HeartbeatResponse;
+import cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy;
 import java.util.ArrayList;
 import java.util.List;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * 入站日志复制处理器（内部协作器，非公开 API）。
  *
@@ -92,7 +90,7 @@ final class InboundAppendHandler {
         // 选举定时器永不到期，sticky 让位虽生效却无发起时机），定时器照常到期、
         // doStartPreVote 以 probe term 反复探测直至接管完成。
         // peer（缺省）：恒冻结，与引入策略前逐字节等价。
-        cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadership = ctx.leadershipPolicy;
+        LeadershipPolicy leadership = ctx.leadershipPolicy;
         // 现任 Leader 机房：peer 登记查询（非本机；本机即 Leader 的分支在下方 selfIsLeaderDc 处理）
         String leaderDc = ctx.peerDatacenters.get(request.getLeaderId());
         boolean selfIsLeaderDc = ctx.nodeId.equals(request.getLeaderId());

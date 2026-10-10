@@ -1,10 +1,11 @@
 package cn.itcraft.speedboat.raft;
-
+import cn.itcraft.speedboat.raft.task.ElectionTimeoutTask;
 import cn.itcraft.speedboat.rpc.PreVoteRequest;
 import cn.itcraft.speedboat.rpc.PreVoteResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
 import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import cn.itcraft.speedboat.strategy.voteweight.PriorityCodec;
 import java.util.HashSet;
@@ -350,7 +351,7 @@ final class ElectionCoordinator {
         // 高权重主机房的夺回通道被永久堵死（term 膨胀防护的前提是"不再选"）。
         // 让位决策全部收敛在 {@code LeadershipPolicy}（peer 缺省恒不让位，零行为变更）；
         // 单向严格（高夺低可、低夺高不可），全网无乒乓收敛到最高权重机房。
-        cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadership = ctx.leadershipPolicy;
+        LeadershipPolicy leadership = ctx.leadershipPolicy;
         // 现任 Leader 所在机房：self 即 Leader 时用本机房（peerDatacenters 只登记 peers），
         // 否则按 peer 登记查询（未登记归一空串→ 兜底权重）
         String incumbentLeaderDc;
@@ -514,7 +515,7 @@ final class ElectionCoordinator {
             // 判定与 InboundAppendHandler.freezeHeartbeatElectionTimer 同一策略口径。
             boolean takeoverProbe = false;
             if (elapsedMs < timeoutMs && ctx.leaderId != null) {
-                cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy policy = ctx.leadershipPolicy;
+                LeadershipPolicy policy = ctx.leadershipPolicy;
                 String leaderDc = ctx.peerDatacenters.get(ctx.leaderId);
                 if (!policy.freezeHeartbeatElectionTimer(leaderDc, ctx.datacenter)) {
                     takeoverProbe = true;
@@ -562,7 +563,7 @@ final class ElectionCoordinator {
         long timeout = ctx.electionTimeout.getNext();
 
         ctx.setElectionTimeoutFuture(ctx.executor.schedule(
-            new cn.itcraft.speedboat.raft.task.ElectionTimeoutTask(() -> runElectionTimeout(timeout)), timeout));
+            new ElectionTimeoutTask(() -> runElectionTimeout(timeout)), timeout));
     }
 
     // ==================== 依赖注入（消环挂点） ====================

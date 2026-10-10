@@ -1,5 +1,4 @@
 package cn.itcraft.speedboat.persistence;
-
 import cn.itcraft.speedboat.raft.CommandLogEntry;
 import cn.itcraft.speedboat.raft.ElectionTimeout;
 import cn.itcraft.speedboat.raft.LogEntry;
@@ -8,25 +7,25 @@ import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
+import cn.itcraft.speedboat.rpc.LockOpRequest;
+import cn.itcraft.speedboat.rpc.LockOpResponse;
 import cn.itcraft.speedboat.rpc.PreVoteRequest;
 import cn.itcraft.speedboat.rpc.PreVoteResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-
+import cn.itcraft.speedboat.transport.TransportLayer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 /**
  * RaftStore 契约验收测试（Phase D 持久化接口前置）：
  *
@@ -135,7 +134,7 @@ class RaftStoreContractTest {
      * 测试用 TransportLayer 桩：同意预投票/投票/心跳/日志请求，
      * 用于验证 RaftNode 与 RaftStore 的“先持久化后可见”接线。
      */
-    private static class MockTransportForTest implements cn.itcraft.speedboat.transport.TransportLayer {
+    private static class MockTransportForTest implements TransportLayer {
         @Override
         public CompletableFuture<RequestVoteResponse> sendRequestVote(String peerId, RequestVoteRequest request) {
             return CompletableFuture.completedFuture(
@@ -149,12 +148,12 @@ class RaftStoreContractTest {
         }
 
         @Override
-        public CompletableFuture<cn.itcraft.speedboat.rpc.LockOpResponse> sendLockOp(String peerId, cn.itcraft.speedboat.rpc.LockOpRequest request) {
-            return CompletableFuture.completedFuture(new cn.itcraft.speedboat.rpc.LockOpResponse(request.getRequestId(), false, -1));
+        public CompletableFuture<LockOpResponse> sendLockOp(String peerId, LockOpRequest request) {
+            return CompletableFuture.completedFuture(new LockOpResponse(request.getRequestId(), false, -1));
         }
 
         @Override
-        public void setLockOpHandler(cn.itcraft.speedboat.transport.TransportLayer.LockOpHandler handler) {
+        public void setLockOpHandler(TransportLayer.LockOpHandler handler) {
             // 测试桩：不处理锁转发
         }
 

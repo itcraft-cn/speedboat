@@ -1,20 +1,17 @@
 package cn.itcraft.speedboat.raft;
-
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
+import cn.itcraft.speedboat.rpc.HeartbeatResponse;
+import cn.itcraft.speedboat.rpc.LockOpRequest;
+import cn.itcraft.speedboat.rpc.LockOpResponse;
 import cn.itcraft.speedboat.rpc.PreVoteRequest;
 import cn.itcraft.speedboat.rpc.PreVoteResponse;
-import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
 import cn.itcraft.speedboat.strategy.group.GroupStrategy;
 import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
 import cn.itcraft.speedboat.transport.TransportLayer;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.DisplayName;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -22,9 +19,10 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
-
 class RaftNodeTest {
 
     private RaftNode node;
@@ -375,7 +373,7 @@ class RaftNodeTest {
         private RequestVoteHandler requestVoteHandler;
         private HeartbeatHandler heartbeatHandler;
         private AppendEntriesHandler appendEntriesHandler;
-        private cn.itcraft.speedboat.transport.TransportLayer.PreVoteHandler preVoteHandler;
+        private TransportLayer.PreVoteHandler preVoteHandler;
 
         void setVoteResponse(boolean granted) {
             this.voteGranted = granted;
@@ -403,12 +401,12 @@ class RaftNodeTest {
         }
 
         @Override
-        public CompletableFuture<cn.itcraft.speedboat.rpc.LockOpResponse> sendLockOp(String peerId, cn.itcraft.speedboat.rpc.LockOpRequest request) {
-            return CompletableFuture.completedFuture(new cn.itcraft.speedboat.rpc.LockOpResponse(request.getRequestId(), false, -1));
+        public CompletableFuture<LockOpResponse> sendLockOp(String peerId, LockOpRequest request) {
+            return CompletableFuture.completedFuture(new LockOpResponse(request.getRequestId(), false, -1));
         }
 
         @Override
-        public void setLockOpHandler(cn.itcraft.speedboat.transport.TransportLayer.LockOpHandler handler) {
+        public void setLockOpHandler(TransportLayer.LockOpHandler handler) {
             // 测试桩：不处理锁转发
         }
 
@@ -435,7 +433,7 @@ class RaftNodeTest {
         }
 
         @Override
-        public void setPreVoteHandler(cn.itcraft.speedboat.transport.TransportLayer.PreVoteHandler handler) {
+        public void setPreVoteHandler(TransportLayer.PreVoteHandler handler) {
             this.preVoteHandler = handler;
         }
     }

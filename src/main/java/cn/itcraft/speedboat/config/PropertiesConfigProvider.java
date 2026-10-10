@@ -1,9 +1,12 @@
 package cn.itcraft.speedboat.config;
-
 import cn.itcraft.speedboat.config.SpeedboatConsts;
 import cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy;
+import cn.itcraft.speedboat.strategy.voteweight.EvenNodeVoteWeightStrategy;
+import cn.itcraft.speedboat.strategy.voteweight.PreferNodeVoteWeightStrategy;
+import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -149,7 +152,7 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
     }
     
     @Override
-    public cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy getVoteWeightStrategy() {
+    public VoteWeightStrategy getVoteWeightStrategy() {
         String mode = properties.getProperty("vote.weight.strategy");
         if (mode == null) {
             return null;
@@ -165,23 +168,23 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
             }
             String weight = properties.getProperty("vote.weight.prefer.weight", "3");
             int extra = Integer.parseInt(weight.trim());
-            return new cn.itcraft.speedboat.strategy.voteweight.PreferNodeVoteWeightStrategy(prefer.trim(), extra);
+            return new PreferNodeVoteWeightStrategy(prefer.trim(), extra);
         }
         if ("even".equals(modeVal)) {
-            return new cn.itcraft.speedboat.strategy.voteweight.EvenNodeVoteWeightStrategy();
+            return new EvenNodeVoteWeightStrategy();
         }
         throw new IllegalArgumentException("Unknown vote.weight.strategy: " + modeVal);
     }
 
     @Override
-    public cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig() {
+    public MembershipConfig getMembershipConfig() {
         String autoRemoval = properties.getProperty("membership.auto.removal");
         if (autoRemoval == null) {
-            return new cn.itcraft.speedboat.config.MembershipConfig();
+            return new MembershipConfig();
         }
         boolean enable = Boolean.parseBoolean(autoRemoval.trim());
-        cn.itcraft.speedboat.config.MembershipConfig def = new cn.itcraft.speedboat.config.MembershipConfig();
-        return new cn.itcraft.speedboat.config.MembershipConfig(
+        MembershipConfig def = new MembershipConfig();
+        return new MembershipConfig(
             def.getHealthCheckIntervalMs(), def.getFailureThreshold(), def.getConfirmationPeriods(),
             def.getRegistryCheckIntervalMs(), def.getRegistryImpl(), enable);
     }
@@ -226,15 +229,15 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
     public String getLeadershipMode() {
         String value = properties.getProperty("crossdc.leadership");
         if (value == null || value.trim().isEmpty()) {
-            return cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.MODE_PEER;
+            return LeadershipPolicy.MODE_PEER;
         }
         String normalized = value.trim().toLowerCase();
-        if (cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.MODE_DOMINANT.equals(normalized)
-            || cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.MODE_PEER.equals(normalized)) {
+        if (LeadershipPolicy.MODE_DOMINANT.equals(normalized)
+            || LeadershipPolicy.MODE_PEER.equals(normalized)) {
             return normalized;
         }
         logger.warn("Unknown crossdc.leadership value: {}, falling back to peer", value);
-        return cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.MODE_PEER;
+        return LeadershipPolicy.MODE_PEER;
     }
 
 

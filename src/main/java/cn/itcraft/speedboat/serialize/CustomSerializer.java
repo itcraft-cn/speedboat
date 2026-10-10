@@ -1,10 +1,18 @@
 package cn.itcraft.speedboat.serialize;
-
+import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
+import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
+import cn.itcraft.speedboat.rpc.HeartbeatRequest;
+import cn.itcraft.speedboat.rpc.HeartbeatResponse;
+import cn.itcraft.speedboat.rpc.LockOpRequest;
+import cn.itcraft.speedboat.rpc.LockOpResponse;
+import cn.itcraft.speedboat.rpc.PreVoteRequest;
+import cn.itcraft.speedboat.rpc.PreVoteResponse;
+import cn.itcraft.speedboat.rpc.RequestVoteRequest;
+import cn.itcraft.speedboat.rpc.RequestVoteResponse;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.zip.CRC32;
-
 /**
  * CustomSerializer 类。
  * 
@@ -25,17 +33,17 @@ public class CustomSerializer {
     
     public CustomSerializer(Serializer payloadSerializer) {
         this.payloadSerializer = payloadSerializer;
-        registerType(1, cn.itcraft.speedboat.rpc.RequestVoteRequest.class);
-        registerType(2, cn.itcraft.speedboat.rpc.RequestVoteResponse.class);
-        registerType(3, cn.itcraft.speedboat.rpc.HeartbeatRequest.class);
-        registerType(4, cn.itcraft.speedboat.rpc.HeartbeatResponse.class);
-        registerType(5, cn.itcraft.speedboat.rpc.AppendEntriesRequest.class);
-        registerType(6, cn.itcraft.speedboat.rpc.AppendEntriesResponse.class);
-        registerType(7, cn.itcraft.speedboat.rpc.PreVoteRequest.class);
-        registerType(8, cn.itcraft.speedboat.rpc.PreVoteResponse.class);
+        registerType(1, RequestVoteRequest.class);
+        registerType(2, RequestVoteResponse.class);
+        registerType(3, HeartbeatRequest.class);
+        registerType(4, HeartbeatResponse.class);
+        registerType(5, AppendEntriesRequest.class);
+        registerType(6, AppendEntriesResponse.class);
+        registerType(7, PreVoteRequest.class);
+        registerType(8, PreVoteResponse.class);
         // 命名锁转发协议（2026-09-18 设计）：非 Leader 成员锁操作 → Leader
-        registerType(9, cn.itcraft.speedboat.rpc.LockOpRequest.class);
-        registerType(10, cn.itcraft.speedboat.rpc.LockOpResponse.class);
+        registerType(9, LockOpRequest.class);
+        registerType(10, LockOpResponse.class);
     }
     
     private void registerType(int id, Class<?> clazz) {

@@ -1,8 +1,10 @@
 package cn.itcraft.speedboat.raft;
-
+import cn.itcraft.speedboat.config.MembershipConfig;
 import cn.itcraft.speedboat.config.SpeedboatConsts;
 import cn.itcraft.speedboat.raft.executor.RaftNodeExecutor;
 import cn.itcraft.speedboat.raft.report.RaftNodeReport;
+import cn.itcraft.speedboat.raft.task.HeartbeatTask;
+import cn.itcraft.speedboat.raft.task.MemberCheckTask;
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
@@ -13,7 +15,11 @@ import cn.itcraft.speedboat.rpc.PreVoteRequest;
 import cn.itcraft.speedboat.rpc.PreVoteResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
+import cn.itcraft.speedboat.statemachine.StateMachine;
 import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy;
+import cn.itcraft.speedboat.strategy.membership.HealthCheckStrategy;
+import cn.itcraft.speedboat.strategy.membership.RegistryStrategy;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -428,19 +434,19 @@ public class RaftNodeImpl implements RaftNode {
         quorum.setPeerDatacenter(peerId, datacenter);
     }
 
-    public cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig() {
+    public MembershipConfig getMembershipConfig() {
         return ctx.membershipConfig;
     }
 
-    public cn.itcraft.speedboat.strategy.membership.HealthCheckStrategy getHealthCheckStrategy() {
+    public HealthCheckStrategy getHealthCheckStrategy() {
         return ctx.healthCheckStrategy;
     }
 
-    public cn.itcraft.speedboat.strategy.membership.RegistryStrategy getRegistryStrategy() {
+    public RegistryStrategy getRegistryStrategy() {
         return ctx.registryStrategy;
     }
 
-    public cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy getChangeValidationStrategy() {
+    public ChangeValidationStrategy getChangeValidationStrategy() {
         return ctx.changeValidationStrategy;
     }
 
@@ -448,11 +454,11 @@ public class RaftNodeImpl implements RaftNode {
         return ctx.failureRecords;
     }
 
-    public cn.itcraft.speedboat.statemachine.StateMachine getStateMachine() {
+    public StateMachine getStateMachine() {
         return ctx.getStateMachine();
     }
 
-    public void setStateMachine(cn.itcraft.speedboat.statemachine.StateMachine stateMachine) {
+    public void setStateMachine(StateMachine stateMachine) {
         ctx.setStateMachine(stateMachine);
     }
 
@@ -734,7 +740,7 @@ public class RaftNodeImpl implements RaftNode {
             ? ctx.groupStrategy.getHeartbeatInterval() : 50;
 
         ctx.setHeartbeatFuture(ctx.executor.scheduleAtFixedRate(
-            new cn.itcraft.speedboat.raft.task.HeartbeatTask(this::sendHeartbeat),
+            new HeartbeatTask(this::sendHeartbeat),
             0,
             heartbeatInterval
         ));
@@ -754,7 +760,7 @@ public class RaftNodeImpl implements RaftNode {
 
         long checkInterval = ctx.membershipConfig.getHealthCheckInterval();
         ctx.setMembershipChangeFuture(ctx.executor.scheduleAtFixedRate(
-            new cn.itcraft.speedboat.raft.task.MemberCheckTask(membership::checkMembershipChanges),
+            new MemberCheckTask(membership::checkMembershipChanges),
             checkInterval,
             checkInterval
         ));

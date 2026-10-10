@@ -1,15 +1,12 @@
 package cn.itcraft.speedboat.integration;
-
 import cn.itcraft.speedboat.membership.MembershipCoordinator;
+import cn.itcraft.speedboat.raft.MemberChangeEntry;
 import cn.itcraft.speedboat.raft.RaftNode;
 import cn.itcraft.speedboat.strategy.membership.*;
+import java.util.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import java.util.*;
-
 import static org.junit.jupiter.api.Assertions.*;
-
 class MembershipCoordinatorIntegrationTest {
 
     private RaftNode raftNode;
@@ -217,12 +214,12 @@ class MembershipCoordinatorIntegrationTest {
         private boolean running = true;
 
         @Override
-        public boolean canProposeChange(RaftNode raftNode, cn.itcraft.speedboat.raft.MemberChangeEntry proposedEntry) {
+        public boolean canProposeChange(RaftNode raftNode, MemberChangeEntry proposedEntry) {
             return true;
         }
 
         @Override
-        public boolean shouldAcceptChange(RaftNode raftNode, cn.itcraft.speedboat.raft.MemberChangeEntry proposedEntry) {
+        public boolean shouldAcceptChange(RaftNode raftNode, MemberChangeEntry proposedEntry) {
             return true;
         }
 

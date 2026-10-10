@@ -1,29 +1,26 @@
 package cn.itcraft.speedboat;
-
 import cn.itcraft.speedboat.config.SpeedboatConfigProvider;
+import cn.itcraft.speedboat.lock.DistributedLock;
+import cn.itcraft.speedboat.lock.DistributedLockImpl;
+import cn.itcraft.speedboat.lock.LockStateMachine;
+import cn.itcraft.speedboat.persistence.InMemoryRaftStore;
+import cn.itcraft.speedboat.persistence.MmapRaftStore;
+import cn.itcraft.speedboat.persistence.NopRaftStore;
+import cn.itcraft.speedboat.persistence.PriorityStore;
+import cn.itcraft.speedboat.persistence.RaftStore;
 import cn.itcraft.speedboat.raft.ElectionTimeout;
 import cn.itcraft.speedboat.raft.NodeState;
 import cn.itcraft.speedboat.raft.RaftGroup;
 import cn.itcraft.speedboat.raft.RaftNode;
 import cn.itcraft.speedboat.raft.report.RaftNodeReport;
-import cn.itcraft.speedboat.persistence.MmapRaftStore;
-import cn.itcraft.speedboat.persistence.InMemoryRaftStore;
-import cn.itcraft.speedboat.persistence.NopRaftStore;
-import cn.itcraft.speedboat.persistence.RaftStore;
 import cn.itcraft.speedboat.serialize.CustomSerializer;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
-import cn.itcraft.speedboat.persistence.PriorityStore;
 import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import cn.itcraft.speedboat.transport.NettyTransport;
 import cn.itcraft.speedboat.transport.NodeEndpoint;
 import cn.itcraft.speedboat.util.NetworkUtils;
-import cn.itcraft.speedboat.lock.DistributedLock;
-import cn.itcraft.speedboat.lock.DistributedLockImpl;
-import cn.itcraft.speedboat.lock.LockStateMachine;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -32,7 +29,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * Speedboat 门面类（极简 API）
  * 
@@ -339,7 +337,7 @@ public class Speedboat {
      * CP 兜底单例（提供方未实现 {@code getConsistencyPolicy} 时）；独立方法便于一处注释
      */
     private static ConsistencyPolicy cpFallbackPolicy() {
-        return cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy.getInstance();
+        return CpConsistencyPolicy.getInstance();
     }
 
     // ==================== PromoteGateway 桥接访问器（包内可见） ====================

@@ -1,18 +1,17 @@
 package cn.itcraft.speedboat.membership;
-
-import cn.itcraft.speedboat.raft.RaftNode;
 import cn.itcraft.speedboat.config.MembershipConfig;
+import cn.itcraft.speedboat.raft.FailureRecord;
+import cn.itcraft.speedboat.raft.RaftNode;
 import cn.itcraft.speedboat.strategy.membership.*;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import cn.itcraft.speedboat.strategy.membership.impl.PassiveHealthCheckStrategy;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * MembershipCoordinator 协调成员变更的各个策略组件
  * 
@@ -131,9 +130,9 @@ public class MembershipCoordinator {
      */
     private void processUnhealthyPeer(String peerId) {
         // 获取故障记录
-        cn.itcraft.speedboat.raft.FailureRecord record = 
+        FailureRecord record = 
             raftNode.getFailureRecords().computeIfAbsent(peerId, 
-                k -> new cn.itcraft.speedboat.raft.FailureRecord(peerId));
+                k -> new FailureRecord(peerId));
         
         // 记录故障
         record.incrementFailures();
@@ -171,8 +170,8 @@ public class MembershipCoordinator {
                     boolean success = raftNode.proposeAddMember(newPeer);
                     if (success) {
                         // 添加到健康检测
-                        if (healthCheckStrategy instanceof cn.itcraft.speedboat.strategy.membership.impl.PassiveHealthCheckStrategy) {
-                            ((cn.itcraft.speedboat.strategy.membership.impl.PassiveHealthCheckStrategy) healthCheckStrategy)
+                        if (healthCheckStrategy instanceof PassiveHealthCheckStrategy) {
+                            ((PassiveHealthCheckStrategy) healthCheckStrategy)
                                 .markHealthy(newPeer);
                         }
                     }
@@ -209,8 +208,8 @@ public class MembershipCoordinator {
         
         // 调用 RaftNode 的方法
         boolean success = raftNode.proposeAddMember(peerId);
-        if (success && healthCheckStrategy instanceof cn.itcraft.speedboat.strategy.membership.impl.PassiveHealthCheckStrategy) {
-            ((cn.itcraft.speedboat.strategy.membership.impl.PassiveHealthCheckStrategy) healthCheckStrategy)
+        if (success && healthCheckStrategy instanceof PassiveHealthCheckStrategy) {
+            ((PassiveHealthCheckStrategy) healthCheckStrategy)
                 .markHealthy(peerId);
         }
         

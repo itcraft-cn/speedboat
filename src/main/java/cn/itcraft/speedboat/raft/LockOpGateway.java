@@ -1,13 +1,12 @@
 package cn.itcraft.speedboat.raft;
-
 import cn.itcraft.speedboat.lock.LockCommand;
+import cn.itcraft.speedboat.raft.util.BoundedCache;
 import cn.itcraft.speedboat.rpc.LockOpRequest;
 import cn.itcraft.speedboat.rpc.LockOpResponse;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
 import cn.itcraft.speedboat.serialize.SerializationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 /**
  * 锁操作网关（内部协作器，非公开 API）。
  *
@@ -51,8 +50,8 @@ final class LockOpGateway {
      *
      * <p>上界默认 4096（与 raft.max.log.size 同量级记忆），LRU 驱逐（BoundedCache）。</p>
      */
-    private final cn.itcraft.speedboat.raft.util.BoundedCache<String, LockOpResponse> dedupCache =
-        new cn.itcraft.speedboat.raft.util.BoundedCache<>(4096);
+    private final BoundedCache<String, LockOpResponse> dedupCache =
+        new BoundedCache<>(4096);
 
     LockOpGateway(NodeContext ctx, CommandProposer proposer) {
         this.ctx = ctx;

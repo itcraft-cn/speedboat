@@ -1,7 +1,5 @@
 package cn.itcraft.speedboat.strategy.voteweight;
-
 import cn.itcraft.speedboat.raft.VoteContext;
-
 /**
  * 优先节点加权策略（Phase 权重选举验证用）。
  *
@@ -43,7 +41,7 @@ public class PreferNodeVoteWeightStrategy implements VoteWeightStrategy {
     }
 
     @Override
-    public int calculateAdditionalWeight(cn.itcraft.speedboat.raft.VoteContext context) {
+    public int calculateAdditionalWeight(VoteContext context) {
         if (preferredNodeId == null || context == null) {
             return 0;
         }

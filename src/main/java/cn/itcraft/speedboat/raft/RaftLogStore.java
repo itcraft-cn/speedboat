@@ -1,15 +1,13 @@
 package cn.itcraft.speedboat.raft;
-
+import cn.itcraft.speedboat.persistence.RaftTermRecord;
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * Raft 日志仓（内部协作器，非公开 API）。
  *
@@ -334,7 +332,7 @@ final class RaftLogStore {
 
     /** 启动时恢复任期（返回是否命中持久化记录）。 */
     boolean restoreTermIfPresent() {
-        cn.itcraft.speedboat.persistence.RaftTermRecord restored = ctx.raftStore.restoreTerm();
+        RaftTermRecord restored = ctx.raftStore.restoreTerm();
         if (restored == null) {
             return false;
         }

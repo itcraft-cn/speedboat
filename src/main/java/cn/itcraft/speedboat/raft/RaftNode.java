@@ -1,17 +1,25 @@
 package cn.itcraft.speedboat.raft;
-
+import cn.itcraft.speedboat.config.MembershipConfig;
 import cn.itcraft.speedboat.config.SpeedboatConsts;
 import cn.itcraft.speedboat.persistence.PriorityStore;
+import cn.itcraft.speedboat.persistence.RaftStore;
 import cn.itcraft.speedboat.raft.executor.RaftNodeExecutor;
+import cn.itcraft.speedboat.raft.report.RaftNodeReportListener;
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
+import cn.itcraft.speedboat.rpc.LockOpRequest;
+import cn.itcraft.speedboat.rpc.LockOpResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
 import cn.itcraft.speedboat.statemachine.StateMachine;
 import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.group.GroupStrategy;
+import cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy;
+import cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy;
+import cn.itcraft.speedboat.strategy.membership.HealthCheckStrategy;
+import cn.itcraft.speedboat.strategy.membership.RegistryStrategy;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
 import cn.itcraft.speedboat.transport.TransportLayer;
@@ -177,13 +185,13 @@ public interface RaftNode {
 
     void setPeerDatacenter(String peerId, String datacenter);
 
-    cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig();
+    MembershipConfig getMembershipConfig();
 
-    cn.itcraft.speedboat.strategy.membership.HealthCheckStrategy getHealthCheckStrategy();
+    HealthCheckStrategy getHealthCheckStrategy();
 
-    cn.itcraft.speedboat.strategy.membership.RegistryStrategy getRegistryStrategy();
+    RegistryStrategy getRegistryStrategy();
 
-    cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy getChangeValidationStrategy();
+    ChangeValidationStrategy getChangeValidationStrategy();
 
     java.util.concurrent.ConcurrentHashMap<String, FailureRecord> getFailureRecords();
 
@@ -252,8 +260,8 @@ public interface RaftNode {
      * <p>调用线程任意（传输层全异步）；响应仅含"提案是否收录"（ok+entryIndex），
      * 权威判定由发起方等本地 apply 后读取。无 Leader 时未来以 ok=false 完成。</p>
      */
-    java.util.concurrent.CompletableFuture<cn.itcraft.speedboat.rpc.LockOpResponse> forwardLockOp(
-        cn.itcraft.speedboat.rpc.LockOpRequest request);
+    java.util.concurrent.CompletableFuture<LockOpResponse> forwardLockOp(
+        LockOpRequest request);
 
     /**
      * Raft 节点构建器（保持既有 {@code new RaftNode.Builder()} 调用兼容）。
@@ -267,19 +275,19 @@ public interface RaftNode {
         DatacenterPriorityTable priorityTable;
         PriorityStore priorityStore;
         ConsistencyPolicy consistencyPolicy;
-        cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy;
+        LeadershipPolicy leadershipPolicy;
         GroupStrategy groupStrategy;
         TransportLayer transportLayer;
         RaftNodeExecutor executor;
         int maxLogSize;
         int checkpointInterval;
-        cn.itcraft.speedboat.config.MembershipConfig membershipConfig;
-        cn.itcraft.speedboat.strategy.membership.HealthCheckStrategy healthCheckStrategy;
-        cn.itcraft.speedboat.strategy.membership.RegistryStrategy registryStrategy;
-        cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy changeValidationStrategy;
+        MembershipConfig membershipConfig;
+        HealthCheckStrategy healthCheckStrategy;
+        RegistryStrategy registryStrategy;
+        ChangeValidationStrategy changeValidationStrategy;
         StateMachine stateMachine;
-        cn.itcraft.speedboat.persistence.RaftStore raftStore;
-        cn.itcraft.speedboat.raft.report.RaftNodeReportListener reportListener;
+        RaftStore raftStore;
+        RaftNodeReportListener reportListener;
 
         public Builder nodeId(String nodeId) {
             this.nodeId = nodeId;
@@ -359,7 +367,7 @@ public interface RaftNode {
          * @return builder 自身
          */
         public Builder leadershipPolicy(
-            cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy) {
+            LeadershipPolicy leadershipPolicy) {
             this.leadershipPolicy = leadershipPolicy;
             return this;
         }
@@ -397,22 +405,22 @@ public interface RaftNode {
             return this;
         }
 
-        public Builder membershipConfig(cn.itcraft.speedboat.config.MembershipConfig membershipConfig) {
+        public Builder membershipConfig(MembershipConfig membershipConfig) {
             this.membershipConfig = membershipConfig;
             return this;
         }
 
-        public Builder healthCheckStrategy(cn.itcraft.speedboat.strategy.membership.HealthCheckStrategy healthCheckStrategy) {
+        public Builder healthCheckStrategy(HealthCheckStrategy healthCheckStrategy) {
             this.healthCheckStrategy = healthCheckStrategy;
             return this;
         }
 
-        public Builder registryStrategy(cn.itcraft.speedboat.strategy.membership.RegistryStrategy registryStrategy) {
+        public Builder registryStrategy(RegistryStrategy registryStrategy) {
             this.registryStrategy = registryStrategy;
             return this;
         }
 
-        public Builder changeValidationStrategy(cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy changeValidationStrategy) {
+        public Builder changeValidationStrategy(ChangeValidationStrategy changeValidationStrategy) {
             this.changeValidationStrategy = changeValidationStrategy;
             return this;
         }
@@ -426,7 +434,7 @@ public interface RaftNode {
          * 注入持久化存储（缺省 NopRaftStore 内存模式）。
          * 接口前置：生产 WAL / SQLite 引擎按 persistence/RaftStore 契约接入。
          */
-        public Builder raftStore(cn.itcraft.speedboat.persistence.RaftStore raftStore) {
+        public Builder raftStore(RaftStore raftStore) {
             this.raftStore = raftStore;
             return this;
         }
@@ -435,7 +443,7 @@ public interface RaftNode {
          * 注册状态报告监听器（Phase E 可观测性）。
          * 核心算法零依赖 metrics 库：Micrometer 等通过本接口外挂接入。
          */
-        public Builder reportListener(cn.itcraft.speedboat.raft.report.RaftNodeReportListener listener) {
+        public Builder reportListener(RaftNodeReportListener listener) {
             this.reportListener = listener;
             return this;
         }

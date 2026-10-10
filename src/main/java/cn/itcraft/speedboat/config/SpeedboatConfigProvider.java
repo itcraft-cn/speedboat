@@ -1,7 +1,8 @@
 package cn.itcraft.speedboat.config;
-
 import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy;
+import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
 import java.util.List;
 /**
  * Speedboat 配置提供者接口
@@ -86,7 +87,7 @@ public interface SpeedboatConfigProvider {
      * 配置文件支持 {@code vote.weight.strategy=prefer|even|none} +
      * {@code vote.weight.prefer=<nodeId>}。</p>
      */
-    default cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy getVoteWeightStrategy() {
+    default VoteWeightStrategy getVoteWeightStrategy() {
         return null;
     }
 
@@ -119,12 +120,12 @@ public interface SpeedboatConfigProvider {
      * 拿不到 3/2/2 的机房权重。</b></p>
      */
     default String getLeadershipMode() {
-        return cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.MODE_PEER;
+        return LeadershipPolicy.MODE_PEER;
     }
 
 
-    default cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig() {
-        return new cn.itcraft.speedboat.config.MembershipConfig();
+    default MembershipConfig getMembershipConfig() {
+        return new MembershipConfig();
     }
 
     /**

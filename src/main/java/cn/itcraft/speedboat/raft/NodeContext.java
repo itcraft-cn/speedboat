@@ -1,19 +1,24 @@
 package cn.itcraft.speedboat.raft;
-
 import cn.itcraft.speedboat.config.MembershipConfig;
 import cn.itcraft.speedboat.config.SpeedboatConsts;
+import cn.itcraft.speedboat.persistence.NopRaftStore;
 import cn.itcraft.speedboat.persistence.PriorityStore;
 import cn.itcraft.speedboat.persistence.RaftStore;
 import cn.itcraft.speedboat.raft.RaftNode.Builder;
+import cn.itcraft.speedboat.raft.executor.DefaultRaftNodeExecutor;
 import cn.itcraft.speedboat.raft.executor.RaftNodeExecutor;
 import cn.itcraft.speedboat.raft.report.RaftNodeReportListener;
 import cn.itcraft.speedboat.statemachine.StateMachine;
 import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.group.GroupStrategy;
+import cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy;
 import cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy;
 import cn.itcraft.speedboat.strategy.membership.HealthCheckStrategy;
 import cn.itcraft.speedboat.strategy.membership.RegistryStrategy;
+import cn.itcraft.speedboat.strategy.membership.impl.DefaultChangeValidationStrategy;
+import cn.itcraft.speedboat.strategy.membership.impl.NoOpRegistryStrategy;
+import cn.itcraft.speedboat.strategy.membership.impl.PassiveHealthCheckStrategy;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import cn.itcraft.speedboat.strategy.voteweight.PriorityCodec;
 import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
@@ -101,7 +106,7 @@ final class NodeContext {
      * 领袖优先级策略（三机房拓扑语义；缺省 peer 零行为变更）。
      * 父组 PreVote sticky 判定据此决定是否为权重严格更高的候选者让位。
      */
-    final cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy;
+    final LeadershipPolicy leadershipPolicy;
     /** 分组策略（决定心跳节拍等集群拓扑行为） */
     final GroupStrategy groupStrategy;
     /** 传输层（启动时布线；可空便于单测） */
@@ -249,7 +254,7 @@ final class NodeContext {
         // 领袖优先级策略缺省 peer：零行为变更（对等先到先得，sticky 照旧拦截）
         this.leadershipPolicy = builder.leadershipPolicy != null
             ? builder.leadershipPolicy
-            : cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.defaultPolicy();
+            : LeadershipPolicy.defaultPolicy();
         this.groupStrategy = builder.groupStrategy;
         this.transportLayer = builder.transportLayer;
         this.peerIds = builder.peerIds != null ? new ArrayList<>(builder.peerIds) : new ArrayList<>();
@@ -268,17 +273,17 @@ final class NodeContext {
         // 成员变更初始化
         this.membershipConfig = builder.membershipConfig != null ? builder.membershipConfig : new MembershipConfig();
         this.healthCheckStrategy = builder.healthCheckStrategy != null ? builder.healthCheckStrategy
-            : new cn.itcraft.speedboat.strategy.membership.impl.PassiveHealthCheckStrategy();
+            : new PassiveHealthCheckStrategy();
         this.registryStrategy = builder.registryStrategy != null ? builder.registryStrategy
-            : new cn.itcraft.speedboat.strategy.membership.impl.NoOpRegistryStrategy();
+            : new NoOpRegistryStrategy();
         this.changeValidationStrategy = builder.changeValidationStrategy != null ? builder.changeValidationStrategy
-            : new cn.itcraft.speedboat.strategy.membership.impl.DefaultChangeValidationStrategy();
+            : new DefaultChangeValidationStrategy();
         this.stateMachine = builder.stateMachine;
         // Actor 执行器：默认单线程调度实现，可注入自定义实现（如 JCTools MPSC 版）
-        this.executor = builder.executor != null ? builder.executor : new cn.itcraft.speedboat.raft.executor.DefaultRaftNodeExecutor();
+        this.executor = builder.executor != null ? builder.executor : new DefaultRaftNodeExecutor();
         // 持久化缺省 Nop：库级 Builder 保持"零副作用"基线（测试/嵌入式调用方显式选档）；
         // 应用门面（Speedboat）负责把生产默认装配为 mmap（跨进程重启挂回，选主安全性最全）。
-        this.raftStore = builder.raftStore != null ? builder.raftStore : cn.itcraft.speedboat.persistence.NopRaftStore.getInstance();
+        this.raftStore = builder.raftStore != null ? builder.raftStore : NopRaftStore.getInstance();
         this.reportListener = builder.reportListener;
         this.quorumCheckTimeoutMillis = DEFAULT_QUORUM_CHECK_TIMEOUT_MILLIS;
     }

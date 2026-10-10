@@ -1,5 +1,4 @@
 package cn.itcraft.speedboat;
-
 import cn.itcraft.speedboat.config.SpeedboatConfigProvider;
 import cn.itcraft.speedboat.persistence.PriorityStore;
 import cn.itcraft.speedboat.persistence.RaftStore;
@@ -9,22 +8,21 @@ import cn.itcraft.speedboat.serialize.CustomSerializer;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
 import cn.itcraft.speedboat.statemachine.NoopStateMachine;
 import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityVoteWeightStrategy;
 import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
 import cn.itcraft.speedboat.transport.NettyTransport;
 import cn.itcraft.speedboat.transport.NodeEndpoint;
 import cn.itcraft.speedboat.util.NetworkUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * 父组（跨机房层）组装器（非公开 API）。
  *
@@ -174,10 +172,10 @@ final class ParentGroupBuilder {
             new DatacenterPriorityVoteWeightStrategy(effectiveWeights, datacenterId, 1, priorityTable);
         // 领袖优先级策略绑定（此刻权重才真实可达）：dominant 注入父组投票策略，
         // sticky 让位与心跳冻结例外都随权重表热更新（人工提升/回退）自动变化
-        cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy =
-            cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.MODE_DOMINANT.equals(leadershipMode)
-                ? cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.dominant(parentStrategy)
-                : cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.defaultPolicy();
+        LeadershipPolicy leadershipPolicy =
+            LeadershipPolicy.MODE_DOMINANT.equals(leadershipMode)
+                ? LeadershipPolicy.dominant(parentStrategy)
+                : LeadershipPolicy.defaultPolicy();
 
         NodeEndpoint parentLocalEndpoint = new NodeEndpoint(parentNodeId, localIp, parentPort);
         NettyTransport parentNettyTransport = new NettyTransport(

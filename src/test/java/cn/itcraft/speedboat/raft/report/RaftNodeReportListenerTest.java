@@ -1,21 +1,28 @@
 package cn.itcraft.speedboat.raft.report;
-
 import cn.itcraft.speedboat.raft.ElectionTimeout;
 import cn.itcraft.speedboat.raft.NodeState;
 import cn.itcraft.speedboat.raft.RaftNode;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-
+import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
+import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
+import cn.itcraft.speedboat.rpc.HeartbeatRequest;
+import cn.itcraft.speedboat.rpc.HeartbeatResponse;
+import cn.itcraft.speedboat.rpc.LockOpRequest;
+import cn.itcraft.speedboat.rpc.LockOpResponse;
+import cn.itcraft.speedboat.rpc.PreVoteRequest;
+import cn.itcraft.speedboat.rpc.PreVoteResponse;
+import cn.itcraft.speedboat.rpc.RequestVoteRequest;
+import cn.itcraft.speedboat.rpc.RequestVoteResponse;
+import cn.itcraft.speedboat.transport.TransportLayer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
-
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 /**
  * RaftNodeReport 可观测性验收测试（Phase E）：
  *
@@ -111,61 +118,61 @@ class RaftNodeReportListenerTest {
     }
 
     /** 测试桩：全部同意（直选路径需要 term==0 && leader==null 的第一步） */
-    private static final class MockAllGrantTransport implements cn.itcraft.speedboat.transport.TransportLayer {
+    private static final class MockAllGrantTransport implements TransportLayer {
         @Override
-        public java.util.concurrent.CompletableFuture<cn.itcraft.speedboat.rpc.RequestVoteResponse> sendRequestVote(
-            String peerId, cn.itcraft.speedboat.rpc.RequestVoteRequest request) {
+        public java.util.concurrent.CompletableFuture<RequestVoteResponse> sendRequestVote(
+            String peerId, RequestVoteRequest request) {
             return java.util.concurrent.CompletableFuture.completedFuture(
-                new cn.itcraft.speedboat.rpc.RequestVoteResponse(request.getRequestId(), request.getTerm(), true));
+                new RequestVoteResponse(request.getRequestId(), request.getTerm(), true));
         }
 
         @Override
-        public java.util.concurrent.CompletableFuture<cn.itcraft.speedboat.rpc.PreVoteResponse> sendPreVote(
-            String peerId, cn.itcraft.speedboat.rpc.PreVoteRequest request) {
+        public java.util.concurrent.CompletableFuture<PreVoteResponse> sendPreVote(
+            String peerId, PreVoteRequest request) {
             return java.util.concurrent.CompletableFuture.completedFuture(
-                new cn.itcraft.speedboat.rpc.PreVoteResponse(request.getRequestId(), 0, true));
+                new PreVoteResponse(request.getRequestId(), 0, true));
         }
 
         @Override
-        public java.util.concurrent.CompletableFuture<cn.itcraft.speedboat.rpc.LockOpResponse> sendLockOp(
-            String peerId, cn.itcraft.speedboat.rpc.LockOpRequest request) {
+        public java.util.concurrent.CompletableFuture<LockOpResponse> sendLockOp(
+            String peerId, LockOpRequest request) {
             return java.util.concurrent.CompletableFuture.completedFuture(
-                new cn.itcraft.speedboat.rpc.LockOpResponse(request.getRequestId(), false, -1));
+                new LockOpResponse(request.getRequestId(), false, -1));
         }
 
         @Override
-        public void setLockOpHandler(cn.itcraft.speedboat.transport.TransportLayer.LockOpHandler handler) {
+        public void setLockOpHandler(TransportLayer.LockOpHandler handler) {
             // 测试桩：不处理锁转发
         }
 
         @Override
-        public java.util.concurrent.CompletableFuture<cn.itcraft.speedboat.rpc.HeartbeatResponse> sendHeartbeat(
-            String peerId, cn.itcraft.speedboat.rpc.HeartbeatRequest request) {
+        public java.util.concurrent.CompletableFuture<HeartbeatResponse> sendHeartbeat(
+            String peerId, HeartbeatRequest request) {
             return java.util.concurrent.CompletableFuture.completedFuture(
-                new cn.itcraft.speedboat.rpc.HeartbeatResponse(request.getRequestId(), request.getTerm(), true));
+                new HeartbeatResponse(request.getRequestId(), request.getTerm(), true));
         }
 
         @Override
-        public java.util.concurrent.CompletableFuture<cn.itcraft.speedboat.rpc.AppendEntriesResponse> sendAppendEntries(
-            String peerId, cn.itcraft.speedboat.rpc.AppendEntriesRequest request) {
+        public java.util.concurrent.CompletableFuture<AppendEntriesResponse> sendAppendEntries(
+            String peerId, AppendEntriesRequest request) {
             return java.util.concurrent.CompletableFuture.completedFuture(
-                new cn.itcraft.speedboat.rpc.AppendEntriesResponse(request.getRequestId(), request.getTerm(), true, 0));
+                new AppendEntriesResponse(request.getRequestId(), request.getTerm(), true, 0));
         }
 
         @Override
-        public void setRequestVoteHandler(cn.itcraft.speedboat.transport.TransportLayer.RequestVoteHandler handler) {
+        public void setRequestVoteHandler(TransportLayer.RequestVoteHandler handler) {
         }
 
         @Override
-        public void setHeartbeatHandler(cn.itcraft.speedboat.transport.TransportLayer.HeartbeatHandler handler) {
+        public void setHeartbeatHandler(TransportLayer.HeartbeatHandler handler) {
         }
 
         @Override
-        public void setAppendEntriesHandler(cn.itcraft.speedboat.transport.TransportLayer.AppendEntriesHandler handler) {
+        public void setAppendEntriesHandler(TransportLayer.AppendEntriesHandler handler) {
         }
 
         @Override
-        public void setPreVoteHandler(cn.itcraft.speedboat.transport.TransportLayer.PreVoteHandler handler) {
+        public void setPreVoteHandler(TransportLayer.PreVoteHandler handler) {
         }
     }
 }

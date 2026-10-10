@@ -1,20 +1,18 @@
 package cn.itcraft.speedboat.cluster;
-
 import cn.itcraft.speedboat.lock.DistributedLock;
 import cn.itcraft.speedboat.lock.DistributedLockImpl;
 import cn.itcraft.speedboat.lock.LockHandle;
 import cn.itcraft.speedboat.lock.LockStateMachine;
 import cn.itcraft.speedboat.raft.*;
+import cn.itcraft.speedboat.raft.ElectionTimeout;
 import cn.itcraft.speedboat.serialize.CustomSerializer;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
 import cn.itcraft.speedboat.transport.NettyTransport;
 import cn.itcraft.speedboat.transport.NodeEndpoint;
-
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-
 /**
  * 三节点真实网络集群测试运行器。
  *
@@ -83,7 +81,7 @@ public class ClusterTestRunner {
         RaftNode raftNode = new RaftNode.Builder()
             .nodeId(nodeId)
             .peerIds(peerIds)
-            .electionTimeout(new cn.itcraft.speedboat.raft.ElectionTimeout(
+            .electionTimeout(new ElectionTimeout(
                 ELECTION_TIMEOUT_MS, ELECTION_TIMEOUT_MS * 2))
             .transportLayer(transport)
             .stateMachine(stateMachine)
