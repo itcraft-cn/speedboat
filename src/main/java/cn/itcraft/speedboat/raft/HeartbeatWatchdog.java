@@ -1,10 +1,9 @@
 package cn.itcraft.speedboat.raft;
 
+import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.concurrent.TimeUnit;
-
 /**
  * check-quorum 看门狗（内部协作器，非公开 API）。
  *
@@ -40,8 +39,10 @@ final class HeartbeatWatchdog {
         ctx.lastResponseNanos.put(peerId, System.nanoTime());
         // AP 降级判定的 leader 侧信号源：对侧机房 peer 应答时刷新"最近见到对侧"时间戳。
         // CP 下该字段仅被写入、不参与任何判定，行为零影响。
+        // 口径：未登记机房归一为""——空串按"同机房"处理，非本机房的已登记 dc 才算对侧，
+        // 避免未登记 peer 误刷新本字段（review L6）
         String peerDc = quorum.peerDatacenter(peerId);
-        if (!peerDc.equals(ctx.datacenter)) {
+        if (!peerDc.isEmpty() && !peerDc.equals(ctx.datacenter)) {
             ctx.lastOppositeSeenNanos = System.nanoTime();
         }
     }
@@ -73,7 +74,7 @@ final class HeartbeatWatchdog {
         // AP 降级判定（leader 侧）：先给策略一次评估机会。CP 恒 no-op 返回 false，
         // 此后 freshWeight/required 与引入前逐字节等价。AP 在对侧机房静默达阈值后进入
         // 降级态、把对侧剔除出分母，使本机房 self 重新够格——故必须在计算权重前评估。
-        cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy policy = ctx.consistencyPolicy;
+        ConsistencyPolicy policy = ctx.consistencyPolicy;
         if (policy != null && policy.allowDegradedTakeover()) {
             policy.evaluateDegraded(ctx.datacenter, quorum.oppositeDatacenter(),
                 ctx.seatHeld, ctx.lastOppositeSeenNanos, now);

@@ -23,6 +23,9 @@ import java.util.Map;
  */
 public final class PriorityChangeEntry extends LogEntry {
 
+    private static final org.slf4j.Logger logger =
+        org.slf4j.LoggerFactory.getLogger(PriorityChangeEntry.class);
+
     /** 变更来源标记（与 {@code DatacenterPriorityTable.Source} 同名，避免 WAL 依赖策略层） */
     public static final String SOURCE_CONFIG = "CONFIG";
     public static final String SOURCE_PROMOTED = "PROMOTED";
@@ -110,6 +113,26 @@ public final class PriorityChangeEntry extends LogEntry {
         return reason;
     }
 
+    /** 宽松解析：非法即 WARN 并返回 0（读回容错，不阻断 WAL 恢复） */
+    private static long parseLongSafely(String value) {
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            logger.warn("PriorityChangeEntry decode: bad epoch value {}, fallback to 0", value);
+            return 0L;
+        }
+    }
+
+    /** 宽松解析：非法即 WARN 并返回 null（调用方跳过该项，与 PriorityCodec.decode 容错口径一致） */
+    private static Integer parseIntSafely(String value) {
+        try {
+            return Integer.valueOf(value.trim());
+        } catch (NumberFormatException e) {
+            logger.warn("PriorityChangeEntry decode: bad weight value {}, item skipped", value);
+            return null;
+        }
+    }
+
     /** 编码为 UTF-8 文本（字段以 ; 分隔；权重表 dc=w,dc=w） */
     private String encode() {
         StringBuilder sb = new StringBuilder();
@@ -150,7 +173,9 @@ public final class PriorityChangeEntry extends LogEntry {
             String key = part.substring(0, eq);
             String value = part.substring(eq + 1);
             if ("epoch".equals(key)) {
-                epoch = Long.parseLong(value);
+                // 容错：epoch 非法时按 0 兜底（WAL 为自写内容，仅外部篡改/typically CRC 碰撞才会出现；
+                // 读回失败不应让启动中断，见 review L7）
+                epoch = parseLongSafely(value);
             } else if ("source".equals(key)) {
                 source = value;
             } else if ("target".equals(key)) {
@@ -166,7 +191,10 @@ public final class PriorityChangeEntry extends LogEntry {
                     }
                     int weq = pair.indexOf('=');
                     if (weq > 0) {
-                        weights.put(pair.substring(0, weq), Integer.parseInt(pair.substring(weq + 1)));
+                        Integer weight = parseIntSafely(pair.substring(weq + 1));
+                        if (weight != null) {
+                            weights.put(pair.substring(0, weq), weight);
+                        }
                     }
                 }
             }
@@ -174,12 +202,13 @@ public final class PriorityChangeEntry extends LogEntry {
         return new PriorityChangeEntry(index, term, leaderId, epoch, weights, source, target, operator, reason);
     }
 
-    /** 转义分隔符（操作者/原因可能含 ; , = 等字符） */
+    /** 转义分隔符与控制字符（操作者/原因可能含 ; , = 及换行等字符） */
     private static String escape(String s) {
         if (s == null) {
             return "";
         }
-        return s.replace("\\", "\\\\").replace(";", "\\s").replace(",", "\\c").replace("=", "\\e");
+        return s.replace("\\", "\\\\").replace(";", "\\s").replace(",", "\\c").replace("=", "\\e")
+            .replace("\r", "\\r").replace("\n", "\\n");
     }
 
     private static String unescape(String s) {
@@ -197,6 +226,10 @@ public final class PriorityChangeEntry extends LogEntry {
                     sb.append(',');
                 } else if (n == 'e') {
                     sb.append('=');
+                } else if (n == 'r') {
+                    sb.append('\r');
+                } else if (n == 'n') {
+                    sb.append('\n');
                 } else if (n == '\\') {
                     sb.append('\\');
                 } else {

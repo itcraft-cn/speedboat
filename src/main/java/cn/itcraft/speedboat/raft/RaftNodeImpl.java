@@ -2,6 +2,7 @@ package cn.itcraft.speedboat.raft;
 
 import cn.itcraft.speedboat.config.SpeedboatConsts;
 import cn.itcraft.speedboat.raft.executor.RaftNodeExecutor;
+import cn.itcraft.speedboat.raft.report.RaftNodeReport;
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
@@ -12,16 +13,15 @@ import cn.itcraft.speedboat.rpc.PreVoteRequest;
 import cn.itcraft.speedboat.rpc.PreVoteResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
-import cn.itcraft.speedboat.raft.report.RaftNodeReport;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * {@link RaftNode} 接口的唯一实现（门面协调器；结构手术重构版）。
  *
@@ -573,8 +573,8 @@ public class RaftNodeImpl implements RaftNode {
      * 任意线程可读（快照本身不可变）。
      */
     @Override
-    public cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot getPrioritySnapshot() {
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable table = ctx.priorityTable;
+    public DatacenterPriorityTable.Snapshot getPrioritySnapshot() {
+        DatacenterPriorityTable table = ctx.priorityTable;
         return table == null ? null : table.current();
     }
 
@@ -585,9 +585,9 @@ public class RaftNodeImpl implements RaftNode {
      * 保证"模式判定"与"降级接管行为"不会口径分裂。</p>
      */
     private boolean manualSwitchIgnoredInApMode() {
-        cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy policy = ctx.consistencyPolicy;
+        ConsistencyPolicy policy = ctx.consistencyPolicy;
         return policy != null
-            && cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy.MODE_AP
+            && ConsistencyPolicy.MODE_AP
                 .equals(policy.mode());
     }
 
@@ -599,15 +599,15 @@ public class RaftNodeImpl implements RaftNode {
      * 同时满足多数派——双主在结构上不可能（见设计文档 §5）。</p>
      */
     private boolean doPromoteDatacenter(String operator, long termLeap, String reason) {
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable table = ctx.priorityTable;
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot before = table.current();
+        DatacenterPriorityTable table = ctx.priorityTable;
+        DatacenterPriorityTable.Snapshot before = table.current();
         long termBefore = ctx.term.getCurrent();
 
         // 1) 换表：本机房权重 = max(对侧) + 2，epoch+1
         java.util.Map<String, Integer> newWeights = computePromotedWeights(before.weights());
         long newEpoch = before.epoch() + 1;
         table.replace(newEpoch, newWeights,
-            cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source.PROMOTED);
+            DatacenterPriorityTable.Source.PROMOTED);
 
         // 2) term 跃升（先于登基：使对侧旧任期在愈合后必然退让）
         if (termLeap > 0) {
@@ -650,13 +650,13 @@ public class RaftNodeImpl implements RaftNode {
      * 走与提升相同的复制 + 持久化 + 心跳传播路径。
      */
     private boolean doRestoreDefaultPriorities(String operator, String reason) {
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable table = ctx.priorityTable;
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot before = table.current();
+        DatacenterPriorityTable table = ctx.priorityTable;
+        DatacenterPriorityTable.Snapshot before = table.current();
 
         java.util.Map<String, Integer> configWeights = table.configWeights();
         long newEpoch = before.epoch() + 1;
         table.replace(newEpoch, configWeights,
-            cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source.CONFIG);
+            DatacenterPriorityTable.Source.CONFIG);
 
         PriorityChangeEntry entry = PriorityChangeEntry.create(
             logStore.getLastLogIndex() + 1, ctx.term.getCurrent(), ctx.nodeId,

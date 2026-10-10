@@ -1,10 +1,9 @@
 package cn.itcraft.speedboat.config;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import cn.itcraft.speedboat.config.SpeedboatConsts;
-
+import cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -13,7 +12,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * Properties 配置提供者（默认实现，零依赖）
  * 
@@ -187,14 +187,14 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
     }
 
     @Override
-    public cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy getConsistencyPolicy() {
+    public ConsistencyPolicy getConsistencyPolicy() {
         String policy = properties.getProperty("consistency.policy");
         if (policy == null || policy.trim().isEmpty()) {
-            return cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy.getInstance();
+            return CpConsistencyPolicy.getInstance();
         }
 
         String normalized = policy.trim().toLowerCase();
-        if (cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy.MODE_AP.equals(normalized)) {
+        if (ConsistencyPolicy.MODE_AP.equals(normalized)) {
             // 仅 AP 需读取降级阈值；CP 恒不参与降级判定，不读该键
             long timeoutMs = 0L;
             String timeoutValue = properties.getProperty("consistency.degraded.timeout.ms");
@@ -203,18 +203,18 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
                     timeoutMs = Long.parseLong(timeoutValue.trim());
                 } catch (NumberFormatException e) {
                     logger.warn("Invalid consistency.degraded.timeout.ms value: {}, using default {}",
-                        timeoutValue, cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy.DEFAULT_DEGRADED_TIMEOUT_MS);
+                        timeoutValue, ApConsistencyPolicy.DEFAULT_DEGRADED_TIMEOUT_MS);
                 }
             }
-            return new cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy(timeoutMs);
+            return new ApConsistencyPolicy(timeoutMs);
         }
 
-        if (cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy.MODE_CP.equals(normalized)) {
-            return cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy.getInstance();
+        if (ConsistencyPolicy.MODE_CP.equals(normalized)) {
+            return CpConsistencyPolicy.getInstance();
         }
 
         logger.warn("Unknown consistency.policy value: {}, falling back to CP", policy);
-        return cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy.getInstance();
+        return CpConsistencyPolicy.getInstance();
     }
 
     @Override

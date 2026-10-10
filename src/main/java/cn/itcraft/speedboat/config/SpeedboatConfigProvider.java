@@ -1,7 +1,8 @@
 package cn.itcraft.speedboat.config;
 
+import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy;
 import java.util.List;
-
 /**
  * Speedboat 配置提供者接口
  * 
@@ -98,8 +99,8 @@ public interface SpeedboatConfigProvider {
      *
      * @return 一致性策略；null 视为 CP
      */
-    default cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy getConsistencyPolicy() {
-        return cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy.getInstance();
+    default ConsistencyPolicy getConsistencyPolicy() {
+        return CpConsistencyPolicy.getInstance();
     }
 
     default cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig() {

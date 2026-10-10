@@ -4,13 +4,14 @@ import cn.itcraft.speedboat.rpc.PreVoteRequest;
 import cn.itcraft.speedboat.rpc.PreVoteResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
+import cn.itcraft.speedboat.strategy.voteweight.PriorityCodec;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * 选举协调器（内部协作器，非公开 API）。
  *
@@ -79,7 +80,7 @@ final class ElectionCoordinator {
         // 父组 Leader 心跳"——而父组 Leader 恒在对侧机房，故 lastHeartbeatNanos 即对侧存活度。
         // CP 恒 no-op，此后的 selfWeight/requiredWeight 与引入前逐字节等价。
         // 必须在计算权重之前评估：降级会收缩分母、使 required 下降，本机房方能单方成主。
-        cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy policy = ctx.consistencyPolicy;
+        ConsistencyPolicy policy = ctx.consistencyPolicy;
         if (policy != null && policy.allowDegradedTakeover()) {
             long now = System.nanoTime();
             policy.evaluateDegraded(ctx.datacenter, quorum.oppositeDatacenter(),
@@ -205,16 +206,16 @@ final class ElectionCoordinator {
      * 旧版本节点收到 null/0 字段据此忽略，协议向后兼容。</p>
      */
     private void attachPrioritySnapshot(RequestVoteRequest request) {
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable table = ctx.priorityTable;
+        DatacenterPriorityTable table = ctx.priorityTable;
         if (table == null) {
             return;
         }
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot snapshot = table.current();
+        DatacenterPriorityTable.Snapshot snapshot = table.current();
         if (snapshot.epoch() <= 0) {
             return;
         }
         request.setPrioritySnapshot(snapshot.epoch(),
-            cn.itcraft.speedboat.strategy.voteweight.PriorityCodec.encode(snapshot.weights()));
+            PriorityCodec.encode(snapshot.weights()));
     }
 
     /**

@@ -29,21 +29,21 @@ class SpeedboatManualSwitchGateTest {
         ConsistencyPolicy ap = new ApConsistencyPolicy(
             ApConsistencyPolicy.DEFAULT_DEGRADED_TIMEOUT_MS);
 
-        assertTrue(Speedboat.manualSwitchIgnored(ap),
+        assertTrue(PromoteGateway.manualSwitchIgnored(ap),
             "AP 模式下人工切主必须被忽略（只记日志，不执行）");
     }
 
     @Test
     @DisplayName("CP 模式（缺省）：人工切主照常放行——闸门不误伤运维兜底")
     void cpModeAllowsManualSwitch() {
-        assertFalse(Speedboat.manualSwitchIgnored(CpConsistencyPolicy.getInstance()),
+        assertFalse(PromoteGateway.manualSwitchIgnored(CpConsistencyPolicy.getInstance()),
             "CP 是人工切主的唯一生效模式，不得被闸门拦截");
     }
 
     @Test
     @DisplayName("策略未注入（null）：按缺省 CP 放行，与 NodeContext 兜底一致")
     void nullPolicyFallsBackToCp() {
-        assertFalse(Speedboat.manualSwitchIgnored(null),
+        assertFalse(PromoteGateway.manualSwitchIgnored(null),
             "提供方未实现 getConsistencyPolicy 时应回落 CP，而非静默忽略运维调用");
     }
 }

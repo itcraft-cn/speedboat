@@ -1,9 +1,10 @@
 package cn.itcraft.speedboat.raft;
 
+import cn.itcraft.speedboat.persistence.PriorityStore;
 import cn.itcraft.speedboat.statemachine.StateMachine;
+import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 /**
  * 应用引擎（内部协作器，非公开 API）。
  *
@@ -28,7 +29,7 @@ final class ApplyEngine {
     /** 日志仓（注册后提供 O(1) 条目查询；启动期布线注入） */
     private RaftLogStore logStore;
     /** 父侧独立优先级持久化（阶段五；可空，子组/单机房无持久化） */
-    private cn.itcraft.speedboat.persistence.PriorityStore priorityStore;
+    private PriorityStore priorityStore;
 
     ApplyEngine(NodeContext ctx, Checkpointer checkpointer) {
         this.ctx = ctx;
@@ -108,16 +109,16 @@ final class ApplyEngine {
      * <p>并发契约：仅限 raft 单线程调用。</p>
      */
     private void dispatchPriorityChange(PriorityChangeEntry entry) {
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable table = ctx.priorityTable;
+        DatacenterPriorityTable table = ctx.priorityTable;
         if (table == null) {
             logger.debug("Node {} priority change applied with no priority table: index={}",
                 ctx.nodeId, entry.getIndex());
             return;
         }
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source source =
+        DatacenterPriorityTable.Source source =
             "PROMOTED".equals(entry.source())
-                ? cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source.PROMOTED
-                : cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source.CONFIG;
+                ? DatacenterPriorityTable.Source.PROMOTED
+                : DatacenterPriorityTable.Source.CONFIG;
         boolean adopted = table.convergeIfNewer(entry.epoch(), entry.weights(), source);
         if (adopted) {
             logger.info("Node {} adopted priority change epoch={} source={} weights={}",
@@ -135,7 +136,7 @@ final class ApplyEngine {
      * 注入父侧独立优先级持久化（启动期布线；可空——子组/单机房无持久化）。
      * 与 {@code RaftStore} 分离，不动其接口与契约。
      */
-    void bindPriorityStore(cn.itcraft.speedboat.persistence.PriorityStore priorityStore) {
+    void bindPriorityStore(PriorityStore priorityStore) {
         this.priorityStore = priorityStore;
     }
 }

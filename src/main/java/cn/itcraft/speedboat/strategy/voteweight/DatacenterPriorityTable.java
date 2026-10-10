@@ -68,6 +68,21 @@ public final class DatacenterPriorityTable {
         }
     }
 
+    /**
+     * 直接构造不可变快照（持久层读回场景用：WAL 镜像、独立优先级文件）。
+     *
+     * <p>独立于 {@link #replace}——持久层不应为读回一次快照而实例化并篡改一个临时表，
+     * 本工厂把该"跨包搭桥"收为己有职责。</p>
+     *
+     * @param epoch   版本号
+     * @param weights 权重表（内部复制为不可变）
+     * @param source  来源
+     * @return 不可变快照
+     */
+    public static Snapshot snapshot(long epoch, Map<String, Integer> weights, Source source) {
+        return new Snapshot(epoch, immutableCopy(weights), source);
+    }
+
     /** 当前生效快照（volatile 保证换表可见性；快照本身不可变故读无需加锁） */
     private volatile Snapshot current;
     /** 配置派生的初始权重表（不可变；restoreDefaultPriorities 回退目标） */

@@ -166,6 +166,28 @@
 
 ---
 
+## 修复记录（2026-10-10，本轮审查意见已全部落地，H1 暂留）
+
+| 项 | 状态 | 落地方式 |
+|---|---|---|
+| H1 | **暂留**（按用户拍板） | 三机房 promote 公式缺陷保留，待后续决策 |
+| M1 | 已修 | 参考 tiny-rules `Manager/State/Shadow` 分层拆出 `ParentGroupBuilder`（218 行）+ `ParentGroupBundle`（57 行）+ `PromoteGateway`（206 行），`Speedboat` 从 1255 行降至 978 行；父组 9 个散字段收敛为单一束字段 |
+| M2 | 已修 | `QuorumCalculator` 五处同构聚合收敛为 `aggregateWeightByDatacenter` 单骨架；`receivedWeightByDatacenter` 补齐分子侧 AP 剔除（分子分母口径归一） |
+| M3 | 已修 | `captureAuditState` 空 catch 改 `logger.debug` 留痕 |
+| M4 | 已修 | `PriorityChangeEntry.escape/unescape` 补 `\r`/`\n` 转义；`auditPromote` 与单例停机路径全文本字段经 `sanitizeForLog` 净化 |
+| L1 | 已修 | 本批新增/修改文件 FQN 全部转 import（11 个文件批量收敛；范围外旧代码 FQN 不动） |
+| L2 | 已修 | `DatacenterPriorityTable.snapshot(epoch, weights, source)` 公共工厂；`PriorityStore.load` 改走工厂 |
+| L3 | 已修 | `PriorityStore.save` 临时文件清理收口 finally + 补 `RuntimeException` 分支 |
+| L4 | 已修 | `doStop` 先摘 `running` 再拆件，观测/人工切主 API 立即以准确 cause 拒绝 |
+| L5 | 已修 | `vm-partition-test.sh` 注册 `trap 'cleanup; trap - EXIT' EXIT` |
+| L6 | 已修 | `HeartbeatWatchdog.markResponse` 未登记 dc（空串）按同机房处理 |
+| L7 | 已修 | `PriorityChangeEntry.decode` epoch/weight 宽松解析（WARN + 兜底/跳过，不阻断 WAL 恢复） |
+| L8 | 已修 | `NodeContext.adoptPrioritySnapshot` 传播快照解码缓存（编码串为 key，换表自然失效） |
+
+验证：`mvn test -Djacoco.skip=true` 全量 615/615 通过（三轮复验；既知一次偶发抖动与本轮改动无关联面）。
+新增类：`ParentGroupBuilder` / `ParentGroupBundle` / `PromoteGateway`（均包级私有，非公开 API）。
+测试适配：`SpeedboatManualSwitchGateTest` 三处引用随 `manualSwitchIgnored` 迁移改为 `PromoteGateway.manualSwitchIgnored`。
+
 **审查工具**：ast-grep-mcp 自动扫描 + OpenCode（GLM-5.3-Flash）
 **规则来源**：${AI_SPEC_ROOT}/lang-spec/spec.java.md、${AI_SPEC_ROOT}/lang-spec/review.java.md
 **审查完成时间**：2026-10-10

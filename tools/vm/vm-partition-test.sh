@@ -633,6 +633,11 @@ run_all() {
   report
 }
 
+# review L5：异常退出（Ctrl-C / 中途 exit）时确保清理照常执行。
+# 正常路径 cleanup 本就幂等（probe_kill/vm_stop 吞错、NET_HOLDED=0 时跳过网络分支），
+# EXIT 重复触发零副作用；trap - EXIT 防递归。
+trap 'cleanup; trap - EXIT' EXIT
+
 case "${1:-all}" in
   deploy) deploy ;;
   run)    run_all ;;

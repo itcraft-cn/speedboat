@@ -2,20 +2,22 @@ package cn.itcraft.speedboat.raft;
 
 import cn.itcraft.speedboat.config.MembershipConfig;
 import cn.itcraft.speedboat.config.SpeedboatConsts;
-import cn.itcraft.speedboat.raft.executor.RaftNodeExecutor;
+import cn.itcraft.speedboat.persistence.PriorityStore;
 import cn.itcraft.speedboat.persistence.RaftStore;
-import cn.itcraft.speedboat.raft.report.RaftNodeReportListener;
 import cn.itcraft.speedboat.raft.RaftNode.Builder;
+import cn.itcraft.speedboat.raft.executor.RaftNodeExecutor;
+import cn.itcraft.speedboat.raft.report.RaftNodeReportListener;
 import cn.itcraft.speedboat.statemachine.StateMachine;
+import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.group.GroupStrategy;
 import cn.itcraft.speedboat.strategy.membership.ChangeValidationStrategy;
 import cn.itcraft.speedboat.strategy.membership.HealthCheckStrategy;
 import cn.itcraft.speedboat.strategy.membership.RegistryStrategy;
+import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
+import cn.itcraft.speedboat.strategy.voteweight.PriorityCodec;
 import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
 import cn.itcraft.speedboat.transport.TransportLayer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -23,7 +25,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Future;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * Raft 节点共享状态承载（内部协作器，非公开 API）。
  *
@@ -83,17 +86,17 @@ final class NodeContext {
      * <p>仅跨机房级联父组注入。与投票策略共享<b>同一实例</b>——策略每次权重计算读其最新快照，
      * 本上下文供优先级变更应用（ApplyEngine 分派 PRIORITY_CHANGE）与 RPC 传播读取。</p>
      */
-    final cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable priorityTable;
+    final DatacenterPriorityTable priorityTable;
     /**
      * 父侧独立优先级持久化（阶段五；可空——子组/单机房无持久化）。
      * 与 {@code RaftStore} 分离，不动其接口与契约。
      */
-    final cn.itcraft.speedboat.persistence.PriorityStore priorityStore;
+    final PriorityStore priorityStore;
     /**
      * 一致性策略（CP/AP）。可空时在构造器兜底为 CP 单例，
      * 保证单机房与既有调用路径行为逐字节不变。
      */
-    final cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy consistencyPolicy;
+    final ConsistencyPolicy consistencyPolicy;
     /** 分组策略（决定心跳节拍等集群拓扑行为） */
     final GroupStrategy groupStrategy;
     /** 传输层（启动时布线；可空便于单测） */
@@ -237,7 +240,7 @@ final class NodeContext {
         // 一致性策略缺省 CP：未显式注入时走强一致唯一性，单机房/既有路径行为逐字节不变
         this.consistencyPolicy = builder.consistencyPolicy != null
             ? builder.consistencyPolicy
-            : cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy.getInstance();
+            : CpConsistencyPolicy.getInstance();
         this.groupStrategy = builder.groupStrategy;
         this.transportLayer = builder.transportLayer;
         this.peerIds = builder.peerIds != null ? new ArrayList<>(builder.peerIds) : new ArrayList<>();
@@ -297,16 +300,15 @@ final class NodeContext {
             || remoteWeights == null || remoteWeights.isEmpty()) {
             return;
         }
-        java.util.Map<String, Integer> decoded =
-            cn.itcraft.speedboat.strategy.voteweight.PriorityCodec.decode(remoteWeights);
+        java.util.Map<String, Integer> decoded = decodePriorityCached(remoteWeights);
         if (decoded.isEmpty()) {
             return;
         }
         // 来源推断：与配置派生表一致则视为 CONFIG，否则视为 PROMOTED
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source source =
+        DatacenterPriorityTable.Source source =
             decoded.equals(priorityTable.configWeights())
-                ? cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source.CONFIG
-                : cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source.PROMOTED;
+                ? DatacenterPriorityTable.Source.CONFIG
+                : DatacenterPriorityTable.Source.PROMOTED;
         if (priorityTable.convergeIfNewer(remoteEpoch, decoded, source)) {
             logger.info("Node {} converged priority table from remote snapshot: epoch={}, weights={}",
                 nodeId, remoteEpoch, decoded);
@@ -314,6 +316,27 @@ final class NodeContext {
                 priorityStore.save(priorityTable.current());
             }
         }
+    }
+
+    /**
+     * 依传播快照收敛本节点优先级表·解码缓存（review L8）。
+     *
+     * <p>epoch>0 后同一条心跳/投票每轮重复携带同一编码串（直至.term 跳变），
+     * 缓存"编码串 → 解码结果"避免每 RPC split/parse。以编码串为缓存 key：
+     * 换表后编码串改变自然失效，正确性与缓存互不耦合。仅 raft 单线程读写。</p>
+     */
+    private String cachedPriorityEncoded;
+    private java.util.Map<String, Integer> cachedPriorityDecoded;
+
+    private java.util.Map<String, Integer> decodePriorityCached(String encoded) {
+        if (encoded.equals(cachedPriorityEncoded) && cachedPriorityDecoded != null) {
+            return cachedPriorityDecoded;
+        }
+        java.util.Map<String, Integer> decoded =
+            PriorityCodec.decode(encoded);
+        cachedPriorityEncoded = encoded;
+        cachedPriorityDecoded = decoded;
+        return decoded;
     }
 
     Future<?> getElectionTimeoutFuture() {

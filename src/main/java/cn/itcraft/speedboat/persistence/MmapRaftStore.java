@@ -1,5 +1,6 @@
 package cn.itcraft.speedboat.persistence;
 
+import cn.itcraft.speedboat.raft.CommandLogEntry;
 import cn.itcraft.speedboat.raft.LogEntry;
 import cn.itcraft.speedboat.raft.MemberChangeEntry;
 import cn.itcraft.speedboat.raft.PriorityChangeEntry;
@@ -401,7 +402,7 @@ public class MmapRaftStore implements RaftStore {
                 int dataLen = b.getInt();
                 byte[] data = new byte[dataLen];
                 b.get(data);
-                entryIndex.put(index, cn.itcraft.speedboat.raft.CommandLogEntry.create(index, term, leader, data));
+                entryIndex.put(index, CommandLogEntry.create(index, term, leader, data));
                 break;
             }
             case FRAME_PRIORITY_CHANGE: {
@@ -410,7 +411,7 @@ public class MmapRaftStore implements RaftStore {
                 int dataLen = b.getInt();
                 byte[] data = new byte[dataLen];
                 b.get(data);
-                entryIndex.put(index, cn.itcraft.speedboat.raft.PriorityChangeEntry.fromData(index, term, leader, data));
+                entryIndex.put(index, PriorityChangeEntry.fromData(index, term, leader, data));
                 break;
             }
             case FRAME_TRUNC_FROM:

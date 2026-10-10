@@ -2,12 +2,12 @@ package cn.itcraft.speedboat.raft;
 
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
+import cn.itcraft.speedboat.strategy.voteweight.PriorityCodec;
 import java.util.ArrayList;
 import java.util.List;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * 复制泵（内部协作器，非公开 API）。
  *
@@ -109,16 +109,16 @@ final class ReplicationPump {
      * 旧版本节点收到 null/0 字段据此忽略，协议向后兼容。</p>
      */
     private void attachPrioritySnapshot(AppendEntriesRequest request) {
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable table = ctx.priorityTable;
+        DatacenterPriorityTable table = ctx.priorityTable;
         if (table == null) {
             return;
         }
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot snapshot = table.current();
+        DatacenterPriorityTable.Snapshot snapshot = table.current();
         if (snapshot.epoch() <= 0) {
             return;
         }
         request.setPrioritySnapshot(snapshot.epoch(),
-            cn.itcraft.speedboat.strategy.voteweight.PriorityCodec.encode(snapshot.weights()));
+            PriorityCodec.encode(snapshot.weights()));
     }
 
     /**

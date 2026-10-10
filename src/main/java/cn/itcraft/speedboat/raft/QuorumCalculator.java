@@ -1,10 +1,9 @@
 package cn.itcraft.speedboat.raft;
 
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
-
+import cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy;
 import java.util.List;
 import java.util.Map;
-
 /**
  * 权重法定多数计算器（内部协作器，非公开 API）。
  *
@@ -87,27 +86,13 @@ final class QuorumCalculator {
      * @return 按机房聚合后的全体权重和
      */
     private int totalWeightByDatacenter() {
-        long term = ctx.term.getCurrent();
-        java.util.Set<String> countedDatacenters = new java.util.HashSet<String>();
-        countedDatacenters.add(ctx.datacenter);
-        int total = selfWeight(term);
-        for (String peerId : ctx.peerIds) {
-            String peerDc = peerDatacenter(peerId);
-            // AP 降级态：被剔除的机房不计入分母（CP 恒为空集，此分支永不触发）
-            if (isExcludedDatacenter(peerDc)) {
-                continue;
-            }
-            if (countedDatacenters.add(peerDc)) {
-                total += nodeWeight(peerId, term);
-            }
-        }
-        return total;
+        return aggregateWeightByDatacenter(ctx.peerIds, ctx.term.getCurrent());
     }
 
     /**
      * 机房是否被一致性策略剔除出法定多数分母。
      *
-     * <p>仅 {@link cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy}
+     * <p>仅 {@link ApConsistencyPolicy}
      * 在降级态返回 true（对侧失联机房被剔除，使本机房可单方成主）；CP 恒 false，
      * 故分母聚合行为与引入策略前逐字节等价。</p>
      *
@@ -165,16 +150,45 @@ final class QuorumCalculator {
      * @return 按机房聚合后的已收投票权重和
      */
     private int receivedWeightByDatacenter(Map<String, Boolean> votesReceived) {
-        long term = ctx.term.getCurrent();
+        // 以 votesReceived 的键（本节点 + 已授票 peer）为候选集；关键不变式：分子与
+        // 分母同口径——AP 降级剔除的机房在分子侧同样不计（由公共骨架统一处理），
+        // 避免"分母剔了但分子仍算旧票"的口径分裂。
+        return aggregateWeightByDatacenter(votesReceived.keySet(), ctx.term.getCurrent());
+    }
+
+    /**
+     * 机房聚合口径的权重求和公共骨架（原 4 处同构循环的收敛点）。
+     *
+     * <p>求和规则：自身按 {@link #selfWeight(long)} 计入；候选 peer 中跳过自身；对剩余
+     * peer 按机房去重——同一机房的多个 peer 是"同一席位的多条投递路径"，只取<b>首个</b>
+     * 出现者的权重（同机房 peer 权重相同，取谁结果一致）；AP 降级态下被
+     * {@link #isExcludedDatacenter} 剔除的机房不计（CP 恒为空集，此分支永不触发）。</p>
+     *
+     * <p>覆盖三个语义：分母（{@code totalWeight}）、已收票分子（{@code receivedWeight}）、
+     * 预票已授分子（{@code grantedWeight}）与心跳新鲜分子（{@code freshWeight}）——
+     * 四者必须严格同口径，否则"选举与 check-quorum 判定分裂"。</p>
+     *
+     * @param candidatePeers 待聚合的 peer 集合（可含自身，骨架统一跳过）
+     * @param term           权重策略上下文任期
+     * @return 含自身的聚合权重和
+     */
+    private int aggregateWeightByDatacenter(Iterable<String> candidatePeers, long term) {
         java.util.Set<String> countedDatacenters = new java.util.HashSet<String>();
         countedDatacenters.add(ctx.datacenter);
-        int weight = selfWeight(term);
-        for (String peerId : ctx.peerIds) {
-            if (votesReceived.containsKey(peerId) && countedDatacenters.add(peerDatacenter(peerId))) {
-                weight += nodeWeight(peerId, term);
+        int aggregated = selfWeight(term);
+        for (String peerId : candidatePeers) {
+            if (peerId.equals(ctx.nodeId)) {
+                continue;
+            }
+            String peerDc = peerDatacenter(peerId);
+            if (isExcludedDatacenter(peerDc)) {
+                continue;
+            }
+            if (countedDatacenters.add(peerDc)) {
+                aggregated += weightOfPeer(peerId, term);
             }
         }
-        return weight;
+        return aggregated;
     }
 
     /**
@@ -208,18 +222,7 @@ final class QuorumCalculator {
     int grantedWeight(java.util.Set<String> grantedPeers, long termRef) {
         if (byDatacenter()) {
             // 机房聚合口径：自身按 selfWeight 计，对侧各机房只取首个已授票 peer 的权重
-            java.util.Set<String> countedDatacenters = new java.util.HashSet<String>();
-            countedDatacenters.add(ctx.datacenter);
-            int aggregated = selfWeight(termRef);
-            for (String grantedPeer : grantedPeers) {
-                if (grantedPeer.equals(ctx.nodeId)) {
-                    continue;
-                }
-                if (countedDatacenters.add(peerDatacenter(grantedPeer))) {
-                    aggregated += weightOfPeer(grantedPeer, termRef);
-                }
-            }
-            return aggregated;
+            return aggregateWeightByDatacenter(grantedPeers, termRef);
         }
         int weight = 1;
         for (String grantedPeer : grantedPeers) {
@@ -259,23 +262,8 @@ final class QuorumCalculator {
      */
     int freshWeight(java.util.Set<String> freshPeers, long termRef) {
         if (byDatacenter()) {
-            java.util.Set<String> countedDatacenters = new java.util.HashSet<String>();
-            countedDatacenters.add(ctx.datacenter);
-            int aggregated = selfWeight(termRef);
-            for (String freshPeer : freshPeers) {
-                if (freshPeer.equals(ctx.nodeId)) {
-                    continue;
-                }
-                String freshPeerDc = peerDatacenter(freshPeer);
-                // AP 降级态：分子与分母同口径剔除，避免对侧"部分新鲜"时口径分裂
-                if (isExcludedDatacenter(freshPeerDc)) {
-                    continue;
-                }
-                if (countedDatacenters.add(freshPeerDc)) {
-                    aggregated += weightOfPeer(freshPeer, termRef);
-                }
-            }
-            return aggregated;
+            // 与选举侧严格同口径；AP 降级机房在分子侧同样不计（公共骨架统一处理）
+            return aggregateWeightByDatacenter(freshPeers, termRef);
         }
         int weight = 1;
         for (String freshPeer : freshPeers) {
@@ -297,17 +285,15 @@ final class QuorumCalculator {
      */
     int matchedWeight(Map<String, Long> matchIndex, long threshold, long termRef) {
         if (byDatacenter()) {
-            // 机房聚合口径：自身 + 每个"已达阈值"的不同机房各计一次
-            java.util.Set<String> countedDatacenters = new java.util.HashSet<String>();
-            countedDatacenters.add(ctx.datacenter);
-            int aggregated = selfWeight(termRef);
+            // 机房聚合口径：自身 + 每个"已达阈值"的不同机房各计一次（走公共骨架）
+            java.util.Set<String> reachedPeers = new java.util.HashSet<String>();
             for (String peerId : ctx.peerIds) {
                 Long m = matchIndex.get(peerId);
-                if (m != null && m >= threshold && countedDatacenters.add(peerDatacenter(peerId))) {
-                    aggregated += weightOfPeer(peerId, termRef);
+                if (m != null && m >= threshold) {
+                    reachedPeers.add(peerId);
                 }
             }
-            return aggregated;
+            return aggregateWeightByDatacenter(reachedPeers, termRef);
         }
         int weight = 1;
         for (String peerId : ctx.peerIds) {

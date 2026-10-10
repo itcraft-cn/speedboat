@@ -1,20 +1,21 @@
 package cn.itcraft.speedboat.raft;
 
 import cn.itcraft.speedboat.config.SpeedboatConsts;
+import cn.itcraft.speedboat.persistence.PriorityStore;
+import cn.itcraft.speedboat.raft.executor.RaftNodeExecutor;
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
-import cn.itcraft.speedboat.raft.executor.RaftNodeExecutor;
 import cn.itcraft.speedboat.statemachine.StateMachine;
+import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.group.GroupStrategy;
+import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
 import cn.itcraft.speedboat.transport.TransportLayer;
-
 import java.util.List;
-
 /**
  * Raft 共识算法节点的公共 API 契约（Phase B API/Impl 分层）。
  *
@@ -242,7 +243,7 @@ public interface RaftNode {
      *
      * @return 当前快照；单机房/子组（无优先级表）返回 null
      */
-    cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot getPrioritySnapshot();
+    DatacenterPriorityTable.Snapshot getPrioritySnapshot();
 
     /**
      * 锁操作转发（命名锁设计）：非 Leader 成员把序列化的 LockCommand
@@ -263,9 +264,9 @@ public interface RaftNode {
         List<String> peerIds;
         ElectionTimeout electionTimeout;
         VoteWeightStrategy voteWeightStrategy;
-        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable priorityTable;
-        cn.itcraft.speedboat.persistence.PriorityStore priorityStore;
-        cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy consistencyPolicy;
+        DatacenterPriorityTable priorityTable;
+        PriorityStore priorityStore;
+        ConsistencyPolicy consistencyPolicy;
         GroupStrategy groupStrategy;
         TransportLayer transportLayer;
         RaftNodeExecutor executor;
@@ -314,7 +315,7 @@ public interface RaftNode {
          * @param priorityTable 机房优先级表
          * @return builder 自身
          */
-        public Builder priorityTable(cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable priorityTable) {
+        public Builder priorityTable(DatacenterPriorityTable priorityTable) {
             this.priorityTable = priorityTable;
             return this;
         }
@@ -328,7 +329,7 @@ public interface RaftNode {
          * @param priorityStore 父侧优先级持久化
          * @return builder 自身
          */
-        public Builder priorityStore(cn.itcraft.speedboat.persistence.PriorityStore priorityStore) {
+        public Builder priorityStore(PriorityStore priorityStore) {
             this.priorityStore = priorityStore;
             return this;
         }
@@ -342,7 +343,7 @@ public interface RaftNode {
          * @param consistencyPolicy 一致性策略
          * @return builder 自身
          */
-        public Builder consistencyPolicy(cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy consistencyPolicy) {
+        public Builder consistencyPolicy(ConsistencyPolicy consistencyPolicy) {
             this.consistencyPolicy = consistencyPolicy;
             return this;
         }

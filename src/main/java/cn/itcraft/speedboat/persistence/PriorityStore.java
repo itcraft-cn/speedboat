@@ -1,9 +1,6 @@
 package cn.itcraft.speedboat.persistence;
 
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -12,7 +9,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Properties;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * 父侧机房优先级表独立持久化（阶段五人工升级 API）。
  *
@@ -98,7 +96,12 @@ public final class PriorityStore {
                 file.getAbsolutePath(), snapshot.epoch(), snapshot.source(), snapshot.weights());
         } catch (IOException e) {
             logger.warn("PriorityStore save failed: file={}", file, e);
-            // 清理临时文件
+        } catch (RuntimeException e) {
+            // props.store 等也可能抛运行时异常；持久化失败只 WARN 不抛（见方法契约）
+            logger.warn("PriorityStore save failed unexpectedly: file={}", file, e);
+        } finally {
+            // 成功路径 rename 后 tmp 已不存在、失败路径兜底清理——统一在 finally 收口，
+            // 避免任何异常路径残留半写临时文件
             if (tmp.exists() && !tmp.delete()) {
                 logger.debug("PriorityStore cannot delete tmp file {}", tmp);
             }
@@ -160,8 +163,7 @@ public final class PriorityStore {
 
         logger.info("PriorityStore loaded: file={} epoch={} source={} weights={}",
             file.getAbsolutePath(), epoch, source, weights);
-        // 用一个临时表承接快照（Snapshot 构造器为包内可见；此处借 replace 语义产出快照）
-        DatacenterPriorityTable holder = new DatacenterPriorityTable(weights, source);
-        return holder.replace(epoch, weights, source);
+        // 经公共快照工厂产出（不再借临时表 replace 语义搭桥）
+        return DatacenterPriorityTable.snapshot(epoch, weights, source);
     }
 }
