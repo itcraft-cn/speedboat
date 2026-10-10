@@ -107,8 +107,17 @@ public class DistributedLockImpl implements DistributedLock {
     private final RaftNode raftNode;
     private final LockStateMachine stateMachine;
     private final ProtostuffSerializer serializer;
+    /** 续租调度池（实例 final 快照引用；真正的生命周期由共享单例承载） */
+    private final ScheduledExecutorService renewExecutor = SHARED_RENEW_EXECUTOR;
 
-    private final ScheduledExecutorService renewExecutor;
+    /**
+     * 全部锁实例共享的续租调度池（外部点评修复：原每实例一个单线程池，
+     * 100 个锁名 = 100 个常驻线程）。续租任务极轻（一次 propose 转发 + 短窗等待），
+     * 单线程串行为最经济；实例生命周期只 cancel 任务、绝不 shutdown 共享池。
+     */
+    private static final ScheduledExecutorService SHARED_RENEW_EXECUTOR =
+        Executors.newSingleThreadScheduledExecutor(
+            NamedThreadFactory.forComponent("SharedLeaseRenewer", "lock"));
     private final AtomicBoolean renewing = new AtomicBoolean(false);
     /**
      * 当前在途续期任务句柄。
@@ -142,9 +151,6 @@ public class DistributedLockImpl implements DistributedLock {
         this.stateMachine = stateMachine;
         this.leaseTimeoutMs = leaseTimeoutMs > 0 ? leaseTimeoutMs : DEFAULT_LEASE_TIMEOUT_MS;
         this.serializer = new ProtostuffSerializer();
-        this.renewExecutor = Executors.newSingleThreadScheduledExecutor(
-            NamedThreadFactory.forComponent("LeaseRenewer", nodeId)
-        );
     }
 
     @Override
@@ -160,7 +166,8 @@ public class DistributedLockImpl implements DistributedLock {
 
         while (System.nanoTime() < deadlineNanos) {
             attempt++;
-            logger.info("tryLock attempt {}: isLeader={}, lockName={}, nodeId={}", 
+            // 外部点评修复：每 100ms 一次 attempt ×2 行，热路径降 DEBUG（成功/超时终态保留 INFO）
+            logger.debug("tryLock attempt {}: isLeader={}, lockName={}, nodeId={}",
                 attempt, raftNode.isLeader(), lockName, nodeId);
                 
             long acquiredEpoch = tryLockInternal();
@@ -201,7 +208,7 @@ public class DistributedLockImpl implements DistributedLock {
      * </ul>
      */
     private long tryLockInternal() {
-        logger.info("tryLockInternal: isLeader={}, lockName={}, nodeId={}", 
+        logger.debug("tryLockInternal: isLeader={}, lockName={}, nodeId={}",
             raftNode.isLeader(), lockName, nodeId);
 
         if (raftNode.isLeader()) {
@@ -498,21 +505,13 @@ public class DistributedLockImpl implements DistributedLock {
     /**
      * 停机：停止续期任务并关闭续期线程池。
      *
-     * <p>executor 只在本方法关闭（与锁实例生命周期等价）；
-     * 无论是否获取过锁都会执行，杜绝"未获取锁场景线程泄露"。
-     * awaitTermination 有限等待，超时则中断兜底，避免无限阻塞调用方。</p>
+     * <p>调度池为实例间共享（{@link #SHARED_RENEW_EXECUTOR}），本方法只取消本实例
+     * 的续期任务，不关心调度池本身 shutsown 与否——无论是否获取过锁都会执行，
+     * 杜绝"未获取锁场景线程泄露"。（原 per-instance executor 的 shutdown/
+     * awaitTermination 已随共享化移除。）</p>
      */
     public void shutdown() {
         stopRenewTask();
-        renewExecutor.shutdown();
-        try {
-            if (!renewExecutor.awaitTermination(1, TimeUnit.SECONDS)) {
-                renewExecutor.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            renewExecutor.shutdownNow();
-        }
     }
 
     private static class LockHandleImpl implements LockHandle {

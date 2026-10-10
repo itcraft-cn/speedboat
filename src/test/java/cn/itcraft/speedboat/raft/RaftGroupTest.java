@@ -102,9 +102,10 @@ class RaftGroupTest {
         List<RaftNode> nodes = group.getNodes();
         assertEquals(3, nodes.size());
         
-        assertEquals("node-1", nodes.get(0).getNodeId());
-        assertEquals("node-2", nodes.get(1).getNodeId());
-        assertEquals("node-3", nodes.get(2).getNodeId());
+        // parse 统一为主路径 nodeId 规则：generateNodeId(nodeUrl)
+        assertEquals("node-node-1-8080", nodes.get(0).getNodeId());
+        assertEquals("node-node-2-8080", nodes.get(1).getNodeId());
+        assertEquals("node-node-3-8080", nodes.get(2).getNodeId());
     }
 
     @Test

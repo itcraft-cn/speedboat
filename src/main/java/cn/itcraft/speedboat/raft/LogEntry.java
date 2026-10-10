@@ -85,9 +85,10 @@ public class LogEntry {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         LogEntry logEntry = (LogEntry) o;
-        return index == logEntry.index && 
-               term == logEntry.term && 
-               leaderId.equals(logEntry.leaderId) &&
+        // leaderId 允许 null（WAL 恢复/LEADER_INFO 未定主时）——外部点评修复：NPE 防御
+        return index == logEntry.index &&
+               term == logEntry.term &&
+               java.util.Objects.equals(leaderId, logEntry.leaderId) &&
                entryType == logEntry.entryType &&
                Arrays.equals(data, logEntry.data);
     }
@@ -96,7 +97,7 @@ public class LogEntry {
     public int hashCode() {
         int result = Long.hashCode(index);
         result = 31 * result + Long.hashCode(term);
-        result = 31 * result + leaderId.hashCode();
+        result = 31 * result + java.util.Objects.hashCode(leaderId);
         result = 31 * result + entryType.hashCode();
         result = 31 * result + Arrays.hashCode(data);
         return result;

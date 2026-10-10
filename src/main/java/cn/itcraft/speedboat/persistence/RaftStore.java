@@ -57,6 +57,12 @@ public interface RaftStore {
     void truncateLogEntriesFrom(long fromIndex);
 
     /** 截断 (-∞, untilIndex] 的日志（快照后的头部收缩）。 */
+    /**
+     * 截断到 {@code untilIndex}（<b>含</b> itself）：删除 {@code ≤ untilIndex} 的全部条目，
+     * 与 WAL 帧回放路径（FRAME_TRUNC_UNTIL 同 headMap(n, true)）逐字节一致。
+     * 命名遵循 MmapRaftStore 历史口径（"until"在此为 inclusive，非英语惯例的 exclusive），
+     * 仅 {@code RaftStoreContractTest} 消费，非复制主路径调用。
+     */
     void truncateLogEntriesUntil(long untilIndex);
 
     /** 删除全部快照分块（本文版本快照未启用，保留契约口）。 */

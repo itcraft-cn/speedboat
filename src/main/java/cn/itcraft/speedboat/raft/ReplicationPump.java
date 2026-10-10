@@ -15,7 +15,7 @@ import org.slf4j.LoggerFactory;
  * AppendEntriesRequest、应答处理（matchIndex/nextIndex 维护 + 失配回退 hint）、
  * commitIndex 推进判定。</p>
  *
- * <p>分工边界：check-quorum 降级判定归 {@link HeartbeatWatchdog}（心跳前调用）；
+ * <p>分工边界：check-quorum 降级判定归 {@link HeartbeatWatchdog
  * 一致性受理归 {@code InboundAppendHandler}；全序重放归 {@code ApplyEngine}。</p>
  *
  * <p>并发契约：出站方法允许 raft 单线程触发；应答经 executor 搬回 raft 线程。</p>
@@ -80,12 +80,9 @@ final class ReplicationPump {
         long prevLogIndex = nextIdx - 1;
         long prevLogTerm = logStore.getEntryTerm(prevLogIndex);
 
-        List<LogEntry> entriesToSend = new ArrayList<>();
-        for (LogEntry entry : ctx.log) {
-            if (entry.getIndex() >= nextIdx) {
-                entriesToSend.add(entry);
-            }
-        }
+        // 外部点评修复：按下标切除（日志 index 连续：log[i].getIndex() == i + 1），
+        // 心跳对每 peer 都是 O(1) 视图 + O(尾段) 复制，替换原先的 O(log) 全遍历。
+        List<LogEntry> entriesToSend = tailFrom(ctx.log, nextIdx);
 
         logger.debug("Leader {} sending to peer {}: nextIdx={}, logSize={}, entriesToSend={}, commitIndex={}",
             ctx.nodeId, peerId, nextIdx, ctx.log.size(), entriesToSend.size(), ctx.commitIndex);
@@ -209,5 +206,28 @@ final class ReplicationPump {
     /** 指定索引条目任期查询（成员变更构造 prevLog 用） */
     long getEntryTerm(long index) {
         return logStore.getEntryTerm(index);
+    }
+
+    /**
+     * 从日志取 {@code [nextIdx, 未端]} 的视图复本（`index=log 下标+1` 的连续映射）。
+     * 防御下标偏移假设被破坏（修复/注入缺陷）时回退全遍历——行为与旧实现一致。
+     */
+    private static List<LogEntry> tailFrom(List<LogEntry> log, long nextIdx) {
+        int size = log.size();
+        int start = (int) nextIdx - 1;
+        if (nextIdx <= 0 || start >= size) {
+            return new java.util.ArrayList<>();
+        }
+        if (start >= 0 && log.get(start).getIndex() == nextIdx) {
+            return new ArrayList<>(log.subList(start, size));
+        }
+        // 连续假设被破坏：回退全遍历（等价旧行为）
+        List<LogEntry> entriesToSend = new ArrayList<>();
+        for (LogEntry entry : log) {
+            if (entry.getIndex() >= nextIdx) {
+                entriesToSend.add(entry);
+            }
+        }
+        return entriesToSend;
     }
 }

@@ -32,7 +32,7 @@ class TransportTest {
     @Test
     void testNodeEndpointParse() {
         NodeEndpoint endpoint = NodeEndpoint.parse("node1:8080");
-        assertEquals("node1", endpoint.getNodeId());
+        assertEquals("node-node1-8080", endpoint.getNodeId());
         assertEquals("node1", endpoint.getHost());
         assertEquals(8080, endpoint.getPort());
     }

@@ -364,12 +364,24 @@ public class MmapRaftStore implements RaftStore {
             CRC32 crc32 = new CRC32();
             crc32.update(body);
             if ((int) crc32.getValue() != crc) {
-                logger.warn("MmapRaftStore scan stop at CRC mismatch: pos={}", pos);
-                break;
+                // 外部点评修复：CRC 坏帧不再停止扫描——body 外的帧头（bodyLen）不受
+                // CRC 保护，单帧 body 损坏时其后数据通常完好。按帧头推导的 frameEnd
+                // 跳过本帧继续扫（期间 writeOffset 不推进，append 只续写到最后完好帧尾，
+                // 跳过的坏段不会与续写重叠）。若帧头本身损坏（无合法下一帧边界），
+                // 后续 while 以 frameEnd 越界/坏 bodyLen 自然收敛。
+                logger.warn("MmapRaftStore scan skipped damaged frame: pos={}, end={}, bytes={}",
+                    pos, frameEnd, 8L + bodyLen);
+                pos = frameEnd;
+                continue;
             }
             applyFrame(body);
             pos = frameEnd;
             writeOffset = frameEnd;
+        }
+        // 扫描中若跳过过坏帧，扫描终点在最后一个完好帧尾之后——续写必须从真正的
+        // 末尾开始，否则 append 会覆写坏段之后的有效帧。
+        if (pos > writeOffset) {
+            writeOffset = pos;
         }
     }
 

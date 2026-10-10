@@ -22,8 +22,18 @@ public class NodeEndpoint {
     public String getHost() { return host; }
     public int getPort() { return port; }
     
+    /**
+     * 解析 ip:port 形式的节点条目。
+     *
+     * <p>nodeId 与主路径 {@code NetworkUtils.generateNodeId(ip:port)} 统一——
+     * 原实现 nodeId 与 host 都置 host（外部点评修复），与门面主路径两套身份体系；
+     * 本方法仅供 {@code RaftGroup}（单进程模拟工具，非生产路径）与测试使用。</p>
+     */
     public static NodeEndpoint parse(String nodeUrl) {
         String[] parts = nodeUrl.split(":");
-        return new NodeEndpoint(parts[0], parts[0], Integer.parseInt(parts[1]));
+        String host = parts[0];
+        int port = Integer.parseInt(parts[1]);
+        return new NodeEndpoint(
+            cn.itcraft.speedboat.util.NetworkUtils.generateNodeId(nodeUrl), host, port);
     }
 }

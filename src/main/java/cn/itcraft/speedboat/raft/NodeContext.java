@@ -26,8 +26,8 @@ import cn.itcraft.speedboat.transport.TransportLayer;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Future;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -145,14 +145,29 @@ final class NodeContext {
 
     // ==================== 日志仓（Phase 结构手术：行为归 RaftLogStore，状态归于此）====================
 
-    /** 【PERSISTENT】日志主体（append & rebuild 均经 raftStore.persistLogEntries） */
+    /**
+     * 【PERSISTENT】日志主体（append & rebuild 均经 raftStore.persistLogEntries）。
+     *
+     * <p>读写均在 raft 单线程内（Actor 纪律；RaftNodeReport 构造亦同步于此），
+     * 无需 CopyOnWriteArrayList——外部点评修复：COW 的每次 append 都全量拷贝，
+     * 高频提案下呈 O(n²)。无锁数组即正确形态。</p>
+     */
     final List<LogEntry> log;
 
     /** 日志容量上限（裁剪由 RaftLogStore 负责） */
     final int maxLogSize;
     /** commitIndex（volatile 快照） */
     volatile long commitIndex;
-    /** lastApplied（volatile 快照） */
+    /**
+     * lastApplied（volatile 快照）。
+     *
+     * <p>两套水位口径注释（外部点评修复）：raft 层本值覆盖<b>全部条目类型</b>；
+     * 状态机内部的 lastAppliedIndex（LockStateMachine 仅在 COMMAND 分支推进）可能
+     * 落后于本值（差值 = 已 apply 的非 COMMAND 条目数）。检查点快照以状态机口径
+     * 写出（lockTable/epoch 全量承载真实状态），(smApplied, 本值] 区间条目在重启
+     * 重放上由 {@link ApplyEngine} 的 missing-entry 静默跳过兜底——该跳过只能
+     * 作为防御而非正确性来源；状态本身不依赖它（快照内容自足）。</p>
+     */
     volatile long lastApplied;
     /** 【NOT-PERSISTENT】nextIndex 属 leader 活性状态，重启后重新探测 */
     final Map<String, Long> nextIndex;
@@ -268,7 +283,7 @@ final class NodeContext {
         this.votesReceived = new ConcurrentHashMap<>();
         this.lastHeartbeatNanos = System.nanoTime();
         this.lastOppositeSeenNanos = this.lastHeartbeatNanos;
-        this.log = new CopyOnWriteArrayList<>();
+        this.log = new ArrayList<>();
         this.commitIndex = 0;
         this.lastApplied = 0;
         this.nextIndex = new ConcurrentHashMap<>();
