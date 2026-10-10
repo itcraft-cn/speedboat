@@ -187,6 +187,37 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
     }
 
     @Override
+    public cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy getConsistencyPolicy() {
+        String policy = properties.getProperty("consistency.policy");
+        if (policy == null || policy.trim().isEmpty()) {
+            return cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy.getInstance();
+        }
+
+        String normalized = policy.trim().toLowerCase();
+        if (cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy.MODE_AP.equals(normalized)) {
+            // 仅 AP 需读取降级阈值；CP 恒不参与降级判定，不读该键
+            long timeoutMs = 0L;
+            String timeoutValue = properties.getProperty("consistency.degraded.timeout.ms");
+            if (timeoutValue != null) {
+                try {
+                    timeoutMs = Long.parseLong(timeoutValue.trim());
+                } catch (NumberFormatException e) {
+                    logger.warn("Invalid consistency.degraded.timeout.ms value: {}, using default {}",
+                        timeoutValue, cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy.DEFAULT_DEGRADED_TIMEOUT_MS);
+                }
+            }
+            return new cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy(timeoutMs);
+        }
+
+        if (cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy.MODE_CP.equals(normalized)) {
+            return cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy.getInstance();
+        }
+
+        logger.warn("Unknown consistency.policy value: {}, falling back to CP", policy);
+        return cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy.getInstance();
+    }
+
+    @Override
     public int getIntraDatacenterElectionTimeoutMin() {
         String value = properties.getProperty("election.intra.timeout.min");
         if (value != null) {

@@ -89,6 +89,19 @@ public interface SpeedboatConfigProvider {
         return null;
     }
 
+    /**
+     * 一致性策略（CP/AP）。缺省 CP——强一致唯一性，父组分母恒定、绝不剔除机房、永不降级接管。
+     *
+     * <p>配置文件支持 {@code consistency.policy=cp|ap}（默认 cp）与
+     * {@code consistency.degraded.timeout.ms=10000}（仅 ap 生效：整机房失联多久后允许降级接管）。
+     * AP 允许分区期间短暂双主，监控告警阈值需按模式区分。</p>
+     *
+     * @return 一致性策略；null 视为 CP
+     */
+    default cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy getConsistencyPolicy() {
+        return cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy.getInstance();
+    }
+
     default cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig() {
         return new cn.itcraft.speedboat.config.MembershipConfig();
     }

@@ -226,6 +226,7 @@ public interface RaftNode {
         List<String> peerIds;
         ElectionTimeout electionTimeout;
         VoteWeightStrategy voteWeightStrategy;
+        cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy consistencyPolicy;
         GroupStrategy groupStrategy;
         TransportLayer transportLayer;
         RaftNodeExecutor executor;
@@ -261,6 +262,20 @@ public interface RaftNode {
 
         public Builder voteWeightStrategy(VoteWeightStrategy voteWeightStrategy) {
             this.voteWeightStrategy = voteWeightStrategy;
+            return this;
+        }
+
+        /**
+         * 注入一致性策略（CP/AP）。缺省 CP（强一致唯一性）。
+         *
+         * <p>仅跨机房级联父组需要显式注入 AP；单机房与子组路径不注入即为 CP，
+         * 行为与引入本策略前逐字节等价。</p>
+         *
+         * @param consistencyPolicy 一致性策略
+         * @return builder 自身
+         */
+        public Builder consistencyPolicy(cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy consistencyPolicy) {
+            this.consistencyPolicy = consistencyPolicy;
             return this;
         }
 

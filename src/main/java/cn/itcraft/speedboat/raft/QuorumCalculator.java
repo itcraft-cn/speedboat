@@ -92,11 +92,32 @@ final class QuorumCalculator {
         countedDatacenters.add(ctx.datacenter);
         int total = selfWeight(term);
         for (String peerId : ctx.peerIds) {
-            if (countedDatacenters.add(peerDatacenter(peerId))) {
+            String peerDc = peerDatacenter(peerId);
+            // AP 降级态：被剔除的机房不计入分母（CP 恒为空集，此分支永不触发）
+            if (isExcludedDatacenter(peerDc)) {
+                continue;
+            }
+            if (countedDatacenters.add(peerDc)) {
                 total += nodeWeight(peerId, term);
             }
         }
         return total;
+    }
+
+    /**
+     * 机房是否被一致性策略剔除出法定多数分母。
+     *
+     * <p>仅 {@link cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy}
+     * 在降级态返回 true（对侧失联机房被剔除，使本机房可单方成主）；CP 恒 false，
+     * 故分母聚合行为与引入策略前逐字节等价。</p>
+     *
+     * @param datacenter 机房标识
+     * @return true 表示该机房已从分母剔除
+     */
+    private boolean isExcludedDatacenter(String datacenter) {
+        return ctx.consistencyPolicy != null
+            && !ctx.consistencyPolicy.excludedDatacenters().isEmpty()
+            && ctx.consistencyPolicy.excludedDatacenters().contains(datacenter);
     }
 
     /** 是否启用"分母按机房聚合"口径（仅跨机房父组为 true，见策略接口说明）。 */
@@ -245,7 +266,12 @@ final class QuorumCalculator {
                 if (freshPeer.equals(ctx.nodeId)) {
                     continue;
                 }
-                if (countedDatacenters.add(peerDatacenter(freshPeer))) {
+                String freshPeerDc = peerDatacenter(freshPeer);
+                // AP 降级态：分子与分母同口径剔除，避免对侧"部分新鲜"时口径分裂
+                if (isExcludedDatacenter(freshPeerDc)) {
+                    continue;
+                }
+                if (countedDatacenters.add(freshPeerDc)) {
                     aggregated += weightOfPeer(freshPeer, termRef);
                 }
             }
@@ -303,6 +329,24 @@ final class QuorumCalculator {
      */
     String peerDatacenter(String peerId) {
         return ctx.peerDatacenters.getOrDefault(peerId, "");
+    }
+
+    /**
+     * 识别<b>对侧机房</b>标识（AP 降级判定用）：peer 中首个与本机房不同的机房。
+     *
+     * <p>仅跨机房父组存在对侧机房；单机房集群全部 peer 同机房，返回 null，
+     * AP 策略据此永不降级（无对侧可剔除）。</p>
+     *
+     * @return 对侧机房标识；同机房集群返回 null
+     */
+    String oppositeDatacenter() {
+        for (String peerId : ctx.peerIds) {
+            String dc = peerDatacenter(peerId);
+            if (!dc.equals(ctx.datacenter)) {
+                return dc;
+            }
+        }
+        return null;
     }
 
     /** 设置指定 peer 的机房标识（null 归一为空串）。 */

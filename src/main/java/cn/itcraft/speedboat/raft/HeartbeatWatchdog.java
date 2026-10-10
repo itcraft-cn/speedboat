@@ -38,6 +38,12 @@ final class HeartbeatWatchdog {
     /** 记录 peer 响应新鲜度量（由复制应答路径调用，Leader 侧有效） */
     void markResponse(String peerId) {
         ctx.lastResponseNanos.put(peerId, System.nanoTime());
+        // AP 降级判定的 leader 侧信号源：对侧机房 peer 应答时刷新"最近见到对侧"时间戳。
+        // CP 下该字段仅被写入、不参与任何判定，行为零影响。
+        String peerDc = quorum.peerDatacenter(peerId);
+        if (!peerDc.equals(ctx.datacenter)) {
+            ctx.lastOppositeSeenNanos = System.nanoTime();
+        }
     }
 
     /**
@@ -62,6 +68,15 @@ final class HeartbeatWatchdog {
             if (last != null && (now - last) <= thresholdNanos) {
                 freshPeers.add(peerId);
             }
+        }
+
+        // AP 降级判定（leader 侧）：先给策略一次评估机会。CP 恒 no-op 返回 false，
+        // 此后 freshWeight/required 与引入前逐字节等价。AP 在对侧机房静默达阈值后进入
+        // 降级态、把对侧剔除出分母，使本机房 self 重新够格——故必须在计算权重前评估。
+        cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy policy = ctx.consistencyPolicy;
+        if (policy != null && policy.allowDegradedTakeover()) {
+            policy.evaluateDegraded(ctx.datacenter, quorum.oppositeDatacenter(),
+                ctx.seatHeld, ctx.lastOppositeSeenNanos, now);
         }
 
         long freshWeight = quorum.freshWeight(freshPeers, ctx.term.getCurrent());

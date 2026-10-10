@@ -75,6 +75,17 @@ final class ElectionCoordinator {
             return;
         }
 
+        // AP 降级判定（follower 侧）：备机房代表在父组是 follower，唯一信号是"多久没收到
+        // 父组 Leader 心跳"——而父组 Leader 恒在对侧机房，故 lastHeartbeatNanos 即对侧存活度。
+        // CP 恒 no-op，此后的 selfWeight/requiredWeight 与引入前逐字节等价。
+        // 必须在计算权重之前评估：降级会收缩分母、使 required 下降，本机房方能单方成主。
+        cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy policy = ctx.consistencyPolicy;
+        if (policy != null && policy.allowDegradedTakeover()) {
+            long now = System.nanoTime();
+            policy.evaluateDegraded(ctx.datacenter, quorum.oppositeDatacenter(),
+                ctx.seatHeld, ctx.lastHeartbeatNanos, now);
+        }
+
         roles.doTransitionTo(NodeState.CANDIDATE);
         logStore.persistTermState(ctx.term.getCurrent(), ctx.votedFor, ctx.leaderId);
         ctx.votesReceived.put(ctx.nodeId, true);

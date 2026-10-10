@@ -62,8 +62,22 @@ final class NodeContext {
     /** 最近一次收到 leader 心跳的 nanos 时间戳（sticky/check-quorum 共用） */
     volatile long lastHeartbeatNanos;
 
+    /**
+     * 最近一次看到<b>对侧机房</b> peer 存活的 nanos 时间戳（AP 降级判定的 leader 侧信号源）。
+     *
+     * <p>由 {@code HeartbeatWatchdog.markResponse} 在对侧机房 peer 应答时刷新；
+     * follower 侧改用 {@link #lastHeartbeatNanos}（父组 Leader 恒在对侧机房）。初始化为建上下文时刻，
+     * 保证启动初期对侧尚未应答时不会被误判为"已静默达阈值"。</p>
+     */
+    volatile long lastOppositeSeenNanos;
+
     /** 投票权重策略（可空：null 视为均等策略） */
     final VoteWeightStrategy voteWeightStrategy;
+    /**
+     * 一致性策略（CP/AP）。可空时在构造器兜底为 CP 单例，
+     * 保证单机房与既有调用路径行为逐字节不变。
+     */
+    final cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy consistencyPolicy;
     /** 分组策略（决定心跳节拍等集群拓扑行为） */
     final GroupStrategy groupStrategy;
     /** 传输层（启动时布线；可空便于单测） */
@@ -201,12 +215,17 @@ final class NodeContext {
         this.leaderId = null;
         this.electionTimeout = builder.electionTimeout;
         this.voteWeightStrategy = builder.voteWeightStrategy;
+        // 一致性策略缺省 CP：未显式注入时走强一致唯一性，单机房/既有路径行为逐字节不变
+        this.consistencyPolicy = builder.consistencyPolicy != null
+            ? builder.consistencyPolicy
+            : cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy.getInstance();
         this.groupStrategy = builder.groupStrategy;
         this.transportLayer = builder.transportLayer;
         this.peerIds = builder.peerIds != null ? new ArrayList<>(builder.peerIds) : new ArrayList<>();
         this.peerDatacenters = new ConcurrentHashMap<>();
         this.votesReceived = new ConcurrentHashMap<>();
         this.lastHeartbeatNanos = System.nanoTime();
+        this.lastOppositeSeenNanos = this.lastHeartbeatNanos;
         this.log = new CopyOnWriteArrayList<>();
         this.commitIndex = 0;
         this.lastApplied = 0;

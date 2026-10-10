@@ -418,6 +418,9 @@ public class Speedboat {
             .stateMachine(new NoopStateMachine())
             .datacenter(datacenterId)
             .voteWeightStrategy(parentStrategy)
+            // 一致性策略（CP/AP）：仅父组消费。子组与单机房路径不注入即缺省 CP，
+            // 机房内部选举不受降级接管影响——否则本机房内部分区会产出多个代表参与父组。
+            .consistencyPolicy(config.getConsistencyPolicy())
             .maxLogSize(config.getMaxLogSize())
             .checkpointInterval(config.getRaftCheckpointInterval())
             // 独立 store：父组 term/votedFor 与子组互不污染（按父组 nodeId 分目录）
