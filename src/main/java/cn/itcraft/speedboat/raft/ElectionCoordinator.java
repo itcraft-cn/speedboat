@@ -344,8 +344,26 @@ final class ElectionCoordinator {
         }
 
         // sticky：自身已是 Leader（现任即自己），或现任 leader 心跳仍新鲜则拒绝
-        // （Leader 的 lastHeartbeatNanos 不由自身心跳刷新，必须显式判定角色）
-        if (ctx.currentState == NodeState.LEADER || isLeaderHeartbeatFresh()) {
+        // （Leader 的 lastHeartbeatNanos 不由自身心跳刷新，必须显式判定角色）。
+        // 权重桥（策略化，三机房 dominant 语义）：候选者机房优先级严格高于现任 Leader
+        // 所在机房时 sticky 让位——否则三机房 3/2/2 下初始竞速被低权重机房抢先时，
+        // 高权重主机房的夺回通道被永久堵死（term 膨胀防护的前提是"不再选"）。
+        // 让位决策全部收敛在 {@code LeadershipPolicy}（peer 缺省恒不让位，零行为变更）；
+        // 单向严格（高夺低可、低夺高不可），全网无乒乓收敛到最高权重机房。
+        cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadership = ctx.leadershipPolicy;
+        // 现任 Leader 所在机房：self 即 Leader 时用本机房（peerDatacenters 只登记 peers），
+        // 否则按 peer 登记查询（未登记归一空串→ 兜底权重）
+        String incumbentLeaderDc;
+        if (ctx.nodeId.equals(ctx.leaderId)) {
+            incumbentLeaderDc = ctx.datacenter;
+        } else if (ctx.leaderId != null) {
+            incumbentLeaderDc = quorum.peerDatacenter(ctx.leaderId);
+        } else {
+            incumbentLeaderDc = null;
+        }
+        boolean stickyBlocks = ctx.currentState == NodeState.LEADER || isLeaderHeartbeatFresh();
+        if (stickyBlocks
+            && !leadership.stickyMayYield(request.getDatacenter(), incumbentLeaderDc)) {
             logger.info("Node {} rejects pre-vote from {} (self-leader or live leader {})",
                 ctx.nodeId, request.getCandidateId(), ctx.leaderId);
             return new PreVoteResponse(request.getRequestId(), localTerm, false);

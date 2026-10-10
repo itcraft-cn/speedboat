@@ -97,6 +97,11 @@ final class NodeContext {
      * 保证单机房与既有调用路径行为逐字节不变。
      */
     final ConsistencyPolicy consistencyPolicy;
+    /**
+     * 领袖优先级策略（三机房拓扑语义；缺省 peer 零行为变更）。
+     * 父组 PreVote sticky 判定据此决定是否为权重严格更高的候选者让位。
+     */
+    final cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy;
     /** 分组策略（决定心跳节拍等集群拓扑行为） */
     final GroupStrategy groupStrategy;
     /** 传输层（启动时布线；可空便于单测） */
@@ -241,6 +246,10 @@ final class NodeContext {
         this.consistencyPolicy = builder.consistencyPolicy != null
             ? builder.consistencyPolicy
             : CpConsistencyPolicy.getInstance();
+        // 领袖优先级策略缺省 peer：零行为变更（对等先到先得，sticky 照旧拦截）
+        this.leadershipPolicy = builder.leadershipPolicy != null
+            ? builder.leadershipPolicy
+            : cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.defaultPolicy();
         this.groupStrategy = builder.groupStrategy;
         this.transportLayer = builder.transportLayer;
         this.peerIds = builder.peerIds != null ? new ArrayList<>(builder.peerIds) : new ArrayList<>();

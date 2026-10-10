@@ -173,6 +173,12 @@ public class DatacenterPriorityVoteWeightStrategy implements VoteWeightStrategy 
         return Math.max(weight, MIN_WEIGHT);
     }
 
+    /** 机房优先级口径公开化（供选举侧 sticky 权重桥使用；与权重表最新快照一致） */
+    @Override
+    public int dcWeight(String datacenter) {
+        return weightOf(datacenter);
+    }
+
     /**
      * 当前生效的权重表：注入了优先级表则读其最新快照（支持运行时热更新），
      * 否则返回构造期不可变 Map（既有路径，行为不变）。

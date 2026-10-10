@@ -54,6 +54,26 @@ public interface VoteWeightStrategy {
     int calculateAdditionalWeight(VoteContext context);
 
     /**
+     * 机房优先级比较口径（接受预投票的 sticky 是否应让位给高优先级候选者）。
+     *
+     * <p>语义：候选者所在机房权重与"现任 Leader 所在机房"权重比较——实现方给出
+     * 候选者机房权重时不含任何观察者视角（与 {@link #calculateAdditionalWeight} 的
+     * 机房属性语义一致）。缺省局 1（未注入策略时无优先级概念，sticky 照旧拦截）。</p>
+     *
+     * <p>为什么需要它：三机房 3/2/2 下，主机房权重 3 物理上需要一张备房票成主，
+     * 与"备房两房互投 2+2=4"竞速同速——若初始选举被低权重机房抢先，则 PreVote
+     * 的"现任 healthy 即拒"sticky 会永久堵死高权重候选者的夺回通道（term 膨胀
+     * 防护以"不再选"为前提）。sticky 必须为"权重严格更高候选者"让位，且只有
+     * 单向让位（高夺低可、低夺高不可）从而无乒乓、收敛到最高权重机房。</p>
+     *
+     * @param datacenter 机房标识
+     * @return 机房优先级权重（越高越优先）
+     */
+    default int dcWeight(String datacenter) {
+        return 1;
+    }
+
+    /**
      * 投票授予闸门：本节点<b>是否应当</b>把票投给该候选者。
      *
      * <p>缺省恒放行，既有策略（{@link DefaultVoteWeightStrategy}、

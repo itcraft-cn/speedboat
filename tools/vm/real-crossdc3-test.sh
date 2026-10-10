@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Speedboat 三机房（跨机房级联）六节点实机验证编排。
+# Speedboat 三机房（跨机房级联）九节点实机验证编排。
 #
 # 拓扑（config-real-crossdc3.properties，用户指定 2026-10-10）：
-#   机房0（主机房，权重3）= 192.168.193.51 / .53
-#   机房1（权重2）        = 192.168.193.55 / .174
-#   机房2（权重2）        = 192.168.193.175 / .176
+#   机房0（主机房，权重3）= 192.168.193.51 / .53 / .55
+#   机房1（权重2）        = 192.168.193.108 / .109 / .110
+#   机房2（权重2）        = 192.168.193.174 / .175 / .176
 #   3/2/2 拓扑：total=7，父组门槛 required=(7/2)+1=4。
 #
 # 与双机房 2/1 的核心差异（详注 config-real-crossdc3.properties 头）：
@@ -45,20 +45,26 @@ SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no
 SCP=(scp -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no
       -o ControlMaster=auto -o ControlPath=/tmp/sb-c3test-%r@%h -o ControlPersist=180)
 
-# 三机房的成员（每房 2 节点）
-DC0=(h51 h53)
-DC1=(h55 h174)
-DC2=(h175 h176)
+# 三机房的成员（每房 3 节点）
+DC0=(h51 h53 h55)
+DC1=(h108 h109 h110)
+DC2=(h174 h175 h176)
 HOSTS=("${DC0[@]}" "${DC1[@]}" "${DC2[@]}")
 
 declare -A IP=(
-  [h51]=192.168.193.51  [h53]=192.168.193.53
-  [h55]=192.168.193.55  [h174]=192.168.193.174
-  [h175]=192.168.193.175 [h176]=192.168.193.176
+  [h51]=192.168.193.51   [h53]=192.168.193.53   [h55]=192.168.193.55
+  [h108]=192.168.193.108 [h109]=192.168.193.109 [h110]=192.168.193.110
+  [h174]=192.168.193.174 [h175]=192.168.193.175 [h176]=192.168.193.176
 )
-declare -A PORT=([h51]=21001 [h53]=21001 [h55]=21001 [h174]=21001 [h175]=21001 [h176]=21001)
+declare -A PORT=(
+  [h51]=21001 [h53]=21001 [h55]=21001
+  [h108]=21001 [h109]=21001 [h110]=21001
+  [h174]=21001 [h175]=21001 [h176]=21001)
 # host -> 机房索引（0=主机房权重3；1/2=权重2）
-declare -A DC=([h51]=0 [h53]=0 [h55]=1 [h174]=1 [h175]=2 [h176]=2)
+declare -A DC=(
+  [h51]=0 [h53]=0 [h55]=0
+  [h108]=1 [h109]=1 [h110]=1
+  [h174]=2 [h175]=2 [h176]=2)
 
 # 公共库：SSH 通道、结构化日志解析、存活探测、唯一 Leader 等待、断言计数与汇总
 . "$REPO/tools/vm/vm-test-lib.sh"
@@ -175,7 +181,7 @@ deploy() {
   (cd "$RUNNER_DIR" && "$jarbin" cf "$RUNNER_JAR" .) || { log "打包 vm-runner.jar 失败"; exit 1; }
   log "  -> $RUNNER_JAR"
 
-  log "D2 下发六台并校验"
+  log "D2 下发九台并校验"
   local h
   for h in "${HOSTS[@]}"; do
     rsh "$h" 'mkdir -p ~/speedboat-test/logs ~/speedboat-test/run' || { log "$h mkdir 失败"; exit 1; }
@@ -192,7 +198,7 @@ deploy() {
 
 # ============================ P0 基线 ============================
 phase0_baseline() {
-  echo; log "P0 基线：启动六节点，三房各一代表，全局唯一主落在主机房 dc-0"
+  echo; log "P0 基线：启动九节点，三房各一代表，全局唯一主落在主机房 dc-0"
   local h
   for h in "${HOSTS[@]}"; do stop_host "$h"; clean_host "$h"; done
   for h in "${HOSTS[@]}"; do start_node "$h" >/dev/null; done
@@ -215,9 +221,9 @@ phase0_baseline() {
     [ "$(h_field "$h" parentPort)" = "22001" ] || port_ok=1
     [ "$(h_field "$h" parentPort)" = "22001" ] || port_ok=0
   done
-  check "六节点 nodeId 均按 ip:port 确定性推导" [ "$nodes_ok" = 1 ]
-  check "六节点机房归属 dc 与配置一致（dc-0/dc-1/dc-2）" [ "$dc_ok" = 1 ]
-  check "六节点父组端口均为 22001（子组 21001 + offset 1000）" [ "$port_ok" = 1 ]
+  check "九节点 nodeId 均按 ip:port 确定性推导" [ "$nodes_ok" = 1 ]
+  check "九节点机房归属 dc 与配置一致（dc-0/dc-1/dc-2）" [ "$dc_ok" = 1 ]
+  check "九节点父组端口均为 22001（子组 21001 + offset 1000）" [ "$port_ok" = 1 ]
 
   local i0 i1 i2
   i0=$(count_intra_in "${DC0[@]}"); i1=$(count_intra_in "${DC1[@]}"); i2=$(count_intra_in "${DC2[@]}")
@@ -313,7 +319,7 @@ phase1_kill_main_leader() {
 # ============================ P2 场景2：杀光主机房 ============================
 # 三机房差异：不能杀光"备机房"（两备房是彼此唯一的凑票来源），先杀主机房。
 phase2_kill_all_main() {
-  echo; log "P2 场景2：杀光主机房（dc-0 两台），断言存活两备房联手产生【唯一】全局主"
+  echo; log "P2 场景2：杀光主机房（dc-0 三台），断言存活两备房联手产生【唯一】全局主"
   # 记录备两房基线（隔离断言用）
   BAK1_NODE_P2=$(h_field "$(dc_leader_host 1)" node 2>/dev/null || echo "")
   BAK1_TERM_P2=$(h_field "$(dc_leader_host 1)" term 2>/dev/null || echo 0)
@@ -322,14 +328,14 @@ phase2_kill_all_main() {
   echo "  备房基线：dc-1=$BAK1_NODE_P2 term=$BAK1_TERM_P2；dc-2=$BAK2_NODE_P2 term=$BAK2_TERM_P2"
   check "场景2前全局主在主机房（isMain=1）" [ "$(total_main)" = 1 ]
 
-  log "  kill -9 主机房全部两台"
+  log "  kill -9 主机房全部三台"
   local h
   for h in "${DC0[@]}"; do kill9_host "$h"; done
   sleep 4
 
   local all_dead=1
   for h in "${DC0[@]}"; do alive "$h" && all_dead=0; done
-  check "主机房两节点均已停止" [ "$all_dead" = 1 ]
+  check "主机房三节点均已停止" [ "$all_dead" = 1 ]
 
   # ---- 全局：存活两备房联手（2+2=4 ≥ required=4）应产出唯一主 ----
   # 与双机房 2/1 的本质差异：双房 CP 下备房 self=1<2 无法凑票 → 无主；
@@ -363,7 +369,7 @@ phase3_restart_main() {
 
   local all_alive=1
   for h in "${DC0[@]}"; do alive "$h" || all_alive=0; done
-  check "主机房两节点均已存活" [ "$all_alive" = 1 ]
+  check "主机房三节点均已存活" [ "$all_alive" = 1 ]
 
   if dc_wait_leader 0 30; then check "主机房重新加入并选出唯一子组代表" true
   else check "主机房重新加入并选出唯一子组代表" false; return; fi
@@ -412,7 +418,7 @@ phase4_kill_all_backup() {
   fi
   check "场景4前全网 isMain=1" [ "$(total_main)" = 1 ]
 
-  log "  kill -9 备机房全部四台（dc-1/dc-2）"
+  log "  kill -9 备机房全部六台（dc-1/dc-2）"
   local h
   for h in "${DC1[@]}" "${DC2[@]}"; do kill9_host "$h"; done
 
@@ -421,7 +427,7 @@ phase4_kill_all_backup() {
 
   local all_dead=1
   for h in "${DC1[@]}" "${DC2[@]}"; do alive "$h" && all_dead=0; done
-  check "两备机房四节点均已停止" [ "$all_dead" = 1 ]
+  check "两备机房六节点均已停止" [ "$all_dead" = 1 ]
 
   if [ "$CONSISTENCY" = "ap" ]; then
     # AP：降级剔除一失联机房 → total=3+2=5，required=3，主机房 self=3 ≥ 3 接管。
@@ -458,7 +464,7 @@ phase4b_restore_backup() {
 
   local all_alive=1
   for h in "${DC1[@]}" "${DC2[@]}"; do alive "$h" || all_alive=0; done
-  check "两备机房四节点恢复存活" [ "$all_alive" = 1 ]
+  check "两备机房六节点恢复存活" [ "$all_alive" = 1 ]
 
   dc_wait_leader 1 30 || check "机房1 重新选出唯一代表" false
   dc_wait_leader 2 30 || check "机房2 重新选出唯一代表" false
@@ -531,7 +537,9 @@ run_all() {
 
 case "${1:-all}" in
   deploy) deploy ;;
-  run)    run_all ;;
+  # run 单独执行时也必须生成生效配置（deploy 是另一个进程，CONFIG 变量不共享；
+  # 配置文件本身 deploy 已下发，这里只需按 SB_CONSISTENCY 重生成保持一致）
+  run)    prepare_config && run_all ;;
   stop)   stop_all ;;
   all)    deploy && run_all ;;
   *) echo "usage: $0 [deploy|run|stop|all]"; exit 64 ;;

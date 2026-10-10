@@ -217,6 +217,31 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
         return CpConsistencyPolicy.getInstance();
     }
 
+    /**
+     * 领袖优先级策略（三机房拓扑语义），对应配置键 {@code crossdc.leadership}。
+     *
+     * @return 策略；未配置或非法时取缺省 peer（零行为变更）
+     */
+    @Override
+    public cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy getLeadershipPolicy() {
+        String value = properties.getProperty("crossdc.leadership");
+        if (value == null || value.trim().isEmpty()) {
+            return cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.defaultPolicy();
+        }
+        String normalized = value.trim().toLowerCase();
+        if (cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.MODE_DOMINANT.equals(normalized)) {
+            // dominant 需要权重比较口径：复用机房权重策略（若用户未配权重策略则兜底，
+            // 全部权重 1 / 对任何候选者均不让位——显式 dominant 而未配权重属配置告警场景）
+            return cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.dominant(
+                getVoteWeightStrategy());
+        }
+        if (cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.MODE_PEER.equals(normalized)) {
+            return cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.defaultPolicy();
+        }
+        logger.warn("Unknown crossdc.leadership value: {}, falling back to peer", value);
+        return cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.defaultPolicy();
+    }
+
     @Override
     public int getIntraDatacenterElectionTimeoutMin() {
         String value = properties.getProperty("election.intra.timeout.min");

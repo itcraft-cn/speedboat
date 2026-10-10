@@ -55,10 +55,13 @@ final class ParentGroupBuilder {
     private final String datacenterId;
     private final int datacenterIndex;
     private final ConsistencyPolicy consistencyPolicy;
+    /** 领袖优先级策略（三机房拓扑语义，dominant / peer；缺省 peer 零行为变更） */
+    private final cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy;
     private final StoreSink storeSink;
 
     ParentGroupBuilder(SpeedboatConfigProvider config, String localIp, int localPort,
                        String datacenterId, int datacenterIndex, ConsistencyPolicy consistencyPolicy,
+                       cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy,
                        StoreSink storeSink) {
         this.config = config;
         this.localIp = localIp;
@@ -66,6 +69,7 @@ final class ParentGroupBuilder {
         this.datacenterId = datacenterId;
         this.datacenterIndex = datacenterIndex;
         this.consistencyPolicy = consistencyPolicy;
+        this.leadershipPolicy = leadershipPolicy;
         this.storeSink = storeSink;
     }
 
@@ -195,6 +199,9 @@ final class ParentGroupBuilder {
             // 机房内部选举不受降级接管影响——否则本机房内部分区会产出多个代表参与父组。
             // 注入构造期解析的同一实例，保证与门面人工切主闸门口径一致。
             .consistencyPolicy(consistencyPolicy)
+            // 领袖优先级策略（三机房拓扑语义）：仅父组消费。dominant 模式下父组
+            // PreVote sticky 为权重严格更高的候选者让位（主机房单向夺回通道）。
+            .leadershipPolicy(leadershipPolicy)
             .maxLogSize(config.getMaxLogSize())
             .checkpointInterval(config.getRaftCheckpointInterval())
             // 独立 store：父组 term/votedFor 与子组互不污染（按父组 nodeId 分目录）

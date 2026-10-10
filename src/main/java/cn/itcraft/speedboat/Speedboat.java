@@ -110,6 +110,8 @@ public class Speedboat {
      * 仅读取 {@code mode()}，不触碰降级状态，故跨线程读安全。</p>
      */
     private final ConsistencyPolicy consistencyPolicy;
+    /** 领袖优先级策略（三机房拓扑语义，dominant / peer；缺省 peer 零行为变更） */
+    private final cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy;
     /** 人工切主网关（Phase 五运维兜底实例级编排体） */
     private final PromoteGateway promoteGateway;
     /** 父组组装产物束；单机房模式下恒为 null */
@@ -145,6 +147,12 @@ public class Speedboat {
             ? resolvedPolicy
             : cpFallbackPolicy();
         this.promoteGateway = new PromoteGateway(this);
+        // 领袖优先级策略与 CP/AP 同为构造期选定、全生命周期恒定（null 兜底缺省 peer）
+        cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy resolvedLeadership =
+            config.getLeadershipPolicy();
+        this.leadershipPolicy = resolvedLeadership != null
+            ? resolvedLeadership
+            : cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.defaultPolicy();
 
         this.localIp = NetworkUtils.detectLocalIp();
         
@@ -387,7 +395,7 @@ public class Speedboat {
     private void buildParentGroup() {
         ParentGroupBuilder builder = new ParentGroupBuilder(
             config, localIp, localPort, datacenterId, datacenterIndex, consistencyPolicy,
-            ownerId -> buildRaftStore(config, ownerId));
+            leadershipPolicy, ownerId -> buildRaftStore(config, ownerId));
         this.parentGroup = builder.build(config.getNodes());
     }
 

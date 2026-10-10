@@ -78,13 +78,15 @@ case "${1:-}" in
     if [ -n "${local_port}" ]; then
       PORT_ARGS=(-Dspeedboat.local.port="${local_port}")
     fi
-    nohup "${JAVA}" \
-        -Dlogback.configurationFile="${BASE}/logback-vm.xml" \
-        -Dspeedboat.local.ip="${local_ip}" \
-        "${PORT_ARGS[@]}" \
-        -cp "${CP}" "${MAIN}" \
-        --config "${BASE}/${cfg}" --mode "${mode}" --lock "${lock}" \
-        > "${BASE}/${logf}" 2>&1 &
+    # 旧 bash（4.2/4.3）下 set -u 会把空数组展开误判为 unbound variable，
+    # 必须用 "${arr[@]+"${arr[@]}"}" 安全习语（九机验证踩坑：centos7 环境进程未启动）
+    args=(nohup "${JAVA}"
+        -Dlogback.configurationFile="${BASE}/logback-vm.xml"
+        -Dspeedboat.local.ip="${local_ip}"
+        ${PORT_ARGS[@]+"${PORT_ARGS[@]}"}
+        -cp "${CP}" "${MAIN}"
+        --config "${BASE}/${cfg}" --mode "${mode}" --lock "${lock}")
+    nohup "${args[@]}" > "${BASE}/${logf}" 2>&1 &
     echo $! > "${PID_FILE}"
     echo "started pid=$(cat "${PID_FILE}")"
     ;;

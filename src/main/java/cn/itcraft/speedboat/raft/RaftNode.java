@@ -267,6 +267,7 @@ public interface RaftNode {
         DatacenterPriorityTable priorityTable;
         PriorityStore priorityStore;
         ConsistencyPolicy consistencyPolicy;
+        cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy;
         GroupStrategy groupStrategy;
         TransportLayer transportLayer;
         RaftNodeExecutor executor;
@@ -345,6 +346,21 @@ public interface RaftNode {
          */
         public Builder consistencyPolicy(ConsistencyPolicy consistencyPolicy) {
             this.consistencyPolicy = consistencyPolicy;
+            return this;
+        }
+
+        /**
+         * 注入领袖优先级策略（三机房拓扑语义；缺省 peer 零行为变更）。
+         *
+         * <p>仅跨机房级联父组需要显式注入 dominant（"同城双备 + 异地灾备"必须指定
+         * 主机房）；单机房与子组路径不注入即为 peer，sticky 行为与引入前逐字节等价。</p>
+         *
+         * @param leadershipPolicy 领袖优先级策略
+         * @return builder 自身
+         */
+        public Builder leadershipPolicy(
+            cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy) {
+            this.leadershipPolicy = leadershipPolicy;
             return this;
         }
 
