@@ -174,7 +174,7 @@ public class Speedboat {
         logger.info("Starting in single-datacenter (flat) mode...");
         
         List<List<String>> allNodes = config.getNodes();
-        List<String> peerAddresses = collectPeerAddresses(allNodes, localIp);
+        List<String> peerAddresses = collectPeerAddresses(allNodes, localIp, localPort);
         
         List<NodeEndpoint> peerEndpoints = new ArrayList<>();
         List<String> peerIds = new ArrayList<>();
@@ -232,7 +232,8 @@ public class Speedboat {
         List<String> localDcPeerAddresses = new ArrayList<>();
 
         for (String nodeAddr : localDcNodes) {
-            if (!NetworkUtils.ipMatchesAddress(localIp, nodeAddr)) {
+            // 按 ip:port 精确排除自身（同 IP 多进程下仅按 IP 会误剔本机房其余进程）
+            if (!isSelfEntry(localIp, localPort, nodeAddr)) {
                 localDcPeerAddresses.add(nodeAddr);
             }
         }
@@ -650,20 +651,97 @@ public class Speedboat {
     }
     
     private NodeMatchResult matchLocalNode(List<List<String>> allNodes, String localIp) {
+        return resolveLocalEntry(allNodes, localIp, localPortOverride());
+    }
+
+    /**
+     * 可选的本进程端口钉定（系统属性 {@code speedboat.local.port}）。
+     *
+     * <p>单机多进程部署（同 IP 多端口，如阶段六备机房三进程共享 172.22.133.1）
+     * 下仅凭 IP 无法区分身份，必须显式钉定端口。未设置时返回 {@code null}，
+     * 走历史"按 IP 取首条"路径，既有部署行为完全不变。</p>
+     *
+     * @return 端口整数；未设置或非法时为 null
+     */
+    static Integer localPortOverride() {
+        String prop = System.getProperty("speedboat.local.port");
+        if (prop == null || prop.trim().isEmpty()) {
+            prop = System.getenv("SPEEDBOAT_LOCAL_PORT");
+        }
+        if (prop == null || prop.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(prop.trim());
+        } catch (NumberFormatException e) {
+            logger.warn("Invalid speedboat.local.port value: {}, falling back to ip-only match", prop);
+            return null;
+        }
+    }
+
+    /**
+     * 解析本进程在 nodes 配置中的条目（静态纯函数，便于穷举测试）。
+     *
+     * <p><b>端口钉定模式</b>（{@code localPort != null}）：要求 IP <b>与</b>端口同时精确匹配，
+     * 否则抛错——这是同 IP 多进程（单机多进程部署）的唯一无歧义身份来源。</p>
+     *
+     * <p><b>历史模式</b>（{@code localPort == null}）：按 IP 匹配取首个条目，
+     * 与引入本方法前的行为逐条等价（既有单机单进程部署不受影响）。</p>
+     *
+     * @param allNodes   全网节点（按机房分组）
+     * @param localIp    本进程 IP（speedboat.local.ip 钉定值）
+     * @param localPort  端口钉定值；null 走历史 IP-首条匹配
+     * @return 命中的条目（机房索引 + 端口）
+     */
+    static NodeMatchResult resolveLocalEntry(List<List<String>> allNodes, String localIp, Integer localPort) {
+        if (localPort != null) {
+            for (int dcIndex = 0; dcIndex < allNodes.size(); dcIndex++) {
+                for (String nodeAddr : allNodes.get(dcIndex)) {
+                    if (NetworkUtils.ipMatchesAddress(localIp, nodeAddr)
+                            && NetworkUtils.parsePort(nodeAddr) == localPort) {
+                        logger.info("Matched local node by ip:port: ip={}, port={}, datacenterIndex={}",
+                            localIp, localPort, dcIndex);
+                        return new NodeMatchResult(dcIndex, localPort);
+                    }
+                }
+            }
+            throw new IllegalArgumentException(
+                "Local entry " + localIp + ":" + localPort + " not found in configured nodes "
+                    + "(speedboat.local.port is set but no matching ip:port entry exists)");
+        }
+
         for (int dcIndex = 0; dcIndex < allNodes.size(); dcIndex++) {
             List<String> dcNodes = allNodes.get(dcIndex);
             for (String nodeAddr : dcNodes) {
                 if (NetworkUtils.ipMatchesAddress(localIp, nodeAddr)) {
                     int port = NetworkUtils.parsePort(nodeAddr);
-                    logger.info("Matched local node: ip={}, port={}, datacenterIndex={}", 
+                    logger.info("Matched local node: ip={}, port={}, datacenterIndex={}",
                         localIp, port, dcIndex);
                     return new NodeMatchResult(dcIndex, port);
                 }
             }
         }
-        
+
         throw new IllegalArgumentException(
             "Local IP " + localIp + " not found in configured nodes");
+    }
+
+    /**
+     * 配置条目是否为本进程自身（IP <b>与</b>端口同时匹配才算）。
+     *
+     * <p>身份排除必须按 {@code ip:port} 精确比对：同 IP 多进程（单机多进程部署）下
+     * 若仅按 IP 排除，本机房的其余同 IP 进程会被误当作"自己"而从 peers 中剔除——
+     * 子组直接失去同房成员、单机房模式 peerIds 变空。既有单机单进程部署下
+     * 每机 IP 唯一，精确比对与 IP 比对结果相同，行为不变。</p>
+     *
+     * @param localIp   本进程 IP
+     * @param localPort 本进程端口（已由 matchLocalNode 钉定）
+     * @param nodeAddr  待比对的配置条目（ip:port）
+     * @return true 表示该条目就是本进程
+     */
+    private static boolean isSelfEntry(String localIp, int localPort, String nodeAddr) {
+        return NetworkUtils.ipMatchesAddress(localIp, nodeAddr)
+            && NetworkUtils.parsePort(nodeAddr) == localPort;
     }
     
     /**
@@ -703,12 +781,14 @@ public class Speedboat {
         return base + "-" + datacenterIndex;
     }
     
-    private List<String> collectPeerAddresses(List<List<String>> allNodes, String localIp) {
+    private List<String> collectPeerAddresses(List<List<String>> allNodes, String localIp, int localPort) {
         List<String> peerAddresses = new ArrayList<>();
         
         for (List<String> dcNodes : allNodes) {
             for (String nodeAddr : dcNodes) {
-                if (!NetworkUtils.ipMatchesAddress(localIp, nodeAddr)) {
+                // 按 ip:port 精确排除自身：同 IP 多端口（单机多进程）下
+                // 仅按 IP 会把同机其余进程一并剔除，peerIds 直接变空
+                if (!isSelfEntry(localIp, localPort, nodeAddr)) {
                     peerAddresses.add(nodeAddr);
                 }
             }
@@ -718,7 +798,7 @@ public class Speedboat {
         return peerAddresses;
     }
     
-    private static class NodeMatchResult {
+    static class NodeMatchResult {
         final int datacenterIndex;
         final int port;
         

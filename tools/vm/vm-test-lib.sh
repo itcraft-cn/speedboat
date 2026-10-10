@@ -187,9 +187,11 @@ wait_single_global_leader() {
     done
 
     if [ "$mains" -eq 1 ] && [ -n "$ref" ] && [ "$ref" != "DIVERGED" ] && [ "$ref" != "none" ]; then
-      # 父组 Leader 必须按父组端口推导，与子组 nodeId 端口不同（两组身份分离）
+      # 父组 Leader 必须以父组端口身份结尾（子组端口 2100x → 父组 2200x，两组身份分离）。
+      # 六机拓扑各节点父组端口均为 22001；vbox 分区拓扑中 AP 接管者可能是
+      # 宿主任一进程（父组端口 22001/22002/22003），故须接受全部父组端口形态。
       case "$ref" in
-        *-22001) return 0 ;;
+        *-22001|*-22002|*-22003) return 0 ;;
         *) ;;
       esac
     fi

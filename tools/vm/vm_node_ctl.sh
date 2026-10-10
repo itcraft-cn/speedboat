@@ -6,7 +6,8 @@
 # 身份由 -Dspeedboat.local.ip 显式钉定，避免多网卡枚举顺序漂移。
 #
 # 用法：
-#   vm_node_ctl.sh start <localIp> <configFile> <mode> <lockName> <logFile>
+#   vm_node_ctl.sh start <localIp> <configFile> <mode> <lockName> <logFile> [localPort]
+#     可选 localPort：同 IP 多端口（单机多进程）身份钉定，见 -Dspeedboat.local.port
 #   vm_node_ctl.sh stop        # 优雅停机（SIGTERM，触发 shutdown hook）
 #   vm_node_ctl.sh kill9       # 模拟崩溃（SIGKILL，无收尾）
 #   vm_node_ctl.sh alive       # 输出 alive/dead
@@ -17,6 +18,9 @@ set -euo pipefail
 BASE="${HOME}/speedboat-test"
 MAIN="cn.itcraft.speedboat.sample.VmClusterNode"
 PID_FILE="${BASE}/run/node.pid"
+# 宿主机同机多进程共用 BASE 时（阶段六备机房三进程），以 SB_PID_SUFFIX 区分
+# pid 文件（-h0/-h1/-h2）；虚机单进程环境不设该变量，行为与原状完全一致。
+PID_FILE="${BASE}/run/node${SB_PID_SUFFIX:-}.pid"
 
 # ---------------------------------------------------------------- Java 解析
 # 各环境差异较大：vbox 三机装了 Dragonwell 8；六台实机只带 JRE/JDK 8 或 11，
@@ -60,6 +64,9 @@ CP="${CP:+${CP}:}${BASE}/speedboat.jar"
 case "${1:-}" in
   start)
     local_ip="$2"; cfg="$3"; mode="$4"; lock="$5"; logf="$6"
+    # 可选第 7 参 localPort：单机多进程（同 IP 多端口）身份钉定，
+    # 传入时以 -Dspeedboat.local.port 精确匹配 nodes 条目；缺省不传，行为与原状一致
+    local_port="${7:-}"
     cd "${BASE}"
     mkdir -p logs run
     if [ ! -x "${JAVA}" ] && ! command -v "${JAVA}" >/dev/null 2>&1; then
@@ -67,9 +74,14 @@ case "${1:-}" in
       exit 65
     fi
     echo "java=${JAVA} cp=${CP}" >> "${BASE}/logs/ctl.log"
+    PORT_ARGS=()
+    if [ -n "${local_port}" ]; then
+      PORT_ARGS=(-Dspeedboat.local.port="${local_port}")
+    fi
     nohup "${JAVA}" \
         -Dlogback.configurationFile="${BASE}/logback-vm.xml" \
         -Dspeedboat.local.ip="${local_ip}" \
+        "${PORT_ARGS[@]}" \
         -cp "${CP}" "${MAIN}" \
         --config "${BASE}/${cfg}" --mode "${mode}" --lock "${lock}" \
         > "${BASE}/${logf}" 2>&1 &
