@@ -55,21 +55,20 @@ final class ParentGroupBuilder {
     private final String datacenterId;
     private final int datacenterIndex;
     private final ConsistencyPolicy consistencyPolicy;
-    /** 领袖优先级策略（三机房拓扑语义，dominant / peer；缺省 peer 零行为变更） */
-    private final cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy;
+    /** 领袖优先级模式（peer|dominant；三机房"同城双备+异地灾备"须 dominant 并指定主机房） */
+    private final String leadershipMode;
     private final StoreSink storeSink;
 
     ParentGroupBuilder(SpeedboatConfigProvider config, String localIp, int localPort,
                        String datacenterId, int datacenterIndex, ConsistencyPolicy consistencyPolicy,
-                       cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy,
-                       StoreSink storeSink) {
+                       String leadershipMode, StoreSink storeSink) {
         this.config = config;
         this.localIp = localIp;
         this.localPort = localPort;
         this.datacenterId = datacenterId;
         this.datacenterIndex = datacenterIndex;
         this.consistencyPolicy = consistencyPolicy;
-        this.leadershipPolicy = leadershipPolicy;
+        this.leadershipMode = leadershipMode;
         this.storeSink = storeSink;
     }
 
@@ -173,6 +172,12 @@ final class ParentGroupBuilder {
         // 四参构造把优先级表注入策略：策略每次权重计算读其最新快照。
         VoteWeightStrategy parentStrategy =
             new DatacenterPriorityVoteWeightStrategy(effectiveWeights, datacenterId, 1, priorityTable);
+        // 领袖优先级策略绑定（此刻权重才真实可达）：dominant 注入父组投票策略，
+        // sticky 让位与心跳冻结例外都随权重表热更新（人工提升/回退）自动变化
+        cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy =
+            cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.MODE_DOMINANT.equals(leadershipMode)
+                ? cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.dominant(parentStrategy)
+                : cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.defaultPolicy();
 
         NodeEndpoint parentLocalEndpoint = new NodeEndpoint(parentNodeId, localIp, parentPort);
         NettyTransport parentNettyTransport = new NettyTransport(

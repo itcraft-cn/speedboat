@@ -104,18 +104,24 @@ public interface SpeedboatConfigProvider {
     }
 
     /**
-     * 领袖优先级策略（三机房拓扑语义）。缺省 peer（对等先到先得）——
+     * 领袖优先级模式（三机房拓扑语义）。缺省 peer（对等先到先得）——
      * 单机房、双机房与一切未显式配置的部署沿历史行为不变。
      *
      * <p>配置文件支持 {@code crossdc.leadership=peer|dominant}：三机房"同城双备 +
      * 异地灾备"语义（必须指定主机房）配 {@code dominant}——父组 PreVote 的 sticky
-     * 为权重严格更高的候选者让位，保证主机房优先级真实兑现（含初始竞速被抢先后的
-     * 单向夺回）；三机房对等（无主机房指定）保持 {@code peer}，任一机房合法凑满
-     * required 即可当主、现任成主后不再折腾。null 视为缺省 peer。</p>
+     * 为权重严格更高的候选者让位、且选举定时器不被在位心跳冻结，保证主机房优先级
+     * 真实兑现（含初始竞速被抢先后的单向夺回）；三机房对等（无主机房指定）保持
+     * {@code peer}，任一机房合法凑满 required 即可当主、现任成主后不再折腾。
+     * 空/非法/未知 视为 peer。</p>
+     *
+     * <p><b>注意：本方法只解析模式字符串；dominant 的权重绑定在父组装时完成
+     * （ParentGroupBuilder）——彼时父组权重表/投票策略才真正存在，过早绑定会
+     * 拿不到 3/2/2 的机房权重。</b></p>
      */
-    default cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy getLeadershipPolicy() {
-        return cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.defaultPolicy();
+    default String getLeadershipMode() {
+        return cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.MODE_PEER;
     }
+
 
     default cn.itcraft.speedboat.config.MembershipConfig getMembershipConfig() {
         return new cn.itcraft.speedboat.config.MembershipConfig();

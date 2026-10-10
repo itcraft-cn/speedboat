@@ -110,8 +110,8 @@ public class Speedboat {
      * 仅读取 {@code mode()}，不触碰降级状态，故跨线程读安全。</p>
      */
     private final ConsistencyPolicy consistencyPolicy;
-    /** 领袖优先级策略（三机房拓扑语义，dominant / peer；缺省 peer 零行为变更） */
-    private final cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadershipPolicy;
+    /** 领袖优先级模式（三机房拓扑语义；dominant 在父组装时绑定真权重表） */
+    private final String leadershipMode;
     /** 人工切主网关（Phase 五运维兜底实例级编排体） */
     private final PromoteGateway promoteGateway;
     /** 父组组装产物束；单机房模式下恒为 null */
@@ -147,12 +147,9 @@ public class Speedboat {
             ? resolvedPolicy
             : cpFallbackPolicy();
         this.promoteGateway = new PromoteGateway(this);
-        // 领袖优先级策略与 CP/AP 同为构造期选定、全生命周期恒定（null 兜底缺省 peer）
-        cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy resolvedLeadership =
-            config.getLeadershipPolicy();
-        this.leadershipPolicy = resolvedLeadership != null
-            ? resolvedLeadership
-            : cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy.defaultPolicy();
+        // 领袖优先级模式（仅模式标识在此解析；权重绑定延至 ParentGroupBuilder，
+        // 彼时父组权重表/投票策略才存在，过早绑定 dominant 会拿不到真实机房权重）
+        this.leadershipMode = config.getLeadershipMode();
 
         this.localIp = NetworkUtils.detectLocalIp();
         
@@ -395,7 +392,7 @@ public class Speedboat {
     private void buildParentGroup() {
         ParentGroupBuilder builder = new ParentGroupBuilder(
             config, localIp, localPort, datacenterId, datacenterIndex, consistencyPolicy,
-            leadershipPolicy, ownerId -> buildRaftStore(config, ownerId));
+            leadershipMode, ownerId -> buildRaftStore(config, ownerId));
         this.parentGroup = builder.build(config.getNodes());
     }
 
