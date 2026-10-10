@@ -484,7 +484,7 @@ public class RaftNodeImpl implements RaftNode {
      *
      * <p>执行序（全部收敛到 raft 单线程内，见设计文档 §6）：</p>
      * <ol>
-     *   <li><b>换表</b>：本机房权重 = max(对侧) + 2，epoch+1，来源 PROMOTED；</li>
+     *   <li><b>换表</b>：本机房权重 = Σ(其他机房权重) + 1，epoch+1，来源 PROMOTED；</li>
      *   <li><b>term 跃升</b>：默认 +{@code termLeap}（配置 promote.term.leap，缺省 100），
      *       使对侧旧任期在愈合后必然退让；</li>
      *   <li><b>登基</b>：自投（selfWeight ≥ requiredWeight）免广播直接成为 Leader；</li>
@@ -594,16 +594,16 @@ public class RaftNodeImpl implements RaftNode {
     /**
      * 提升编排本体（raft 单线程内）。
      *
-     * <p>权重数学：本机房取 {@code max(对侧) + 2}，保证
-     * {@code selfWeight ≥ requiredWeight} 自投即成主，且对侧无论如何组合都无法
-     * 同时满足多数派——双主在结构上不可能（见设计文档 §5）。</p>
+     * <p>权重数学：本机房取 {@code Σ(其他机房权重) + 1}，对任意机房数恒保证
+     * {@code selfWeight ≥ requiredWeight} 自投即成主、对侧合计永远差一票——
+     * 双主在结构上不可能（见设计文档 §5 与 computePromotedWeights javadoc）。</p>
      */
     private boolean doPromoteDatacenter(String operator, long termLeap, String reason) {
         DatacenterPriorityTable table = ctx.priorityTable;
         DatacenterPriorityTable.Snapshot before = table.current();
         long termBefore = ctx.term.getCurrent();
 
-        // 1) 换表：本机房权重 = max(对侧) + 2，epoch+1
+        // 1) 换表：本机房权重 = Σ(其他机房权重) + 1，epoch+1（任意机房数恒自投即成主，见其 javadoc）
         java.util.Map<String, Integer> newWeights = computePromotedWeights(before.weights());
         long newEpoch = before.epoch() + 1;
         table.replace(newEpoch, newWeights,
@@ -677,11 +677,10 @@ public class RaftNodeImpl implements RaftNode {
     }
 
     /**
-     * 计算提升后的权重表：本机房 = max(对侧) + 2，其余机房保持不变。
+     * 计算提升后的权重表：本机房 = Σ(其他机房权重) + 1，其余机房保持原值。
      *
-     * <p>{@code max(对侧) + 2} 保证本机房权重严格超过"对侧最大值 + 1"，从而
-     * {@code selfWeight ≥ total/2 + 1 = requiredWeight}，自投即达法定多数；同时对侧
-     * 即便拿到全部本机房以外的票也无法越过该门槛——唯一性由权重数学而非网络状态保证。</p>
+     * <p>双机房下该公式与旧式同为"自投即成主"，仅快照值由 max+2 收窄为 Σ+1
+     * （更贴近最小充分权重，避免配置值被历史提升层层抬高）。</p>
      */
     private java.util.Map<String, Integer> computePromotedWeights(
         java.util.Map<String, Integer> currentWeights) {
@@ -689,13 +688,13 @@ public class RaftNodeImpl implements RaftNode {
         if (currentWeights != null) {
             next.putAll(currentWeights);
         }
-        int maxOther = 0;
+        int sumOther = 0;
         for (java.util.Map.Entry<String, Integer> e : next.entrySet()) {
-            if (!e.getKey().equals(ctx.datacenter) && e.getValue() != null && e.getValue() > maxOther) {
-                maxOther = e.getValue();
+            if (!e.getKey().equals(ctx.datacenter) && e.getValue() != null && e.getValue() > 0) {
+                sumOther += e.getValue();
             }
         }
-        next.put(ctx.datacenter, maxOther + 2);
+        next.put(ctx.datacenter, sumOther + 1);
         return next;
     }
 

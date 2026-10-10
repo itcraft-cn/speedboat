@@ -218,11 +218,11 @@ class PriorityPromoteTest {
             long termBefore = node.getTerm().getCurrent();
             assertTrue(node.promoteDatacenter("alice", 100, "test promote"));
 
-            // 换表：dc-a = max(对侧=1) + 2 = 3
+            // 换表：dc-a = Σ(其他)=1 + 1 = 2（恰达 required=2 的最小充分权重）
             DatacenterPriorityTable.Snapshot snap = node.getPrioritySnapshot();
             assertEquals(1, snap.epoch());
             assertEquals(DatacenterPriorityTable.Source.PROMOTED, snap.source());
-            assertEquals(Integer.valueOf(3), snap.weights().get("dc-a"));
+            assertEquals(Integer.valueOf(2), snap.weights().get("dc-a"));
             assertEquals(Integer.valueOf(1), snap.weights().get("dc-b"));
 
             // term 跃升 ≥100
@@ -256,7 +256,7 @@ class PriorityPromoteTest {
         node.start();
         try {
             assertTrue(node.promoteDatacenter("alice", 100, "promote"));
-            assertEquals(Integer.valueOf(3), node.getPrioritySnapshot().weights().get("dc-a"));
+            assertEquals(Integer.valueOf(2), node.getPrioritySnapshot().weights().get("dc-a"));
 
             assertTrue(node.restoreDefaultPriorities("alice", "hand back"));
             DatacenterPriorityTable.Snapshot snap = node.getPrioritySnapshot();
@@ -419,7 +419,50 @@ class PriorityPromoteTest {
             DatacenterPriorityTable.Snapshot snap = node.getPrioritySnapshot();
             assertEquals(1, snap.epoch());
             assertEquals(DatacenterPriorityTable.Source.PROMOTED, snap.source());
-            assertEquals(Integer.valueOf(3), snap.weights().get("dc-a"));
+            assertEquals(Integer.valueOf(2), snap.weights().get("dc-a"));
+        } finally {
+            node.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("三机房提升：对侧权重和压过单房时新公式仍自投即成主（H1 回归）")
+    void promoteThreeDatacenterHeavyOpposites() {
+        //изма反例（review H1）：对侧 (5,5)、本房旧 3。旧公式 max+2=7，total=17，
+        // required=9，自投失败且留下已跃 term 的中间态；新公式 Σ_other+1 = 11，
+        // total=21、required=11，自投恰达门槛成主。
+        Map<String, Integer> weights = new LinkedHashMap<>();
+        weights.put("dc-a", 3);
+        weights.put("dc-b", 5);
+        weights.put("dc-c", 5);
+        DatacenterPriorityTable table = new DatacenterPriorityTable(weights, DatacenterPriorityTable.Source.CONFIG);
+        DatacenterPriorityVoteWeightStrategy strategy =
+            new DatacenterPriorityVoteWeightStrategy(weights, "dc-a", 1, table);
+
+        RaftNode node = new RaftNode.Builder()
+            .nodeId("node-eqweight3")
+            .datacenter("dc-a")
+            .peerIds(Collections.<String>emptyList())
+            .electionTimeout(new ElectionTimeout(150, 300))
+            .voteWeightStrategy(strategy)
+            .priorityTable(table)
+            .consistencyPolicy(CpConsistencyPolicy.getInstance())
+            .build();
+        node.start();
+        try {
+            long termBefore = node.getTerm().getCurrent();
+            assertTrue(node.promoteDatacenter("alice", 100, "three-dc heavy opposites"),
+                "三机房对侧 (5,5) 下 promote 必须成功（H1 修复回归）");
+
+            DatacenterPriorityTable.Snapshot snap = node.getPrioritySnapshot();
+            assertEquals(DatacenterPriorityTable.Source.PROMOTED, snap.source());
+            // 换表：dc-a = Σ(5+5) + 1 = 11
+            assertEquals(Integer.valueOf(11), snap.weights().get("dc-a"),
+                "本房权重应为 Σ(其他)+1=11（恰达 required=11，自投即成主）");
+            assertEquals(Integer.valueOf(5), snap.weights().get("dc-b"), "对侧保持原值");
+            assertEquals(Integer.valueOf(5), snap.weights().get("dc-c"), "对侧保持原值");
+            assertTrue(node.getTerm().getCurrent() >= termBefore + 100, "term 跃升照常");
+            assertTrue(node.isLeader(), "自投成主");
         } finally {
             node.shutdown();
         }

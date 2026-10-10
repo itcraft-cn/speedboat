@@ -170,7 +170,7 @@
 
 | 项 | 状态 | 落地方式 |
 |---|---|---|
-| H1 | **暂留**（按用户拍板） | 三机房 promote 公式缺陷保留，待后续决策 |
+| H1 | **已修（2026-10-10 追加）** | `computePromotedWeights` 公式改 `Σ(其他机房权重) + 1`（任意机房数恒 `self ≥ required` 自投成主、对侧合计差一票）；既有双房断言同步（快照 3→2，最小充分权重）；新增三机房 `(3,5,5)` 反例回归单测（promote 后 dc-a=11、term 跃升、成主）；MANUAL/设计文档/RaftNode javadoc 权重数学同步 |
 | M1 | 已修 | 参考 tiny-rules `Manager/State/Shadow` 分层拆出 `ParentGroupBuilder`（218 行）+ `ParentGroupBundle`（57 行）+ `PromoteGateway`（206 行），`Speedboat` 从 1255 行降至 978 行；父组 9 个散字段收敛为单一束字段 |
 | M2 | 已修 | `QuorumCalculator` 五处同构聚合收敛为 `aggregateWeightByDatacenter` 单骨架；`receivedWeightByDatacenter` 补齐分子侧 AP 剔除（分子分母口径归一） |
 | M3 | 已修 | `captureAuditState` 空 catch 改 `logger.debug` 留痕 |

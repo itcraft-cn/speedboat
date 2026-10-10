@@ -212,7 +212,7 @@ public interface RaftNode {
      * 人工提升<b>本机房</b>在父组中的优先级（阶段五人工升级 API；raft 线程内执行）。
      *
      * <p>仅跨机房级联父组有效（单机房/子组 {@code priorityTable} 为 null 时返回 false）。
-     * 接受后：本机房权重抬升为 {@code max(对侧权重) + 2}（使其自投即可成主且结构上不可能双主）、
+     * 接受后：本机房权重抬升为 {@code Σ(其他机房权重) + 1}（对任意机房数恒使自投即成主且结构上排除双主）、
      * term 按 {@code termLeap} 跃升（主机房旧任期追不上）、随选举登基为父组 Leader、
      * 提出 {@code PRIORITY_CHANGE} 日志条目复制到可达 peer、并写入父侧独立持久化。</p>
      *
