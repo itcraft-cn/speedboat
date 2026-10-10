@@ -64,11 +64,24 @@ CP="${CP:+${CP}:}${BASE}/speedboat.jar"
 case "${1:-}" in
   start)
     local_ip="$2"; cfg="$3"; mode="$4"; lock="$5"; logf="$6"
-    # 可选第 7 参 localPort：单机多进程（同 IP 多端口）身份钉定，
-    # 传入时以 -Dspeedboat.local.port 精确匹配 nodes 条目；缺省不传，行为与原状一致
+    # 可选第 7 参 localPort：单机多进程（同 IP 多端口）身份钉定，传入时以
+    # -Dspeedboat.local.port 精确匹配 nodes 条目；缺省不传，行为与原状一致
     local_port="${7:-}"
     cd "${BASE}"
     mkdir -p logs run
+    # ---------------------------------------------------------------- 残留强清
+    # pid 文件一旦被一次失败启动覆盖（如 bind fail），真进程就变孤儿、端口一直被占，
+    # 而 PID_FILE 后续全部误指死 pid —— stop/kill9/alive 全部假阴性，节点再也起不来。
+    # 因此 start 前必须双保险：先按 pid 文件停，再按进程特征兜底清（远端脚本自身
+    # 命令行不含 speedboat.jar，pkill 不会误伤调用方），并等端口释放。
+    if [ -f "${PID_FILE}" ]; then
+      kill "$(cat "${PID_FILE}")" 2>/dev/null || true
+    fi
+    pkill -f "speedboat.jar" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      ss -ltn 2>/dev/null | grep -q ":21001 " || ss -ltn 2>/dev/null | grep -q ":22001 " || break
+      sleep 0.5
+    done
     if [ ! -x "${JAVA}" ] && ! command -v "${JAVA}" >/dev/null 2>&1; then
       echo "java-not-found: ${JAVA}" >&2
       exit 65

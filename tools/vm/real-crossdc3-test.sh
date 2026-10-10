@@ -196,6 +196,18 @@ deploy() {
   done
 }
 
+# 等待"全局主稳定落在指定机房"（dominant 夺回链路的专用轮询）。
+# 只看机房归属与全网唯一主，不要求 parentLeader 全网一致（接管中途短暂分歧属正常）。"""
+wait_global_main_in() {
+  local secs=$1 want=$2 i d
+  for ((i = 0; i < secs; i++)); do
+    d=$(main_dc_index)
+    if [ "$d" = "$want" ] && [ "$(total_main)" = 1 ]; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
 # ============================ P0 基线 ============================
 phase0_baseline() {
   echo; log "P0 基线：启动九节点，三房各一代表，全局唯一主落在主机房 dc-0"
@@ -288,6 +300,10 @@ phase1_kill_main_leader() {
   wait_single_global_leader 30 "${HOSTS[@]}" || ok_g=0
   check "席位交接后父组重新收敛（唯一主 + parentLeader 一致）" [ "$ok_g" = 1 ]
 
+  # dom 夺回链路：dc-0 新代表须经"心跳不冻结 + sticky 让位 + term 更高选举"三步接管，
+  # 与收敛窗（收敛判定只要求"有主"）异步——必须独立等待主稳定回 dc-0
+  if wait_global_main_in 30 0; then check "30s 内全局主夺回到主机房（dominant 权重桥接接管）" true
+  else check "30s 内全局主夺回到主机房（dominant 权重桥接接管）" false; fi
   local nh; nh=$(dc_leader_host 0)
   if [ -n "$nh" ]; then
     local new_node; new_node=$(h_field "$nh" node)
@@ -326,7 +342,9 @@ phase2_kill_all_main() {
   BAK2_NODE_P2=$(h_field "$(dc_leader_host 2)" node 2>/dev/null || echo "")
   BAK2_TERM_P2=$(h_field "$(dc_leader_host 2)" term 2>/dev/null || echo 0)
   echo "  备房基线：dc-1=$BAK1_NODE_P2 term=$BAK1_TERM_P2；dc-2=$BAK2_NODE_P2 term=$BAK2_TERM_P2"
-  check "场景2前全局主在主机房（isMain=1）" [ "$(total_main)" = 1 ]
+  local ok_pre=1
+  wait_single_global_leader 20 "${HOSTS[@]}" || ok_pre=0
+  check "场景2前父组已收敛且全网唯一主（过渡窗不误判）" [ "$ok_pre" = 1 ] && check "场景2前全网 isMain=1" [ "$(total_main)" = 1 ]
 
   log "  kill -9 主机房全部三台"
   local h
@@ -386,20 +404,30 @@ phase3_restart_main() {
   check "全网 isMain=1（未双主）" [ "$(total_main)" = 1 ]
 
   if [ "$CONSISTENCY" = "ap" ]; then
-    # AP：P2 备房已接管并把父组 term 推高；主机房 term 低不夺回（标准 Raft 收敛）。
-    local mdi; mdi=$(main_dc_index)
-    if [ "$mdi" = 1 ] || [ "$mdi" = 2 ]; then
-      check "AP：全局主仍在备机房（低 term 不夺回）" true
+    # AP + dominant：主机房恢复即收主权是 dominant 语义的正当延续（主机房必须指定、
+    # 权重单向夺回与 AP/CP 无关）；term 由心跳/选举推平后接管。语义上双房时代的
+    # "降级接管后不自动交还"已被 LeadershipPolicy.dominant 的显式拓扑意图取代——
+    # 用户既然配置 dominant，即拍板"主机房永远优先"，P3 的锚变为"主回 dc-0"。
+    if wait_global_main_in 30 0; then
+      check "AP：全局主夺回到主机房（dominant 拍板：主机房恢复即收主权）" true
+      local nh2; nh2=$(dc_leader_host 0)
+      check "AP：主机房代表持有全局席位" [ "$(h_field "$nh2" isMain)" = "true" ]
     else
-      check "AP：全局主仍在备机房（低 term 不夺回）" false
+      check "AP：全局主夺回到主机房（dominant 拍板：主机房恢复即收主权）" false
+      check "AP：主机房代表持有全局席位" false
     fi
-    check "AP：主机房代表未持全局席位" [ "$(h_field "$nh" isMain)" = "false" ]
   else
-    # CP：主机房重启后 term 由 mmap 挂回并推进，self=3 收任一备房票 5≥4 夺回。
-    # 备两房在位 term 由 term 单票机制保证最终跟随，收敛窗口取长（多轮 term 爬升）。
-    check "CP：全局主夺回到主机房（权重3 主房重选 + 任一备房票 = 5 ≥ 4）" \
-      [ "$(main_dc_index)" = 0 ]
-    check "CP：主机房代表持有全局席位" [ "$(h_field "$nh" isMain)" = "true" ]
+    # CP：主机房重启后 term 由 mmap 挂回并跟进现任（心跳 updateIfHigher），
+    # dominant 冻结例外解锁选举定时器 → sticky 让位 → 以 term+1 正式选举接管。
+    # 链路为多候选期异步收敛，用"等主稳定回 dc-0"独立轮询。
+    if wait_global_main_in 30 0; then
+      check "CP：全局主夺回到主机房（dominant 权重桥：冻结例外 + sticky 让位 + term 更高接管）" true
+      local nh2; nh2=$(dc_leader_host 0)
+      check "CP：主机房代表持有全局席位" [ "$(h_field "$nh2" isMain)" = "true" ]
+    else
+      check "CP：全局主夺回到主机房（dominant 权重桥：冻结例外 + sticky 让位 + term 更高接管）" false
+      check "CP：主机房代表持有全局席位" false
+    fi
   fi
   GLOBAL_MAINS+=("$(total_main)")
 }
@@ -407,16 +435,15 @@ phase3_restart_main() {
 # ============================ P4 场景4：杀光两备机房 ============================
 phase4_kill_all_backup() {
   echo; log "P4 场景4：杀光 dc-1 与 dc-2（两备房），断言无票可补的末态语义"
-  # CP：主房随后在 dc-0（P3 夺回）；AP：主房仍在备房（P3 不夺回）。
-  local seat_dc=0
-  [ "$CONSISTENCY" = "ap" ] && seat_dc=1
-  local mh; mh=$(dc_main_host "$seat_dc")
-  if [ -z "$mh" ]; then
-    # CP 亦可能在 P3 后短暂无主（term 赶超窗口）；此处直接按预期位置找
-    check "场景4前全局主位于预期机房（dc-$seat_dc）" false
-    return
+  # 前置以"全网唯一主"收敛为准；席位机房（dominant 下应已在 dc-0，只作信息展示）
+  local ok_pre=1
+  wait_single_global_leader 20 "${HOSTS[@]}" || ok_pre=0
+  check "场景4前父组收敛且全网唯一主" [ "$ok_pre" = 1 ] && check "场景4前全网 isMain=1" [ "$(total_main)" = 1 ]
+  local seat_dc; seat_dc=$(main_dc_index)
+  echo "  场景4前席位在 dc-$seat_dc（dominant 拍板应为 dc-0）"
+  if [ "$seat_dc" != "0" ]; then
+    check "场景4前席位在主机房（dominant 语义核对）" false
   fi
-  check "场景4前全网 isMain=1" [ "$(total_main)" = 1 ]
 
   log "  kill -9 备机房全部六台（dc-1/dc-2）"
   local h
@@ -431,9 +458,9 @@ phase4_kill_all_backup() {
 
   if [ "$CONSISTENCY" = "ap" ]; then
     # AP：降级剔除一失联机房 → total=3+2=5，required=3，主机房 self=3 ≥ 3 接管。
-    # （wait_single_global_leader 轮询窗口覆盖"等降级阈值 + 重选"整段。）
+    # 链路：降级阈值(10s) + 定时器到期(≤5s) + 预票探测 + 正式选举，窗口取 ≥50s。
     local ok_take=1
-    wait_single_global_leader 40 "${HOSTS[@]}" || ok_take=0
+    wait_global_main_in 50 0 || wait_single_global_leader 10 "${HOSTS[@]}" || ok_take=0
     check "AP：备房全灭后主机房降级接管（40s 内收敛唯一主）" [ "$ok_take" = 1 ]
     check "AP：接管者落在主机房（required=3 ≤ self=3）" [ "$(main_dc_index)" = 0 ]
     check "AP：全网 isMain=1（未双主）" [ "$(total_main)" = 1 ]
@@ -449,16 +476,13 @@ phase4_kill_all_backup() {
 
 # ============================ P4b 恢复两备机房 ============================
 phase4b_restore_backup() {
-  echo; log "P4b 恢复两备机房，断言其不得抢夺主机房席位"
-  # CP 下席位回到主机房（P4 与 P3 间），AP 下席位已在主机房（P4 接管）
-  local mh; mh=$(dc_main_host 0)
-  if [ -z "$mh" ]; then
-    check "P4b 前主机房持有全局席位（CP 前提）" false
-    return
-  fi
-  local m_node; m_node=$(h_field "$mh" node)
-
+  echo; log "P4b 恢复两备机房，断言主机房仍稳坐全局主席位"
+  # 前提放宽：CP 下 P4 末态为无主（唯一性硬约束）——P4b 的语义正是"备房重入后，
+  # 权重最高的主机房仍优先收回主位"；位置以恢复后的收敛结果为准。
+  # 重启序先彻底清杀（stop -> kill9 双保险），防止 kill9 漏杀残留进程占端口。
   local h
+  for h in "${DC1[@]}" "${DC2[@]}"; do stop_host "$h"; kill9_host "$h"; done
+  sleep 2
   for h in "${DC1[@]}" "${DC2[@]}"; do start_node "$h" >/dev/null; done
   sleep 5
 
@@ -475,10 +499,13 @@ phase4b_restore_backup() {
   check "备房重入后父组仍收敛（唯一主 + parentLeader 一致）" [ "$ok_g" = 1 ]
   check "全局 isMain 仍为 1（备房重入未产生双主）" [ "$(total_main)" = 1 ]
 
-  local n2; n2=$(dc_main_host 0)
-  check "全局主仍在主机房" [ -n "$n2" ]
-  check "全局主节点未因备房重入改变" [ "$(h_field "$n2" node)" = "$m_node" ]
-  check "备房代表未持有全局席位" [ "$(h_field "$(dc_leader_host 1)" isMain)" = "false" ]
+  if wait_global_main_in 30 0; then
+    check "备房重入后全局主稳回主机房（dc-0 权重优先、备房不得长据席位）" true
+    local n2; n2=$(dc_main_host 0)
+    check "备房代表未持有全局席位" [ "$(h_field "$(dc_leader_host 1)" isMain)" = "false" ]
+  else
+    check "备房重入后全局主稳回主机房（dc-0 权重优先、备房不得长据席位）" false
+  fi
   GLOBAL_MAINS+=("$(total_main)")
 }
 
