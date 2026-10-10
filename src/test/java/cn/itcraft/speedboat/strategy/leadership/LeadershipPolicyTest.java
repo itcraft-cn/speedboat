@@ -65,6 +65,30 @@ class LeadershipPolicyTest {
     }
 
     @Test
+    @DisplayName("dominant 冻结例外：本房权重严格高于现任 Leader 房时的选举定时器不冻结，反之一律冻结")
+    void dominantFreezeExceptionFollowsWeight() {
+        LeadershipPolicy p = LeadershipPolicy.dominant(priorityStrategy());
+
+        // 主机房(3) 持有夺主探测权：在位备房(2) 心跳不得冻结其选举定时器
+        assertFalse(p.freezeHeartbeatElectionTimer("dc-1", "dc-0"),
+            "dc-0(3) 对 dc-1(2) 在位心跳不冻结选举定时器（夺主探测必须有发起时机）");
+        assertFalse(p.freezeHeartbeatElectionTimer("dc-2", "dc-0"),
+            "dc-0(3) 对 dc-2(2) 同样不冻结");
+        // 反向（低权重对上高权重现任）必须冻结——否则两对等机房乒乓震荡
+        assertTrue(p.freezeHeartbeatElectionTimer("dc-0", "dc-1"), "低夺高冻结");
+        assertTrue(p.freezeHeartbeatElectionTimer("dc-1", "dc-2"), "两对等备房互不夺主（冻结）");
+        assertTrue(p.freezeHeartbeatElectionTimer(null, "dc-0"), "未知现任机房保守冻结");
+        assertTrue(p.freezeHeartbeatElectionTimer("dc-1", "dc-1"), "同机房冻结");
+    }
+
+    @Test
+    @DisplayName("缺省 peer 策略：冻结口径恒 true（逐字节等价于引入前的全局行为）")
+    void peerAlwaysFreezes() {
+        LeadershipPolicy p = LeadershipPolicy.defaultPolicy();
+        assertTrue(p.freezeHeartbeatElectionTimer("dc-2", "dc-0"), "peer 不做冻结例外");
+        assertTrue(p.freezeHeartbeatElectionTimer(null, null));
+    }
+    @Test
     @DisplayName("dominant + 无权重策略兜底：权重全 1，任何候选者都不让位（failsafe）")
     void dominantWithoutWeightsNeverYields() {
         LeadershipPolicy p = LeadershipPolicy.dominant(null);

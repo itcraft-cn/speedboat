@@ -508,7 +508,19 @@ final class ElectionCoordinator {
 
             long elapsedNanos = System.nanoTime() - ctx.lastHeartbeatNanos;
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(elapsedNanos);
-            if (elapsedMs >= timeoutMs) {
+            // dominant 夺主例外：candidate 权重严格高于现任 Leader 机房时，在位心跳
+            // 不再延长本节点的等待（心跳会刷新 lastHeartbeatNanos，elapsed 永远不满、
+            // 定时器即便不被 freeze 也进不了 pre-vote）；此时应当机立断发起探测。
+            // 判定与 InboundAppendHandler.freezeHeartbeatElectionTimer 同一策略口径。
+            boolean takeoverProbe = false;
+            if (elapsedMs < timeoutMs && ctx.leaderId != null) {
+                cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy policy = ctx.leadershipPolicy;
+                String leaderDc = ctx.peerDatacenters.get(ctx.leaderId);
+                if (!policy.freezeHeartbeatElectionTimer(leaderDc, ctx.datacenter)) {
+                    takeoverProbe = true;
+                }
+            }
+            if (elapsedMs >= timeoutMs || takeoverProbe) {
                 // Phase C：先经预投票探测，避免被分区恢复节点以暴涨 term 打奔现行任
                 logger.info("Node {} election timeout (elapsed={}ms), starting pre-vote", ctx.nodeId, elapsedMs);
                 doStartPreVote();

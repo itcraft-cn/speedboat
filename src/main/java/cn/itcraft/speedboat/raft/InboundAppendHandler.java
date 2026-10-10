@@ -85,8 +85,21 @@ final class InboundAppendHandler {
         }
 
         ctx.leaderId = request.getLeaderId();
-        resetElectionTimeout.run();
         ctx.lastHeartbeatNanos = System.nanoTime();
+        // 心跳冻结选举定时器（Raft 原生）与 dominant 夺主权例外（策略化）：
+        // 三机房 dominant 下，若本机房权重严格高于现任 Leader 机房，本节点持有
+        // "夺主探测权"——父组选举定时器不被在位心跳 reset（否则在位主永远健康、
+        // 选举定时器永不到期，sticky 让位虽生效却无发起时机），定时器照常到期、
+        // doStartPreVote 以 probe term 反复探测直至接管完成。
+        // peer（缺省）：恒冻结，与引入策略前逐字节等价。
+        cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy leadership = ctx.leadershipPolicy;
+        // 现任 Leader 机房：peer 登记查询（非本机；本机即 Leader 的分支在下方 selfIsLeaderDc 处理）
+        String leaderDc = ctx.peerDatacenters.get(request.getLeaderId());
+        boolean selfIsLeaderDc = ctx.nodeId.equals(request.getLeaderId());
+        if (selfIsLeaderDc
+            || leadership.freezeHeartbeatElectionTimer(leaderDc, ctx.datacenter)) {
+            resetElectionTimeout.run();
+        }
 
         // 阶段五：心跳携带的优先级快照先行收敛（epoch 更高才采纳，与日志一致性检查无关），
         // 使提升后的优先级表能随父组心跳传播到全网。

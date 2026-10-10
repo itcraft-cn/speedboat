@@ -53,6 +53,23 @@ public final class DominantDatacenterLeadershipPolicy implements LeadershipPolic
         return candidateWeight > incumbentWeight;
     }
 
+    /**
+     * dominant：仅当本机房权重严格高于现任 Leader 机房时，允许选举定时器不被心跳冻结
+     * （持有"夺主探测权"）；否则照常冻结。权重并列/更低的机房必须冻结——
+     * 两对等机房若都不冻结会乒乓震荡。
+     */
+    @Override
+    public boolean freezeHeartbeatElectionTimer(String leaderDatacenter, String selfDatacenter) {
+        if (leaderDatacenter == null || selfDatacenter == null
+            || leaderDatacenter.equals(selfDatacenter)) {
+            return true;
+        }
+        int selfWeight = weightStrategy != null ? weightStrategy.dcWeight(selfDatacenter) : 1;
+        int leaderWeight = weightStrategy != null ? weightStrategy.dcWeight(leaderDatacenter) : 1;
+        // false = 不冻结（定时器到期可发起夺主探测）；仅 self 严格高于 leader 时 False
+        return selfWeight <= leaderWeight;
+    }
+
     @Override
     public String toString() {
         return "DominantDatacenterLeadershipPolicy";

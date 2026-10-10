@@ -57,6 +57,28 @@ public interface LeadershipPolicy {
     boolean stickyMayYield(String candidateDatacenter, String incumbentLeaderDatacenter);
 
     /**
+     * 收到在位 Leader 心跳时，是否照常"冻结"本节点的选举定时器（timeout 到期前的心跳
+     * 总是 reset 定时器）。
+     *
+     * <p><b>决策语义：</b></p>
+     * <ul>
+     *   <li>对等模式（peer）恒 true——现任健康即零骚扰（逐字节等价的全局前置行为）；</li>
+     *   <li>主导模式（dominant）：仅当本机房权重<b>严格高于</b>现任 Leader 机房权重时
+     *       false（定时器不被心跳 reset，可按周期到期发起夺主探测）；其余一律 true。</li>
+     * </ul>
+     *
+     * <p>与 {@link #stickyMayYield} 构成完整夺回链路：定时器可到期（本方法）→
+     * sticky 让位（彼方法）→ 正式 term 更高选举接管。</p>
+     *
+     * @param leaderDatacenter 现任 Leader 所在机房标识（自身即 Leader 时调用方已短路，恒非 null）
+     * @param selfDatacenter   本节点所在机房标识
+     * @return true 表示照常冻结（心跳 reset 定时器）
+     */
+    default boolean freezeHeartbeatElectionTimer(String leaderDatacenter, String selfDatacenter) {
+        return true;
+    }
+
+    /**
      * 缺省策略：三机房对等（peer），零行为变更。
      *
      * <p>无状态、无依赖，单机房 / 双机房 / 一切未显式配置的部署沿历史行为不变。</p>
