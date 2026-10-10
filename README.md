@@ -11,6 +11,9 @@
 - **集群视角配置**：用户只需配置 `datacenter + nodes`
 - **自动匹配**：系统自动检测本机 IP 并匹配节点
 - **自动模式**：单机房扁平模式，跨机房级联模式
+- **三机房级联**：父组机房法定多数 + `crossdc.leadership=peer|dominant` 领袖优先级策略（对等缺省 / 灾备 sticky 让位），三机房 3/2/2 九节点实机 CP 41/41 + AP 48/48 全 PASS
+- **CP/AP 双模式**：`consistency.policy=cp`（缺省，强一致唯一性绝不双主）/ `ap`（对侧失联超阈值降级接管，分区期间允许短暂双主）
+- **人工切主兜底**：`promoteDatacenter`/`restoreDefaultPriorities`（仅 CP，带连通性闸门与 PROMOTE-AUDIT 审计）
 - **分布式命名锁**：任意成员可申请任意名目锁；恰好一个持有者；非抢占公平接管；epoch fencing
 - **持久化三档**：mem（默认）/ mmap（重启"挂回"）/ none，锁与 epoch 跨重启保真
 - **两套超时**：机房内/机房间独立配置
@@ -163,12 +166,18 @@ if (handle.isSuccess()) {
 Speedboat.start(config);
 
 // 状态查询
-Speedboat.isMain();           // 是否主节点
+Speedboat.isMain();           // 是否主节点（跨机房：子组 && 父组双料当选）
 Speedboat.getLeaderId();      // 主节点ID
 Speedboat.getTerm();          // 当前任期
+Speedboat.isParentLeader();   // 父组（跨机房层）是否当选
+Speedboat.getParentTerm();    // 父组任期（两组 term 各自单调）
 Speedboat.getNodeId();        // 本节点ID
 Speedboat.getDatacenterId();  // 机房ID
 Speedboat.isRunning();        // 运行状态
+
+// 人工切主兜底（仅 CP 模式生效；AP 忽略并留审计）
+Speedboat.promoteDatacenter("alice", "beijing002", "机房整体下线");
+Speedboat.restoreDefaultPriorities("alice", "机房已恢复");
 
 // 停止
 Speedboat.stop();

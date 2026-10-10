@@ -1,5 +1,7 @@
 # Speedboat 使用手册
 
+> [English](MANUAL_en.md) · [README](README.md) · [变更日志](CHANGELOG.md)
+
 ## 目录
 
 - [概述](#概述)

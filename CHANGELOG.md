@@ -4,6 +4,38 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)。
 
+> [English](CHANGELOG_en.md) · [README](README.md) · [使用手册](MANUAL.md)
+
+## [Unreleased 4] - 2026-10-10
+
+### Added（跨机房双层级联全链路）
+
+- **跨机房级联父组**：双层 Raft 骨架（子组机房内 + 父组跨机房），协议 P1/P2/P4 携带机房标识；机房优先级权重作唯一性硬保证——父组法定多数**按机房聚合分母**（机房不能被一票买通），主机房缺一备房票不成主；父组全网互联并补齐选举入口席位门控
+- **CP/AP 一致性双模式**：`consistency.policy=cp`（缺省，强一致唯一性，整机房失联退化无主，`isMain` 恒 ≤ 1）/ `ap`（对侧失联超 `consistency.degraded.timeout.ms` 降级接管，分区期间允许短暂双主，进出降级各落 `CONSISTENCY AUDIT` 审计）；启动时选定、全生命周期恒定
+- **人工提升/回退机房优先级 API**：`promoteDatacenter` / `restoreDefaultPriorities` / `getPrioritySnapshot`（运维兜底）——换表（本房权重 = Σ(其他)+1，任意机房数恒自投即成主）+ `promote.term.leap` term 跃升 + `PRIORITY_CHANGE` 日志复制 + `parent-priority.properties` 独立持久化；连通性闸门（对侧任一父组端点可达即拒）；**仅 CP 生效**，AP 下忽略并落 `op=IGNORED` 审计
+- **LeadershipPolicy 领袖优先级策略族**：`crossdc.leadership=peer`（缺省，对等）/ `dominant`（灾备：PreVote sticky 让位——候选者机房权重严格大于现任才让 + 心跳冻结例外的夺主探测）；权重绑定延至父组装时
+- **双层观测 API**：`isIntraLeader`/`isParentLeader`/`getIntraTerm`/`getParentTerm`/`getIntraLeaderId`/`getParentLeaderId` 等；`isMain() == isIntraLeader() && isParentLeader()`
+- **编排工具**：`real-crossdc3-test.sh` 三机房 3/2/2 九节点 CP/AP 实机编排；`vm-crossdc-test` 按 `SB_CONSISTENCY` 分叉断言；vboxnet0 网络分区专项编排；同 IP 多进程身份钉定
+
+### Fixed
+
+- **父组法定多数按机房聚合分母**：修正节点级分母虚增致基线选不出主；父组改全网互联 + 选举入口席位门控
+- **promote 权重公式 H1 闭环**：`computePromotedWeights` 改 `本房 = Σ(其他机房权重) + 1`，任意机房数（含三机房）恒自投即成主
+- **dominant 权重绑定时机**：延至 `ParentGroupBuilder` 组装时绑定，修正早绑 null 权重恒等恒冻结
+- **两轮代码审查修复**：001 增量（1 高 4 中 + L1-L8，含 `Speedboat` 拆分出 `ParentGroupBuilder`/`ParentGroupBundle`/`PromoteGateway`，1255→978 行）；002 全量（H1 `StateMachine.canSnapshot()` 契约 / H2 `peerIds` 竞态 / C-2 `Term.current` volatile / M-1..M-7 含 CRC 覆盖扩为类型头+payload、tryLock 改 nanoTime / Q、L 系列）
+- **外部点评（deepseek/hunyuan）复核五项**：tryLock 热路径 attempt 日志 INFO→DEBUG；续租调度池共享单例（per-lock 100 线程 → 全局 1 线程）；`ctx.log` CopyOnWriteArrayList→ArrayList + `tailFrom` 按下标切除（O(n·m) 心跳复制与追加 O(n²) 收敛）；`MmapRaftStore.scanRecords` CRC 坏帧告警跳过（writeOffset 回填，坏段后有效帧不再被覆写丢失）；`LogEntry` null 防御 / `NodeEndpoint.parse` nodeId 统一 / `truncateLogEntriesUntil` inclusive 标注 / `lastApplied` 两套水位口径注释
+- **logback-core 对齐 1.2.13**：修复 dependabot 错配升级
+
+### Changed
+
+- **内联全限定类名全局收敛为 import**（src/main + src/test，标准库与 cn.itcraft 两批）
+- **删除 `MembershipCoordinator`**（被 membership 策略族取代的遗留件）及集成测试
+
+### Verified
+
+- 单元：全量 616 绿（622 − 6，M-4 删集成测试）
+- 实机：三机房 3/2/2 九节点（51/53/55 | 108/109/110 | 174/175/176）——**CP 41/41 + AP 48/48 全 PASS**；六机复验 61/61
+
 ## [Unreleased 3] - 2026-09-22
 
 ### Added（SOFAJRaft/Ratis 可吸收点第一批落地）

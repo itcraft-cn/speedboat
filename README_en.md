@@ -11,6 +11,9 @@
 - **Cluster-Oriented Configuration**: Just configure `datacenter + nodes`
 - **Auto-Discovery**: Automatically detects local IP and matches the node
 - **Auto Mode**: Flat mode for single datacenter, cascading mode for cross-datacenter
+- **Three-Datacenter Cascading**: parent-group quorum per datacenter plus the `crossdc.leadership=peer|dominant` leadership policy (peer by default / dominant with sticky yield for DR) — verified on a real 3/2/2 nine-node setup, CP 41/41 + AP 48/48 all PASS
+- **CP/AP Dual Mode**: `consistency.policy=cp` (default — strong consistency, unique leader, never dual) / `ap` (degraded takeover after the peer stays unreachable past the threshold; brief dual leaders allowed during partition)
+- **Manual Leader Switch Fallback**: `promoteDatacenter`/`restoreDefaultPriorities` (CP only, with a reachability gate and PROMOTE-AUDIT logging)
 - **Named Distributed Lock**: any member may acquire any named lock; exactly one holder; non-preemptive takeover with epoch fencing
 - **Three Persistence Tiers**: mem (default) / mmap (re-attachable across restarts) / none — locks and epochs survive restarts
 - **Dual Timeouts**: Independent timeout settings for intra-datacenter and cross-datacenter
@@ -155,12 +158,18 @@ commodities lock) fits **one single Raft group** — no extra processes or ports
 Speedboat.start(config);
 
 // Status queries
-Speedboat.isMain();           // Is this node the leader?
+Speedboat.isMain();           // Is this node the leader? (cross-DC: intra && parent dual win)
 Speedboat.getLeaderId();      // Current leader node ID
 Speedboat.getTerm();          // Current term
+Speedboat.isParentLeader();   // Won the parent-group (cross-DC layer) election?
+Speedboat.getParentTerm();    // Parent-group term (the two terms are each monotonically increasing)
 Speedboat.getNodeId();        // Local node ID
 Speedboat.getDatacenterId();  // Datacenter ID
 Speedboat.isRunning();        // Running status
+
+// Manual leader-switch fallback (CP mode only; ignored under AP with an audit entry)
+Speedboat.promoteDatacenter("alice", "beijing002", "datacenter fully down");
+Speedboat.restoreDefaultPriorities("alice", "datacenter recovered");
 
 // Stop
 Speedboat.stop();
