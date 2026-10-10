@@ -496,6 +496,10 @@ public class RaftNodeImpl implements RaftNode {
      * <p><b>前置闸门不在本方法</b>——"对侧机房父组端点全部不可达"由 Speedboat 门面探测
      * （门面持有对侧端点集合）。本方法只做 raft 线程内状态变更，不复查网络。</p>
      *
+     * <p><b>AP 模式闸门在本方法</b>：人工切主只对 CP 有意义，AP 下直接拒绝（仅留 WARN），
+     * 不改任何状态。门面已先行忽略并打审计日志，此处是<b>纵深防御</b>——状态变更的真正
+     * 咽喉点须自带防线，防止未来新增调用方绕过门面。</p>
+     *
      * @param operator 操作者（审计必填；由门面校验非空）
      * @param termLeap term 跃升幅度（&gt;0；门面已按配置缺省补齐）
      * @param reason   变更原因（审计）
@@ -503,6 +507,12 @@ public class RaftNodeImpl implements RaftNode {
      */
     @Override
     public boolean promoteDatacenter(String operator, long termLeap, String reason) {
+        if (manualSwitchIgnoredInApMode()) {
+            logger.warn("Node {} manual promote ignored: consistency policy is AP "
+                + "(manual datacenter switch applies to CP only), operator={}, reason={}",
+                ctx.nodeId, operator, reason);
+            return false;
+        }
         if (ctx.priorityTable == null) {
             logger.warn("Node {} promote rejected: no priority table (not a cross-datacenter parent group)",
                 ctx.nodeId);
@@ -526,12 +536,20 @@ public class RaftNodeImpl implements RaftNode {
      * <p>本机房已是父组 Leader 时才执行换表（否则拒绝：回退需要以 Leader 身份复制出去，
      * 否则对侧无法经心跳收到新表）。与提升一致，网络闸门由门面把守。</p>
      *
+     * <p>AP 模式下与提升同样被忽略（纵深防御，见 {@link #promoteDatacenter}）。</p>
+     *
      * @param operator 操作者（审计必填）
      * @param reason   变更原因（审计）
      * @return true 表示回退已生效并复制出去
      */
     @Override
     public boolean restoreDefaultPriorities(String operator, String reason) {
+        if (manualSwitchIgnoredInApMode()) {
+            logger.warn("Node {} manual restore ignored: consistency policy is AP "
+                + "(manual datacenter switch applies to CP only), operator={}, reason={}",
+                ctx.nodeId, operator, reason);
+            return false;
+        }
         if (ctx.priorityTable == null) {
             logger.warn("Node {} restore rejected: no priority table (not a cross-datacenter parent group)",
                 ctx.nodeId);
@@ -558,6 +576,19 @@ public class RaftNodeImpl implements RaftNode {
     public cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot getPrioritySnapshot() {
         cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable table = ctx.priorityTable;
         return table == null ? null : table.current();
+    }
+
+    /**
+     * 人工切主是否应被忽略（仅 AP 模式忽略；CP 与未注入策略按缺省 CP 放行）。
+     *
+     * <p>直接读 {@code ctx.consistencyPolicy}——与选举/心跳消费的是同一实例，
+     * 保证"模式判定"与"降级接管行为"不会口径分裂。</p>
+     */
+    private boolean manualSwitchIgnoredInApMode() {
+        cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy policy = ctx.consistencyPolicy;
+        return policy != null
+            && cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy.MODE_AP
+                .equals(policy.mode());
     }
 
     /**

@@ -1,6 +1,8 @@
 package cn.itcraft.speedboat.raft;
 
 import cn.itcraft.speedboat.persistence.PriorityStore;
+import cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy;
+import cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityVoteWeightStrategy;
 import cn.itcraft.speedboat.strategy.voteweight.PriorityCodec;
@@ -19,7 +21,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * 阶段五人工升级 API 单测：条目编解码、优先级表收敛、独立持久化、
- * 以及 RaftNodeImpl 的提升/回退编排（换表 → term 跃升 → 登基 → 复制 → 持久化）。
+ * RaftNodeImpl 的提升/回退编排（换表 → term 跃升 → 登基 → 复制 → 持久化），
+ * 以及 CP/AP 模式闸门（AP 下人工切主一律忽略，CP 照常放行）。
  */
 class PriorityPromoteTest {
 
@@ -308,6 +311,115 @@ class PriorityPromoteTest {
         node.start();
         try {
             assertFalse(node.promoteDatacenter("alice", 100, "learner"));
+        } finally {
+            node.shutdown();
+        }
+    }
+
+    // ==================== AP 模式：人工切主一律忽略 ====================
+
+    @Test
+    @DisplayName("AP 模式下提升被忽略：不换表、不跃 term、不抛异常")
+    void promoteIgnoredInApMode() {
+        Map<String, Integer> weights = new LinkedHashMap<>();
+        weights.put("dc-a", 2);
+        weights.put("dc-b", 1);
+        DatacenterPriorityTable table = new DatacenterPriorityTable(weights, DatacenterPriorityTable.Source.CONFIG);
+        DatacenterPriorityVoteWeightStrategy strategy =
+            new DatacenterPriorityVoteWeightStrategy(null, "dc-a", 1, table);
+
+        RaftNode node = new RaftNode.Builder()
+            .nodeId("node-ap1")
+            .datacenter("dc-a")
+            .peerIds(Collections.<String>emptyList())
+            .electionTimeout(new ElectionTimeout(150, 300))
+            .voteWeightStrategy(strategy)
+            .priorityTable(table)
+            .consistencyPolicy(new ApConsistencyPolicy(ApConsistencyPolicy.DEFAULT_DEGRADED_TIMEOUT_MS))
+            .build();
+        node.start();
+        try {
+            long termBefore = node.getTerm().getCurrent();
+            DatacenterPriorityTable.Snapshot before = node.getPrioritySnapshot();
+
+            // 忽略 = 返回 false 但不产生任何状态变更，也不抛异常
+            assertFalse(node.promoteDatacenter("alice", 100, "ap must ignore"),
+                "AP 模式下人工提升应被忽略");
+
+            DatacenterPriorityTable.Snapshot after = node.getPrioritySnapshot();
+            assertEquals(before.epoch(), after.epoch(), "AP 忽略时 epoch 不得推进");
+            assertEquals(DatacenterPriorityTable.Source.CONFIG, after.source(),
+                "AP 忽略时来源不得变成 PROMOTED");
+            assertEquals(before.weights(), after.weights(), "AP 忽略时权重表不得被换掉");
+            assertEquals(termBefore, node.getTerm().getCurrent(), "AP 忽略时 term 不得跃升");
+        } finally {
+            node.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("AP 模式下回退被忽略：已提升的表不被回退覆盖")
+    void restoreIgnoredInApMode() {
+        Map<String, Integer> weights = new LinkedHashMap<>();
+        weights.put("dc-a", 2);
+        weights.put("dc-b", 1);
+        DatacenterPriorityTable table = new DatacenterPriorityTable(weights, DatacenterPriorityTable.Source.CONFIG);
+        DatacenterPriorityVoteWeightStrategy strategy =
+            new DatacenterPriorityVoteWeightStrategy(null, "dc-a", 1, table);
+
+        RaftNode node = new RaftNode.Builder()
+            .nodeId("node-ap2")
+            .datacenter("dc-a")
+            .peerIds(Collections.<String>emptyList())
+            .electionTimeout(new ElectionTimeout(150, 300))
+            .voteWeightStrategy(strategy)
+            .priorityTable(table)
+            .consistencyPolicy(new ApConsistencyPolicy(ApConsistencyPolicy.DEFAULT_DEGRADED_TIMEOUT_MS))
+            .build();
+        node.start();
+        try {
+            // AP 下提升同样被忽略，表保持 CONFIG/epoch=0
+            assertFalse(node.promoteDatacenter("alice", 100, "ap must ignore"));
+            assertFalse(node.restoreDefaultPriorities("alice", "ap must ignore"),
+                "AP 模式下人工回退应被忽略");
+
+            DatacenterPriorityTable.Snapshot snap = node.getPrioritySnapshot();
+            assertEquals(0, snap.epoch(), "AP 忽略时 epoch 不得推进");
+            assertEquals(DatacenterPriorityTable.Source.CONFIG, snap.source());
+            assertEquals(Integer.valueOf(2), snap.weights().get("dc-a"),
+                "AP 忽略时权重表保持配置值");
+        } finally {
+            node.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("CP 模式（缺省）下人工切主照常生效——闸门不误伤 CP")
+    void promoteAllowedInDefaultCpMode() {
+        Map<String, Integer> weights = new LinkedHashMap<>();
+        weights.put("dc-a", 2);
+        weights.put("dc-b", 1);
+        DatacenterPriorityTable table = new DatacenterPriorityTable(weights, DatacenterPriorityTable.Source.CONFIG);
+        DatacenterPriorityVoteWeightStrategy strategy =
+            new DatacenterPriorityVoteWeightStrategy(null, "dc-a", 1, table);
+
+        RaftNode node = new RaftNode.Builder()
+            .nodeId("node-cp1")
+            .datacenter("dc-a")
+            .peerIds(Collections.<String>emptyList())
+            .electionTimeout(new ElectionTimeout(150, 300))
+            .voteWeightStrategy(strategy)
+            .priorityTable(table)
+            .consistencyPolicy(CpConsistencyPolicy.getInstance())
+            .build();
+        node.start();
+        try {
+            assertTrue(node.promoteDatacenter("alice", 100, "cp allows"),
+                "CP 模式下人工提升必须照常生效");
+            DatacenterPriorityTable.Snapshot snap = node.getPrioritySnapshot();
+            assertEquals(1, snap.epoch());
+            assertEquals(DatacenterPriorityTable.Source.PROMOTED, snap.source());
+            assertEquals(Integer.valueOf(3), snap.weights().get("dc-a"));
         } finally {
             node.shutdown();
         }

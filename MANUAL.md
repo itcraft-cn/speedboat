@@ -306,7 +306,8 @@ boolean ok = Speedboat.promoteDatacenter(operator, datacenterId, reason)
 ```
 
 跨机房模式下，把本机房在父组的优先级提升到"自投即成主"。详见部署指南
-「人工升级与回退」小节。返回 `false` 表示被前置校验或连通性闸门拒绝。
+「人工升级与回退」小节。**仅 CP 模式生效**：AP 模式下调用被忽略（只落审计日志，
+不改状态、不抛异常），返回 `false`。
 
 #### 人工回退优先级到配置值
 
@@ -314,7 +315,8 @@ boolean ok = Speedboat.promoteDatacenter(operator, datacenterId, reason)
 boolean ok = Speedboat.restoreDefaultPriorities(operator, reason)
 ```
 
-把优先级表回退到配置派生值。回退不跃升 term、不夺主。
+把优先级表回退到配置派生值。回退不跃升 term、不夺主。与提升一样**仅 CP 模式生效**，
+AP 模式下被忽略。
 
 #### 查看当前优先级快照
 
@@ -513,6 +515,13 @@ consistency.degraded.timeout.ms=10000
 CP 下退化为无主。此时可由运维通过门面 API **显式提升**备机房在父组的优先级，
 使其自投成主、恢复 `isMain` 唯一主语义。这是一条**人工兜底通路**，不自动触发、不做远程接口、不做控制台。
 
+> **模式适用范围（仅 CP）**：人工切主**只对 `consistency.policy=cp` 生效**。
+> AP 模式已显式接受"分区期间短暂双主"，"把某机房提为唯一主"在该模式下没有定义良好的语义，
+> 故 AP 下调用被**忽略**——只落一条 `op=IGNORED` 的 `PROMOTE-AUDIT` 审计日志，
+> **不改任何状态、不抛异常、不返回错误**，返回值为 `false`。
+> 这是刻意的：让运维脚本把"模式不适用"当作可识别的空操作，而非故障去重试。
+> `getPrioritySnapshot()` 是只读查询，AP 下照常可用。
+
 #### 提升：`promoteDatacenter`
 
 ```java
@@ -522,10 +531,11 @@ boolean ok = Speedboat.promoteDatacenter("alice", "beijing002", "hangzhou 机房
 
 **接受前置（全部满足才放行）**：
 
-1. 单例在跑，且为跨机房模式；
-2. `operator` 非空（审计必填）；
-3. 目标 `datacenterId` **等于本机房**（不能提升对侧）；
-4. **连通性闸门**：探对侧机房全部父组端点，**任一可达即拒绝**——网络仍通时强行提升会打开"双主"窗口。
+1. 单例在跑；
+2. **CP 模式**（AP 直接忽略，见上）；
+3. 跨机房模式，且 `operator` 非空（审计必填）；
+4. 目标 `datacenterId` **等于本机房**（不能提升对侧）；
+5. **连通性闸门**：探对侧机房全部父组端点，**任一可达即拒绝**——网络仍通时强行提升会打开"双主"窗口。
 
 **放行后的执行序**（raft 单线程内）：换表（本机房权重 = `max(对侧) + 2`）→ term 跃升（`promote.term.leap`，缺省 100）→ 自投登基 → 追加并复制一条 `PRIORITY_CHANGE` 日志条目 → 写父侧独立持久化文件。提升后本机房权重严格超过对侧，双主在**权重数学上**不可能，与网络状态无关。
 
@@ -549,9 +559,14 @@ DatacenterPriorityTable.Snapshot snap = Speedboat.getPrioritySnapshot();
 
 #### 审计日志
 
-每次提升/回退调用（无论接受/拒绝）都落一条 `WARN` 级 `PROMOTE-AUDIT` 结构化日志，
+每次提升/回退调用（无论接受/忽略/拒绝）都落一条 `WARN` 级 `PROMOTE-AUDIT` 结构化日志，
 固定字段顺序便于 grep：`op / operator / node / dc / target / reason / detail /
 termBefore / termAfter / epochBefore / epochAfter / weightsBefore / weightsAfter`。
+
+`op` 取值：`ACCEPTED`（已生效）、`EXEC-FAILED`（raft 线程内执行失败）、
+`REJECTED`（前置校验/连通性闸门拒绝，`detail` 给出具体原因）、
+`IGNORED`（AP 模式下人工切主被忽略，`detail=manual-switch-ignored-in-ap-mode`）。
+`IGNORED` 表示"模式不适用"，**不是故障**，不应触发告警重试。
 
 #### 持久化与重启
 

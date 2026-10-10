@@ -103,6 +103,14 @@ public class Speedboat {
     private final String datacenterId;
     private final int datacenterIndex;
     private final boolean crossDatacenterMode;
+    /**
+     * 一致性策略（CP/AP）：启动时选定、全生命周期恒定。
+     *
+     * <p>门面与父组 RaftNode <b>共用同一实例</b>——人工切主闸门若另行构造策略，
+     * 两处判定口径可能不一致（策略对象还携带降级态等运行期状态）。
+     * 仅读取 {@code mode()}，不触碰降级状态，故跨线程读安全。</p>
+     */
+    private final cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy consistencyPolicy;
     
     private NettyTransport nettyTransport;
     private RaftNode raftNode;
@@ -134,7 +142,14 @@ public class Speedboat {
         
         List<List<String>> allNodes = config.getNodes();
         this.crossDatacenterMode = allNodes.size() > 1;
-        
+        // CP/AP 策略在构造期解析一次，供门面人工切主闸门与父组 RaftNode 共用；
+        // 提供方未实现该方法（返回 null）时按缺省 CP 兜底，与 NodeContext 行为一致。
+        cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy resolvedPolicy =
+            config.getConsistencyPolicy();
+        this.consistencyPolicy = resolvedPolicy != null
+            ? resolvedPolicy
+            : cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy.getInstance();
+
         this.localIp = NetworkUtils.detectLocalIp();
         
         NodeMatchResult matchResult = matchLocalNode(allNodes, localIp);
@@ -457,7 +472,8 @@ public class Speedboat {
             .priorityStore(parentPriorityStore)
             // 一致性策略（CP/AP）：仅父组消费。子组与单机房路径不注入即缺省 CP，
             // 机房内部选举不受降级接管影响——否则本机房内部分区会产出多个代表参与父组。
-            .consistencyPolicy(config.getConsistencyPolicy())
+            // 注入构造期解析的同一实例，保证与门面人工切主闸门口径一致。
+            .consistencyPolicy(consistencyPolicy)
             .maxLogSize(config.getMaxLogSize())
             .checkpointInterval(config.getRaftCheckpointInterval())
             // 独立 store：父组 term/votedFor 与子组互不污染（按父组 nodeId 分目录）
@@ -997,18 +1013,22 @@ public class Speedboat {
      * 人工提升本机房在父组的优先级（阶段五运维兜底）。
      *
      * <p>仅在跨机房模式下有效。本方法是<b>唯一入口</b>——不做远程接口、不做控制台。
-     * 接受前依次校验：单例在跑、跨机房模式、操作者非空、目标机房等于本机房；
+     * 接受前依次校验：单例在跑、<b>CP 模式</b>、跨机房模式、操作者非空、目标机房等于本机房；
      * 随后执行<b>连通性闸门</b>：探对侧机房全部父组端点，<b>任一可达即拒绝</b>
      * （此时强行提升会打开"双主"窗口，唯一性保证被破坏）。全部不可达才放行到
      * raft 线程执行换表 + term 跃升 + 登基 + 复制 + 持久化。</p>
      *
-     * <p>每次调用（无论接受/拒绝）都打一条 {@code PROMOTE-AUDIT} 结构化审计日志，
-     * 含时间、操作者、节点、机房、接受/拒绝、原因、term/epoch 前后值与权重表前后值。</p>
+     * <p><b>AP 模式下本方法不生效</b>：人工切主只对 CP 有意义（AP 本就允许分区期间
+     * 短暂双主，"把某机房提为唯一主"在该模式下无从谈起）。AP 下调用被<b>忽略</b>——
+     * 仅落一条 {@code op=IGNORED} 审计日志，<b>不改任何状态、不抛异常、不返回错误</b>。</p>
+     *
+     * <p>每次调用（无论接受/忽略/拒绝）都打一条 {@code PROMOTE-AUDIT} 结构化审计日志，
+     * 含时间、操作者、节点、机房、结果、原因、term/epoch 前后值与权重表前后值。</p>
      *
      * @param operator     操作者标识（必填；建议用真实账号/工号，便于审计追溯）
      * @param datacenterId 目标机房标识（必须等于本机房，否则拒绝）
      * @param reason       变更原因（审计）
-     * @return true 表示提升已在父组生效并复制出去；false 表示被闸门拒绝或执行失败
+     * @return true 表示提升已在父组生效并复制出去；false 表示 AP 模式忽略、被闸门拒绝或执行失败
      */
     public static boolean promoteDatacenter(String operator, String datacenterId, String reason) {
         if (instance == null || !instance.running) {
@@ -1025,9 +1045,12 @@ public class Speedboat {
      * <p>回退<b>不跃升 term、不夺主</b>：只把本机房权重降回配置值，主机房凭更高权重
      * 可在下一次选举夺回，但不自动发生。同样打 {@code PROMOTE-AUDIT} 审计日志。</p>
      *
+     * <p><b>AP 模式下本方法同样被忽略</b>（与提升同一条人工切主通路）：仅落
+     * {@code op=IGNORED} 审计日志，不改状态、不抛异常。</p>
+     *
      * @param operator 操作者标识（必填）
      * @param reason   变更原因（审计）
-     * @return true 表示回退已在父组生效并复制出去
+     * @return true 表示回退已在父组生效并复制出去；false 表示 AP 模式忽略或校验/执行失败
      */
     public static boolean restoreDefaultPriorities(String operator, String reason) {
         if (instance == null || !instance.running) {
@@ -1051,6 +1074,11 @@ public class Speedboat {
      * 提升本体（实例级）：校验 + 连通性闸门 + 委派父组 RaftNode + 审计。
      */
     private boolean doPromoteDatacenter(String operator, String datacenterId, String reason) {
+        // ---- 模式闸门（最前）：AP 下人工切主一律忽略——不改状态、不抛异常、仅留痕 ----
+        if (manualSwitchIgnored(consistencyPolicy)) {
+            auditPromote("IGNORED", operator, datacenterId, reason, MANUAL_SWITCH_IGNORED_DETAIL, null, null);
+            return false;
+        }
         // ---- 校验：跨机房模式 + 操作者非空 + 目标机房匹配 ----
         if (!crossDatacenterMode || parentRaftNode == null) {
             auditPromote("REJECTED", operator, datacenterId, reason, "not-cross-datacenter-mode", null, null);
@@ -1083,6 +1111,11 @@ public class Speedboat {
 
     /** 回退本体（实例级）：校验 + 委派父组 RaftNode + 审计。回退不做连通性闸门（它降低优先级，不打开双主窗口）。 */
     private boolean doRestoreDefaultPriorities(String operator, String reason) {
+        // ---- 模式闸门（最前）：回退与提升同属人工切主通路，AP 下同样忽略 ----
+        if (manualSwitchIgnored(consistencyPolicy)) {
+            auditPromote("IGNORED", operator, null, reason, MANUAL_SWITCH_IGNORED_DETAIL, null, null);
+            return false;
+        }
         if (!crossDatacenterMode || parentRaftNode == null) {
             auditPromote("REJECTED", operator, null, reason, "not-cross-datacenter-mode", null, null);
             return false;
@@ -1096,6 +1129,25 @@ public class Speedboat {
         AuditState after = captureAuditState();
         auditPromote(ok ? "ACCEPTED" : "EXEC-FAILED", operator, null, reason, "restore-default", before, after);
         return ok;
+    }
+
+    /**
+     * 人工切主是否应被忽略（仅 AP 模式忽略；CP 与未注入策略按缺省 CP 放行）。
+     *
+     * <p>CP 是"只有一主或无主"的硬约束，人工切主是其运维兜底；AP 已显式接受
+     * 分区期间短暂双主，"把某机房提为唯一主"在该模式下没有定义良好的语义，
+     * 故一律忽略而非报错——避免运维脚本把"模式不适用"当故障反复重试。</p>
+     *
+     * <p>策略为 null（提供方未实现该方法）时按缺省 CP 放行，与 {@code NodeContext} 兜底一致。
+     * 仅读 {@code mode()}，不触碰降级态，故任意线程可调用。</p>
+     *
+     * @param policy 启动时选定的一致性策略（可为 null）
+     * @return true 表示该调用应被忽略
+     */
+    static boolean manualSwitchIgnored(cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy policy) {
+        return policy != null
+            && cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy.MODE_AP
+                .equals(policy.mode());
     }
 
     /** 审计用状态切片（term + 优先级快照）；父组不存在时全零/空 */
@@ -1177,6 +1229,10 @@ public class Speedboat {
 
     /** 连通性探测超时（毫秒）：单端点短超时，避免闸门长时间阻塞调用方 */
     private static final int CONNECT_PROBE_TIMEOUT_MS = 1000;
+
+    /** AP 模式下人工切主被忽略的审计 detail（固定文案，便于 grep 与告警归类） */
+    private static final String MANUAL_SWITCH_IGNORED_DETAIL =
+        "manual-switch-ignored-in-ap-mode";
 
     private static void checkSingletonRunning() {
         if (instance == null || !instance.running) {

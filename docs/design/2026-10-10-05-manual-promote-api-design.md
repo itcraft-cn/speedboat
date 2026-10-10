@@ -15,6 +15,7 @@
 | 触发面 | 仅 API，不做远程接口、不做控制台 |
 | term 跃升 | 默认 **+100**，可配置（`promote.term.leap`） |
 | 传播载体 | 随父组**心跳/投票**消息携带优先级快照 + epoch |
+| 模式适用 | **仅 CP 生效**；AP 下调用被**忽略**（记 `op=IGNORED` 日志，不改状态、不抛异常、不报错） |
 
 ## 2. 为什么"网络不通"是硬前置
 
@@ -54,7 +55,9 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S["收到 promoteDatacenter"] --> A{"operator 非空 且<br/>dcId 已配置 且<br/>dcId == 本机房 且<br/>跨机房模式 且<br/>父组在运行"}
+    S["收到 promoteDatacenter"] --> M{"一致性模式 = CP?"}
+    M -- "否（AP）" --> I["忽略：不改状态、不抛异常<br/>审计 op=IGNORED"]
+    M -- 是 --> A{"operator 非空 且<br/>dcId 已配置 且<br/>dcId == 本机房 且<br/>跨机房模式 且<br/>父组在运行"}
     A -- 否 --> R1["拒绝 reason=参数/模式非法"]
     A -- 是 --> B{"对侧机房父组端点<br/>全部不可达?"}
     B -- 否 --> R2["拒绝 reason=网络仍通"]
@@ -66,6 +69,13 @@ flowchart TD
 
 - **只能提升本机房**：API 在备机房节点上调用、提升备机房自身；提升一个已被探测为不可达的远端房无从引导选举，故 `dcId != 本机房` 拒绝。
 - **连通性探测**：对非 `dcId` 机房的**全部父组端点**做 TCP connect（短超时）。任一可达 ⇒ 判"网络仍通"⇒ 拒绝。
+- **AP 模式直接忽略**（最前置闸门）：人工切主的语义是"把某机房提为唯一主"，而 AP 已明示接受
+  分区期间短暂双主，该语义在 AP 下没有定义良好的解释；若照常执行，会与降级接管叠加，
+  使 AP 的可观测口径（`isMain` 计数可能短暂为 2）彻底失控。故 AP 下**忽略而非报错**：
+  返回 `false`，落一条 `op=IGNORED` 审计日志，不改任何状态、不抛异常——运维脚本可把
+  "模式不适用"识别为可预期的空操作，而非需要重试的故障。
+  判定同时存在于门面（负责完整审计上下文）与 `RaftNodeImpl`（状态变更咽喉点的纵深防御，
+  读同一 `ctx.consistencyPolicy` 实例，口径不分裂）。`getPrioritySnapshot()` 为只读查询，AP 下照常可用。
 
 ## 5. 接受后的执行序（父组 Raft 线程内）
 
@@ -110,19 +120,23 @@ sequenceDiagram
 `restoreDefaultPriorities(operator, reason)`：以配置派生表为新快照、epoch 递增、source=CONFIG，
 走同一条复制 + 持久化 + 心跳传播路径。回退后主机房凭更高权重可在下一次选举夺回，
 但**不自动**发生——需主机房代表自身发起选举。MANUAL 警示：切勿自动化回退。
+回退与提升同属人工切主通路，**AP 模式下同样被忽略**（同一条 `op=IGNORED` 审计日志）。
 
 ## 9. 审计日志规范
 
 WARN 级、单行结构化，字段固定顺序：
 
 ```
-PROMOTE-AUDIT ts=<yyyy-MM-dd HH:mm:ss.SSS> op=<accept|reject> operator=<操作者> node=<本节点nodeId> \
+PROMOTE-AUDIT ts=<yyyy-MM-dd HH:mm:ss.SSS> op=<ACCEPTED|EXEC-FAILED|REJECTED|IGNORED> operator=<操作者> node=<本节点nodeId> \
   dc=<本机房> target=<目标机房> reason=<拒绝或业务原因> termBefore=<n> termAfter=<n> epochBefore=<n> epochAfter=<n> \
   weightsBefore={...} weightsAfter={...}
 ```
 
 - `operator` 由调用方必填，空/空白即拒绝（并以 `operator=<missing>` 审计）。
-- 接受与拒绝**都**审计，形成完整操作留痕。
+- 接受、忽略与拒绝**都**审计，形成完整操作留痕。
+- `op` 取值：`ACCEPTED` / `EXEC-FAILED` / `REJECTED`（`detail` 给出具体闸门原因）/
+  `IGNORED`（AP 模式下人工切主被忽略，`detail=manual-switch-ignored-in-ap-mode`）。
+  `IGNORED` 表示"模式不适用"而非故障，不应触发告警重试。
 
 ## 10. 风险与边界（写入 MANUAL §8.6）
 
