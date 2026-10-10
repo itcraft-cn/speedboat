@@ -6,11 +6,9 @@ import cn.itcraft.speedboat.lock.LockStateMachine;
 import cn.itcraft.speedboat.persistence.InMemoryRaftStore;
 import cn.itcraft.speedboat.persistence.MmapRaftStore;
 import cn.itcraft.speedboat.persistence.NopRaftStore;
-import cn.itcraft.speedboat.persistence.PriorityStore;
 import cn.itcraft.speedboat.persistence.RaftStore;
 import cn.itcraft.speedboat.raft.ElectionTimeout;
 import cn.itcraft.speedboat.raft.NodeState;
-import cn.itcraft.speedboat.raft.RaftGroup;
 import cn.itcraft.speedboat.raft.RaftNode;
 import cn.itcraft.speedboat.raft.report.RaftNodeReport;
 import cn.itcraft.speedboat.serialize.CustomSerializer;
@@ -23,8 +21,7 @@ import cn.itcraft.speedboat.transport.NodeEndpoint;
 import cn.itcraft.speedboat.util.NetworkUtils;
 import java.io.File;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -371,13 +368,13 @@ public class Speedboat {
 
     List<NodeEndpoint> parentPeerEndpoints() {
         return parentGroup == null
-            ? java.util.Collections.<NodeEndpoint>emptyList()
+            ? Collections.<NodeEndpoint>emptyList()
             : parentGroup.peerEndpoints;
     }
 
     Map<String, String> parentPeerDatacenters() {
         return parentGroup == null
-            ? java.util.Collections.<String, String>emptyMap()
+            ? Collections.<String, String>emptyMap()
             : parentGroup.peerDatacenters;
     }
 

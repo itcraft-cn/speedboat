@@ -70,6 +70,16 @@ final class Checkpointer {
         if (stateMachine == null) {
             return;
         }
+        // H1：不可检查点的状态机（NoopStateMachine 等）禁止推进压实水位——
+        // 空快照不写入任何文件，markCheckpoint 却会让 WAL 前缀失去唯一的恢复来源
+        if (!stateMachine.canSnapshot()) {
+            try {
+                ctx.raftStore.flush();
+            } catch (Exception e) {
+                logger.warn("Node {} shutdown flush only (no checkpoint) failed: {}", ctx.nodeId, e.toString());
+            }
+            return;
+        }
         try {
             String checkpointFile = ctx.raftStore.getCheckpointFile();
             if (checkpointFile != null && ctx.lastApplied > ctx.lastCheckpointApplied) {
@@ -88,7 +98,12 @@ final class Checkpointer {
      * raft 单线程调用；同步写（频率可配，缺省 1024 才一次），阻塞可接受。
      */
     void maybeCheckpoint() {
-        if (ctx.getStateMachine() == null) {
+        StateMachine sm = ctx.getStateMachine();
+        if (sm == null) {
+            return;
+        }
+        // H1：不可检查点的状态机禁止推进水位（同 snapshotOnShutdown），WAL 保持原状
+        if (!sm.canSnapshot()) {
             return;
         }
         String checkpointFile = ctx.raftStore.getCheckpointFile();
@@ -99,7 +114,7 @@ final class Checkpointer {
             return;
         }
         try {
-            ctx.getStateMachine().snapshot(checkpointFile);
+            sm.snapshot(checkpointFile);
             ctx.raftStore.flush();
             ctx.lastCheckpointApplied = ctx.lastApplied;
             ctx.raftStore.markCheckpoint(ctx.lastApplied);

@@ -5,6 +5,7 @@ import cn.itcraft.speedboat.rpc.LockOpRequest;
 import cn.itcraft.speedboat.rpc.LockOpResponse;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
 import cn.itcraft.speedboat.serialize.SerializationException;
+import java.util.concurrent.CompletableFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 /**
@@ -129,14 +130,14 @@ final class LockOpGateway {
     /**
      * Follower 侧转发：目指已知 Leader；无 Leader/已是 Leader 时返回"未收录"完成。
      */
-    java.util.concurrent.CompletableFuture<LockOpResponse> forwardLockOp(LockOpRequest request) {
+    CompletableFuture<LockOpResponse> forwardLockOp(LockOpRequest request) {
         if (ctx.transportLayer == null) {
-            return java.util.concurrent.CompletableFuture.completedFuture(new LockOpResponse(request.getRequestId(), false, -1));
+            return CompletableFuture.completedFuture(new LockOpResponse(request.getRequestId(), false, -1));
         }
         String leader = ctx.leaderId;
         if (leader == null || leader.equals(ctx.nodeId)) {
             // 无已知 Leader（选举中）或已恰好是 Leader：未来以"未收录"完成，调用方按需重试
-            return java.util.concurrent.CompletableFuture.completedFuture(new LockOpResponse(request.getRequestId(), false, -1));
+            return CompletableFuture.completedFuture(new LockOpResponse(request.getRequestId(), false, -1));
         }
         return ctx.transportLayer.sendLockOp(leader, request);
     }

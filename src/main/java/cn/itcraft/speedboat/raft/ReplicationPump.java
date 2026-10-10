@@ -56,7 +56,8 @@ final class ReplicationPump {
     /** 全员广播 AppendEntries（logSize/commitIndex 供排障快照） */
     void sendAppendEntries() {
         if (ctx.currentState != NodeState.LEADER || ctx.transportLayer == null) {
-            logger.info("Node {} not leader ({}) or transportLayer null ({}), cannot send append entries",
+            // 报告002 M-3：非 Leader 时每次复制轮询都会经过本路径，INFO 高频刷屏降 DEBUG
+            logger.debug("Node {} not leader ({}) or transportLayer null ({}), cannot send append entries",
                 ctx.nodeId, ctx.currentState == NodeState.LEADER, ctx.transportLayer != null);
             return;
         }

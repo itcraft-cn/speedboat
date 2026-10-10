@@ -1,5 +1,4 @@
 package cn.itcraft.speedboat.lock;
-
 import cn.itcraft.speedboat.config.SpeedboatConsts;
 import cn.itcraft.speedboat.raft.RaftNode;
 import cn.itcraft.speedboat.rpc.LockOpRequest;
@@ -7,15 +6,16 @@ import cn.itcraft.speedboat.rpc.LockOpResponse;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
 import cn.itcraft.speedboat.serialize.SerializationException;
 import cn.itcraft.speedboat.util.NamedThreadFactory;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * DistributedLock 接口的默认实现，基于 Raft 共识算法提供生产级分布式锁服务。
  * 
@@ -154,11 +154,11 @@ public class DistributedLockImpl implements DistributedLock {
 
     @Override
     public LockHandle tryLock(long timeoutMs) {
-        long startTime = System.currentTimeMillis();
-        long deadline = startTime + timeoutMs;
+        // 报告002 M-6：等待上限改单调时钟（墙钟受 NTP 回拨影响，review.java.md 强制项）
+        long deadlineNanos = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMs);
         int attempt = 0;
 
-        while (System.currentTimeMillis() < deadline) {
+        while (System.nanoTime() < deadlineNanos) {
             attempt++;
             logger.info("tryLock attempt {}: isLeader={}, lockName={}, nodeId={}", 
                 attempt, raftNode.isLeader(), lockName, nodeId);
@@ -175,7 +175,7 @@ public class DistributedLockImpl implements DistributedLock {
                 // 退避抖动：固定间隔会在多竞争者间形成同拍重试（惊群），
                 // 在 [0.5x, 1.5x] 区间随机化（nanoTime 无关的纯抖动，无需时钟安全）
                 long jittered = RETRY_INTERVAL_MS / 2
-                    + java.util.concurrent.ThreadLocalRandom.current().nextLong(RETRY_INTERVAL_MS + 1);
+                    + ThreadLocalRandom.current().nextLong(RETRY_INTERVAL_MS + 1);
                 Thread.sleep(jittered);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -207,13 +207,14 @@ public class DistributedLockImpl implements DistributedLock {
         if (raftNode.isLeader()) {
             // Leader 本地快速失败（可选优化）：判定仍以 apply 结果为准
             if (!stateMachine.isLockAvailable(lockName, nodeId)) {
-                logger.error("Lock not available, entry={}", stateMachine.getLockEntry(lockName));
+                // 报告002 M-3：本路径是"锁空竞争正常判负"的高频语义，不是 error
+                logger.debug("Lock not available, entry={}", stateMachine.getLockEntry(lockName));
                 return -1;
             }
         }
         // 非 Leader 无需预检：本地 applied 视图可能滞后，误拒反而恶化公平性
 
-        String requestId = java.util.UUID.randomUUID().toString();
+        String requestId = UUID.randomUUID().toString();
         LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.LOCK,
             requestId, leaseTimeoutMs, 0L);
 
@@ -254,7 +255,7 @@ public class DistributedLockImpl implements DistributedLock {
                 return response.getEntryIndex();
             }
             logger.info("Lock op forward not accepted (no leader / rejected): requestId={}", command.getRequestId());
-        } catch (java.util.concurrent.TimeoutException e) {
+        } catch (TimeoutException e) {
             logger.warn("Lock op forward timeout: requestId={}", command.getRequestId());
         } catch (Exception e) {
             logger.warn("Lock op forward failed: requestId={}", command.getRequestId(), e);
@@ -354,7 +355,7 @@ public class DistributedLockImpl implements DistributedLock {
             return;
         }
 
-        String requestId = java.util.UUID.randomUUID().toString();
+        String requestId = UUID.randomUUID().toString();
         LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.RENEW,
             requestId, leaseTimeoutMs, 0L);
         long entryIndex = proposeOrForward(command);
@@ -407,7 +408,7 @@ public class DistributedLockImpl implements DistributedLock {
             return;
         }
 
-        String requestId = java.util.UUID.randomUUID().toString();
+        String requestId = UUID.randomUUID().toString();
         LockCommand command = new LockCommand(lockName, nodeId, LockCommand.CommandType.UNLOCK,
             requestId, leaseTimeoutMs, 0L);
         byte[] data = serializeCommand(command);

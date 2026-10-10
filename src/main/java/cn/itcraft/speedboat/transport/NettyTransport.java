@@ -1,5 +1,4 @@
 package cn.itcraft.speedboat.transport;
-
 import cn.itcraft.speedboat.rpc.*;
 import cn.itcraft.speedboat.serialize.CustomSerializer;
 import io.netty.bootstrap.Bootstrap;
@@ -14,14 +13,11 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import io.netty.util.concurrent.GlobalEventExecutor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * 基于 Netty 的网络传输层。
  *
@@ -187,10 +183,6 @@ public class NettyTransport implements TransportLayer {
     /**
      * 发送失败时置空 channel，下次自动重连。
      */
-    private void invalidateChannel(String targetNodeId) {
-        channels.remove(targetNodeId);
-    }
-
     private NodeEndpoint findEndpoint(String nodeId) {
         for (NodeEndpoint ep : peers) {
             if (ep.getNodeId().equals(nodeId)) {

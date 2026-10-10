@@ -1,19 +1,15 @@
 package cn.itcraft.speedboat.persistence;
-
 import cn.itcraft.speedboat.raft.CommandLogEntry;
 import cn.itcraft.speedboat.raft.LogEntry;
 import cn.itcraft.speedboat.raft.MemberChangeEntry;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
 import java.io.File;
 import java.io.RandomAccessFile;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
-
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
-
 /**
  * MmapRaftStore 契约测试（P4-M1）：term 双槽挂回、WAL 记录帧保真、"列表即全量"语义、
  * 截断标记收敛、坏帧收敛、检查点路径暴露。
@@ -124,7 +120,7 @@ class MmapRaftStoreTest {
         assertNotNull(ckpt);
         assertEquals(new File(new File(dir.toString()), "state-machine.ckpt").getAbsolutePath(), ckpt);
         s.deleteSnapshotChunks();
-        assertFalse(new File(ckpt).exists() && new java.io.RandomAccessFile(ckpt, "r").length() > 0,
+        assertFalse(new File(ckpt).exists() && new RandomAccessFile(ckpt, "r").length() > 0,
             "无检查点即不存在");
     }
 

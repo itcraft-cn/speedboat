@@ -3,7 +3,9 @@ import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy;
 import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 /**
  * Speedboat 配置提供者接口
  * 
@@ -258,8 +260,8 @@ public interface SpeedboatConfigProvider {
      * 备机房权重 &lt; required）可使主机房能单方成主而备机房不能，
      * 从而在结构上排除"双主"——详见设计文档 §8.3。</p>
      */
-    default java.util.Map<String, Integer> getDatacenterWeights() {
-        return java.util.Collections.emptyMap();
+    default Map<String, Integer> getDatacenterWeights() {
+        return Collections.emptyMap();
     }
 
     /**

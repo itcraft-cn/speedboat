@@ -1,10 +1,8 @@
 package cn.itcraft.speedboat.sample;
-
 import cn.itcraft.speedboat.raft.ElectionTimeout;
 import cn.itcraft.speedboat.raft.RaftNode;
 import cn.itcraft.speedboat.serialize.CustomSerializer;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
-import cn.itcraft.speedboat.strategy.group.DefaultGroupStrategy;
 import cn.itcraft.speedboat.transport.NettyTransport;
 import cn.itcraft.speedboat.transport.NodeEndpoint;
 

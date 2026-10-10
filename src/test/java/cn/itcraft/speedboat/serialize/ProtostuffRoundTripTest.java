@@ -1,10 +1,7 @@
 package cn.itcraft.speedboat.serialize;
-
 import cn.itcraft.speedboat.rpc.*;
 import org.junit.jupiter.api.Test;
-
 import static org.junit.jupiter.api.Assertions.*;
-
 class ProtostuffRoundTripTest {
 
     private final ProtostuffSerializer payloadSerializer = new ProtostuffSerializer();

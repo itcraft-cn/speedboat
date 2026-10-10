@@ -1,5 +1,4 @@
 package cn.itcraft.speedboat.persistence;
-
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import java.io.File;
 import java.io.FileInputStream;
@@ -7,7 +6,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Properties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,7 +67,7 @@ public final class PriorityStore {
         Properties props = new Properties();
         props.setProperty(KEY_EPOCH, String.valueOf(snapshot.epoch()));
         props.setProperty(KEY_SOURCE, snapshot.source().name());
-        for (java.util.Map.Entry<String, Integer> e : snapshot.weights().entrySet()) {
+        for (Map.Entry<String, Integer> e : snapshot.weights().entrySet()) {
             props.setProperty(KEY_WEIGHT_PREFIX + e.getKey(), String.valueOf(e.getValue()));
         }
 
@@ -142,7 +142,7 @@ public final class PriorityStore {
             source = DatacenterPriorityTable.Source.CONFIG;
         }
 
-        java.util.Map<String, Integer> weights = new java.util.LinkedHashMap<String, Integer>();
+        Map<String, Integer> weights = new LinkedHashMap<String, Integer>();
         for (String name : props.stringPropertyNames()) {
             if (!name.startsWith(KEY_WEIGHT_PREFIX)) {
                 continue;

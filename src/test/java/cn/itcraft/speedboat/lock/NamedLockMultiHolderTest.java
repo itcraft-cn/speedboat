@@ -1,23 +1,19 @@
 package cn.itcraft.speedboat.lock;
-
-import cn.itcraft.speedboat.integration.MockTransport;
 import cn.itcraft.speedboat.integration.TestNode;
 import cn.itcraft.speedboat.raft.ElectionTimeout;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-
 import static org.junit.jupiter.api.Assertions.*;
-
 /**
  * 命名锁多持有者语义验证（2026-09-18 设计 P3）。
  *
@@ -150,7 +146,7 @@ class NamedLockMultiHolderTest {
         CountDownLatch finished = new CountDownLatch(contenders);
         AtomicInteger overlapDetected = new AtomicInteger(0);
         // 成功持有区间 [start, end]，用于时段重叠校验
-        List<long[]> holdingWindows = java.util.Collections.synchronizedList(new ArrayList<>());
+        List<long[]> holdingWindows = Collections.synchronizedList(new ArrayList<>());
 
         for (String id : Arrays.asList("node1", "node2", "node3")) {
             new Thread(() -> {

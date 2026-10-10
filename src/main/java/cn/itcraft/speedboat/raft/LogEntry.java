@@ -1,5 +1,5 @@
 package cn.itcraft.speedboat.raft;
-
+import java.util.Arrays;
 /**
  * Raft 日志条目类，表示日志复制中的单个日志项。
  * 
@@ -89,7 +89,7 @@ public class LogEntry {
                term == logEntry.term && 
                leaderId.equals(logEntry.leaderId) &&
                entryType == logEntry.entryType &&
-               java.util.Arrays.equals(data, logEntry.data);
+               Arrays.equals(data, logEntry.data);
     }
 
     @Override
@@ -98,7 +98,7 @@ public class LogEntry {
         result = 31 * result + Long.hashCode(term);
         result = 31 * result + leaderId.hashCode();
         result = 31 * result + entryType.hashCode();
-        result = 31 * result + java.util.Arrays.hashCode(data);
+        result = 31 * result + Arrays.hashCode(data);
         return result;
     }
 }

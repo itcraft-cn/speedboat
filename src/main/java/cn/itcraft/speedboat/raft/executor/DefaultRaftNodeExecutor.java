@@ -1,15 +1,13 @@
 package cn.itcraft.speedboat.raft.executor;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * RaftNodeExecutor 的默认实现：单线程 ScheduledExecutorService。
  *
@@ -97,7 +95,7 @@ public class DefaultRaftNodeExecutor implements RaftNodeExecutor {
     @Override
     public Future<?> schedule(Runnable task, long delayMillis) {
         ensureStarted();
-        return ((java.util.concurrent.ScheduledExecutorService) executor)
+        return ((ScheduledExecutorService) executor)
             .schedule(task, delayMillis, TimeUnit.MILLISECONDS);
     }
 
@@ -110,7 +108,7 @@ public class DefaultRaftNodeExecutor implements RaftNodeExecutor {
     @Override
     public Future<?> scheduleAtFixedRate(Runnable task, long initialDelayMillis, long periodMillis) {
         ensureStarted();
-        return ((java.util.concurrent.ScheduledExecutorService) executor)
+        return ((ScheduledExecutorService) executor)
             .scheduleAtFixedRate(task, initialDelayMillis, periodMillis, TimeUnit.MILLISECONDS);
     }
 

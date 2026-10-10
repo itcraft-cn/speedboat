@@ -4,7 +4,6 @@ import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,7 +30,6 @@ final class RaftLogStore {
     private static final Logger logger = LoggerFactory.getLogger(RaftLogStore.class);
 
     private final NodeContext ctx;
-    private final QuorumCalculator quorum;
     /**
      * 日志索引 → 条目的 O(1) 映射。
      *
@@ -41,9 +39,8 @@ final class RaftLogStore {
      */
     private final ConcurrentHashMap<Long, LogEntry> logIndexMap = new ConcurrentHashMap<>();
 
-    RaftLogStore(NodeContext ctx, QuorumCalculator quorum) {
+     RaftLogStore(NodeContext ctx) {
         this.ctx = ctx;
-        this.quorum = quorum;
         for (LogEntry seed : ctx.log) {
             this.logIndexMap.put(seed.getIndex(), seed);
         }

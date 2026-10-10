@@ -1,18 +1,24 @@
 package cn.itcraft.speedboat.lock;
-
 import cn.itcraft.speedboat.config.SpeedboatConsts;
 import cn.itcraft.speedboat.raft.LogEntry;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
 import cn.itcraft.speedboat.serialize.SerializationException;
 import cn.itcraft.speedboat.statemachine.StateMachine;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-
+import java.util.zip.CRC32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**
  * 锁状态机： Raft 日志全序 apply 的锁表权威裁决点。
  *
@@ -224,20 +230,20 @@ public class LockStateMachine implements StateMachine {
         if (snapshotPath == null || snapshotPath.isEmpty()) {
             return;
         }
-        File tmp = new java.io.File(snapshotPath + ".tmp");
-        File target = new java.io.File(snapshotPath);
+        File tmp = new File(snapshotPath + ".tmp");
+        File target = new File(snapshotPath);
         try {
             // 原子替换：temp 写成 + rename，防半写
-            try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(tmp, "rw")) {
-                java.nio.ByteBuffer buf = serializeState();
+            try (RandomAccessFile raf = new RandomAccessFile(tmp, "rw")) {
+                ByteBuffer buf = serializeState();
                 raf.setLength(buf.remaining());
-                java.nio.channels.FileChannel ch = raf.getChannel();
+                FileChannel ch = raf.getChannel();
                 buf.position(0);
                 ch.position(0);
                 ch.write(buf);
                 ch.force(true);
             }
-            java.nio.file.Files.deleteIfExists(target.toPath());
+            Files.deleteIfExists(target.toPath());
             if (!tmp.renameTo(target)) {
                 logger.warn("snapshot rename failed: {} -> {}", tmp, target);
                 return;
@@ -254,13 +260,13 @@ public class LockStateMachine implements StateMachine {
         if (snapshotPath == null || snapshotPath.isEmpty()) {
             return;
         }
-        File target = new java.io.File(snapshotPath);
+        File target = new File(snapshotPath);
         if (!target.exists()) {
             return;
         }
-        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(target, "r")) {
-            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate((int) raf.length());
-            java.nio.channels.FileChannel ch = raf.getChannel();
+        try (RandomAccessFile raf = new RandomAccessFile(target, "r")) {
+            ByteBuffer buf = ByteBuffer.allocate((int) raf.length());
+            FileChannel ch = raf.getChannel();
             ch.position(0);
             ch.read(buf);
             buf.rewind();
@@ -277,9 +283,9 @@ public class LockStateMachine implements StateMachine {
      * holder UTF | holdCount 4 | leaseExpireTime 8 | epoch 8}.. | lastAppliedIndex(8)。
      * 重启确定性一致（不依赖日志重放时序）。
      */
-    private java.nio.ByteBuffer serializeState() throws IOException {
-        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
-        java.io.DataOutputStream out = new java.io.DataOutputStream(bos);
+    private ByteBuffer serializeState() throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(bos);
         out.writeInt(SNAPSHOT_MAGIC);
         out.writeInt(lockTable.size());
         for (Map.Entry<String, LockEntry> e : lockTable.entrySet()) {
@@ -296,25 +302,25 @@ public class LockStateMachine implements StateMachine {
         out.flush();
         byte[] payload = bos.toByteArray();
 
-        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        CRC32 crc = new CRC32();
         crc.update(payload);
-        java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(payload.length + 4);
+        ByteBuffer buffer = ByteBuffer.allocate(payload.length + 4);
         buffer.putInt((int) crc.getValue());
         buffer.put(payload);
         buffer.flip();
         return buffer;
     }
 
-    private void deserializeState(java.nio.ByteBuffer buf) throws IOException {
+    private void deserializeState(ByteBuffer buf) throws IOException {
         int crc = buf.getInt();
         byte[] payload = new byte[buf.remaining()];
         buf.get(payload);
-        java.util.zip.CRC32 c = new java.util.zip.CRC32();
+        CRC32 c = new CRC32();
         c.update(payload);
         if ((int) c.getValue() != crc) {
             throw new IOException("LockStateMachine snapshot CRC mismatch");
         }
-        java.io.DataInputStream in = new java.io.DataInputStream(new java.io.ByteArrayInputStream(payload));
+        DataInputStream in = new DataInputStream(new ByteArrayInputStream(payload));
         if (in.readInt() != SNAPSHOT_MAGIC) {
             throw new IOException("LockStateMachine snapshot magic mismatch");
         }

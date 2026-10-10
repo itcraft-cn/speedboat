@@ -26,7 +26,6 @@ public class CustomSerializer {
     /** length 字段之后、payload 之前的子头部字节数：CRC(4) + serializerType(1) + messageType(1) = 6 */
     private static final int SUB_HEADER_LEN = 6;
     /** 整个固定头部字节数：length(4) + subHeader(6) = 10 */
-    private static final int HEADER_LEN = LENGTH_FIELD_LEN + SUB_HEADER_LEN;
     private final Serializer payloadSerializer;
     private final Map<Class<?>, Integer> typeToId = new HashMap<>();
     private final Map<Integer, Class<?>> idToType = new HashMap<>();
@@ -80,22 +79,27 @@ public class CustomSerializer {
         byte[] payload = payloadSerializer.serialize(obj);
         
         // length 字段 = CRC(4) + serializerTypeId(1) + messageTypeId(1) + payload.length
-        // 即 length 字段之后的所有字节数
+        // 即 length 字段之后的所有字节数；帧布局固定：length(4)+crc(4)+ser(1)+msg(1)+payload
         int lengthField = SUB_HEADER_LEN + payload.length;
-        // 整帧总长度 = length字段(4) + lengthField
         int totalLen = LENGTH_FIELD_LEN + lengthField;
         ByteBuffer buffer = ByteBuffer.allocate(totalLen);
-        
-        buffer.putInt(lengthField);
-        
+
+        // 报告002 M-5：CRC 覆盖范围扩为"ser/msg 类型头 + payload"（原先只含 payload，类型头
+        // 位翻转不受校验保护；serializerTypeId 曾读出未用——现在参与 CRC 且 unwrap 同步校验）。
+        // 帧布局不变，仅计算范围收口；收发两端同步生成，不引入跨版本兼容矩阵。
+        byte serByte = (byte) payloadSerializer.getTypeId();
+        byte msgByte = (byte) (typeId.intValue());
         CRC32 crc32 = new CRC32();
         crc32.update(payload);
+        crc32.update(serByte);
+        crc32.update(msgByte);
+
+        buffer.putInt(lengthField);
         buffer.putInt((int) crc32.getValue());
-        
-        buffer.put((byte) payloadSerializer.getTypeId());
-        buffer.put((byte) (typeId.intValue()));
+        buffer.put(serByte);
+        buffer.put(msgByte);
         buffer.put(payload);
-        
+
         return buffer.array();
     }
     
@@ -128,10 +132,19 @@ public class CustomSerializer {
         
         CRC32 crc32 = new CRC32();
         crc32.update(payload);
+        // 报告002 M-5：与 wrap 同步——CRC 覆盖"payload + 类型头"，类型头位翻转可被拦截
+        crc32.update((byte) serializerTypeId);
+        crc32.update((byte) messageTypeId);
         if ((int) crc32.getValue() != crc32Value) {
             throw new SerializationException("CRC32 check failed");
         }
-        
+
+        // serializerTypeId 此前读取后未使用（报告002 M-5）——收紧为显式校验：
+        // 当前唯一 force = Protostuff；未知序列化器直接拒绝，不再半信半疑
+        if (serializerTypeId != payloadSerializer.getTypeId()) {
+            throw new SerializationException("Unknown serializer type id: " + serializerTypeId);
+        }
+
         Class<?> targetClass = idToType.get(messageTypeId);
         if (targetClass == null) {
             throw new SerializationException("Unknown message type id: " + messageTypeId);

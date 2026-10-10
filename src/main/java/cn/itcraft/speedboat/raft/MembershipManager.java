@@ -1,6 +1,4 @@
 package cn.itcraft.speedboat.raft;
-
-import cn.itcraft.speedboat.config.MembershipConfig;
 import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,7 +7,6 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 
 /**
  * 成员变更管理器（内部协作器，非公开 API）。

@@ -1,19 +1,17 @@
 package cn.itcraft.speedboat.transport;
-
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
 import cn.itcraft.speedboat.serialize.CustomSerializer;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
-import org.junit.jupiter.api.*;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
-
 class TransportTest {
 
     private CustomSerializer serializer;

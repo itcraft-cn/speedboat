@@ -1,17 +1,14 @@
 package cn.itcraft.speedboat.strategy.leadership;
-
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityVoteWeightStrategy;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
-
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 /**
  * 领袖优先级策略（LeadershipPolicy）单测。
  *
@@ -112,7 +109,7 @@ class LeadershipPolicyTest {
         assertFalse(p.stickyMayYield("dc-1", "dc-2"), "提升前两备房同权互不让位");
 
         // 模拟人工提升 dc-1（PriorityPromoteTest 同款：本房 = max(对侧)+2）
-        table.replace(1L, java.util.Collections.singletonMap("dc-1", 4),
+        table.replace(1L, Collections.singletonMap("dc-1", 4),
             DatacenterPriorityTable.Source.PROMOTED);
 
         assertTrue(p.stickyMayYield("dc-1", "dc-2"),

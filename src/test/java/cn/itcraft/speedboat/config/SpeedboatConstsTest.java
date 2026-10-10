@@ -1,10 +1,9 @@
 package cn.itcraft.speedboat.config;
-
 import org.junit.jupiter.api.DisplayName;
+import java.lang.reflect.Constructor;
+
 import org.junit.jupiter.api.Test;
-
 import static org.junit.jupiter.api.Assertions.*;
-
 /**
  * SpeedboatConsts 常量类测试
  * 
@@ -87,7 +86,7 @@ class SpeedboatConstsTest {
     @Test
     @DisplayName("常量类应有私有构造函数")
     void testPrivateConstructor() throws Exception {
-        java.lang.reflect.Constructor<SpeedboatConsts> constructor = 
+        Constructor<SpeedboatConsts> constructor = 
             SpeedboatConsts.class.getDeclaredConstructor();
         assertFalse(constructor.isAccessible(), 
             "构造函数应不可访问");

@@ -8,8 +8,6 @@ import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import cn.itcraft.speedboat.strategy.voteweight.PriorityCodec;
-import java.util.HashSet;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

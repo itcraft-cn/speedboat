@@ -1,18 +1,15 @@
 package cn.itcraft.speedboat.serialize;
-
 import cn.itcraft.speedboat.rpc.*;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+import java.nio.ByteBuffer;
+import java.util.Collections;
+import java.util.zip.CRC32;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-
-import java.nio.ByteBuffer;
-import java.util.zip.CRC32;
-
 import static org.junit.jupiter.api.Assertions.*;
-
 @DisplayName("CustomSerializer 测试：编解码正确性 + 帧协议兼容性")
 class CustomSerializerTest {
 
@@ -75,9 +72,12 @@ class CustomSerializerTest {
 
         byte[] payload = new byte[buf.remaining()];
         buf.get(payload);
+        // M-5 修复后 CRC 覆盖"payload + 类型头两字节"
         CRC32 crc = new CRC32();
         crc.update(payload);
-        assertEquals((int) crc.getValue(), crc32, "CRC32 应与 payload 匹配");
+        crc.update((byte) protostuffSerializer.getTypeId());
+        crc.update((byte) 3);
+        assertEquals((int) crc.getValue(), crc32, "CRC32 应与 payload+类型头匹配");
     }
 
     // ========== 通过帧解码器的端到端测试 ==========
@@ -116,7 +116,7 @@ class CustomSerializerTest {
     @DisplayName("端到端：AppendEntriesRequest 通过帧解码器")
     void testAppendEntriesRequestThroughFrameDecoder() {
         AppendEntriesRequest original = new AppendEntriesRequest(5L, "leader-X",
-            0, 0, java.util.Collections.emptyList(), 0);
+            0, 0, Collections.emptyList(), 0);
         byte[] frame = customSerializer.wrap(original);
 
         byte[] stripped = passThroughFrameDecoder(frame);
@@ -135,7 +135,7 @@ class CustomSerializerTest {
             new RequestVoteResponse("r1", 1L, true),
             new HeartbeatRequest(2L, "l1"),
             new HeartbeatResponse("r2", 2L, true),
-            new AppendEntriesRequest(3L, "l2", 0, 0, java.util.Collections.emptyList(), 0),
+            new AppendEntriesRequest(3L, "l2", 0, 0, Collections.emptyList(), 0),
             new AppendEntriesResponse("r3", 3L, true, 0)
         };
 

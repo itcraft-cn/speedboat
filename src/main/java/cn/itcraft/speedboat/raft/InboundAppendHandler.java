@@ -4,7 +4,6 @@ import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
 import cn.itcraft.speedboat.rpc.HeartbeatRequest;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.strategy.leadership.LeadershipPolicy;
-import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

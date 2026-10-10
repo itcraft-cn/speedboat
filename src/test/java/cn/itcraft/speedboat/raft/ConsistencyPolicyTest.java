@@ -1,29 +1,27 @@
 package cn.itcraft.speedboat.raft;
-
 import cn.itcraft.speedboat.config.PropertiesConfigProvider;
 import cn.itcraft.speedboat.config.SpeedboatConfigProvider;
 import cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityVoteWeightStrategy;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 /**
  * 一致性策略（CP/AP）与 AP 降级分母收缩测试。
  *
@@ -288,8 +286,8 @@ class ConsistencyPolicyTest {
      * @return 配置提供者
      */
     private static SpeedboatConfigProvider providerOf(String content) {
-        java.io.InputStream in = new java.io.ByteArrayInputStream(
-            content.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1));
+        InputStream in = new ByteArrayInputStream(
+            content.getBytes(StandardCharsets.ISO_8859_1));
         return new PropertiesConfigProvider(in);
     }
 

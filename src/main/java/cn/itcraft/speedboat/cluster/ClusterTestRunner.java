@@ -11,7 +11,6 @@ import cn.itcraft.speedboat.transport.NettyTransport;
 import cn.itcraft.speedboat.transport.NodeEndpoint;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 /**
  * 三节点真实网络集群测试运行器。

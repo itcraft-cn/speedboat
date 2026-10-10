@@ -1,24 +1,21 @@
 package cn.itcraft.speedboat.raft;
-
 import cn.itcraft.speedboat.persistence.PriorityStore;
 import cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.consistency.CpConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityVoteWeightStrategy;
 import cn.itcraft.speedboat.strategy.voteweight.PriorityCodec;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
 import java.io.File;
+import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
-
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
-
 /**
  * 阶段五人工升级 API 单测：条目编解码、优先级表收敛、独立持久化、
  * RaftNodeImpl 的提升/回退编排（换表 → term 跃升 → 登基 → 复制 → 持久化），
@@ -186,7 +183,7 @@ class PriorityPromoteTest {
     void priorityStoreCorruptFile(@TempDir File dir) throws Exception {
         PriorityStore store = new PriorityStore(dir);
         File target = new File(dir, "parent-priority.properties");
-        try (java.io.FileOutputStream out = new java.io.FileOutputStream(target)) {
+        try (FileOutputStream out = new FileOutputStream(target)) {
             // epoch 非数字 → NumberFormatException → 返回 null
             out.write("epoch=abc\nsource=CONFIG\n".getBytes(StandardCharsets.UTF_8));
         }

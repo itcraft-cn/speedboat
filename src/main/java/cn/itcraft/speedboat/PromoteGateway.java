@@ -1,5 +1,4 @@
 package cn.itcraft.speedboat;
-
 import cn.itcraft.speedboat.raft.RaftNode;
 import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
@@ -9,8 +8,6 @@ import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.util.List;
-import java.util.Map;
 
 /**
  * 人工切主网关（阶段五运维兜底的实例级编排体，非公开 API）。

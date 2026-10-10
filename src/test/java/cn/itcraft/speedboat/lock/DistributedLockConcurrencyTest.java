@@ -1,20 +1,16 @@
 package cn.itcraft.speedboat.lock;
-
 import cn.itcraft.speedboat.integration.TestNode;
 import cn.itcraft.speedboat.raft.ElectionTimeout;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
-
 @DisplayName("分布式锁并发安全性测试")
 class DistributedLockConcurrencyTest {
 

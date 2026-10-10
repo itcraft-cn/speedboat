@@ -68,18 +68,24 @@ public class RaftNodeMicrometerListener implements RaftNodeReportListener {
     private void registerCoreGauges() {
         RaftNodeReport snapshot = latest;
         String base = "speedboat.raft";
+        String nodeId = snapshot == null ? "unknown" : snapshot.getNodeId();
+        // 报告002 L-6：基础 Gauge 统一带 nodeId tag（同 registry 多节点会重复注册冲突）
         Gauge.builder(base + ".term", this, l -> valueOf(latest.getTerm()))
             .description("Current Raft term")
+            .tag("nodeId", nodeId)
             .register(registry);
         Gauge.builder(base + ".commitIndex", this, l -> valueOf(latest.getCommitIndex()))
+            .tag("nodeId", nodeId)
             .register(registry);
         Gauge.builder(base + ".lastApplied", this, l -> valueOf(latest.getLastApplied()))
+            .tag("nodeId", nodeId)
             .register(registry);
         Gauge.builder(base + ".lastLogIndex", this, l -> valueOf(latest.getLastLogIndex()))
+            .tag("nodeId", nodeId)
             .register(registry);
         Gauge.builder(base + ".leader", this,
                 l -> latest != null && latest.getRole() == NodeState.LEADER ? 1d : 0d)
-            .tag("nodeId", snapshot == null ? "unknown" : snapshot.getNodeId())
+            .tag("nodeId", nodeId)
             .register(registry);
         logger.info("Speedboat Micrometer listener initialized (base={}, nodeId={})",
             base, snapshot == null ? "unknown" : snapshot.getNodeId());

@@ -103,7 +103,6 @@ public class MmapRaftStore implements RaftStore {
     private MappedByteBuffer mmap;
     private RandomAccessFile rafRef;
     private FileChannel channelRef;
-    private File activeFile;
     private long sequence = 0;
     private long writeOffset = LOG_START;
     private volatile boolean opened;

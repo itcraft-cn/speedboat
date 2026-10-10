@@ -1,9 +1,11 @@
 package cn.itcraft.speedboat.raft;
-
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.strategy.consistency.ApConsistencyPolicy;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 /**
  * 权重法定多数计算器（内部协作器，非公开 API）。
  *
@@ -173,7 +175,7 @@ final class QuorumCalculator {
      * @return 含自身的聚合权重和
      */
     private int aggregateWeightByDatacenter(Iterable<String> candidatePeers, long term) {
-        java.util.Set<String> countedDatacenters = new java.util.HashSet<String>();
+        Set<String> countedDatacenters = new HashSet<String>();
         countedDatacenters.add(ctx.datacenter);
         int aggregated = selfWeight(term);
         for (String peerId : candidatePeers) {
@@ -219,7 +221,7 @@ final class QuorumCalculator {
      * @param termRef      权重策略上下文任期
      * @return 含自身的权重和
      */
-    int grantedWeight(java.util.Set<String> grantedPeers, long termRef) {
+    int grantedWeight(Set<String> grantedPeers, long termRef) {
         if (byDatacenter()) {
             // 机房聚合口径：自身按 selfWeight 计，对侧各机房只取首个已授票 peer 的权重
             return aggregateWeightByDatacenter(grantedPeers, termRef);
@@ -260,7 +262,7 @@ final class QuorumCalculator {
      * @param termRef    权重策略上下文任期
      * @return 含自身的权重和
      */
-    int freshWeight(java.util.Set<String> freshPeers, long termRef) {
+    int freshWeight(Set<String> freshPeers, long termRef) {
         if (byDatacenter()) {
             // 与选举侧严格同口径；AP 降级机房在分子侧同样不计（公共骨架统一处理）
             return aggregateWeightByDatacenter(freshPeers, termRef);
@@ -286,7 +288,7 @@ final class QuorumCalculator {
     int matchedWeight(Map<String, Long> matchIndex, long threshold, long termRef) {
         if (byDatacenter()) {
             // 机房聚合口径：自身 + 每个"已达阈值"的不同机房各计一次（走公共骨架）
-            java.util.Set<String> reachedPeers = new java.util.HashSet<String>();
+            Set<String> reachedPeers = new HashSet<String>();
             for (String peerId : ctx.peerIds) {
                 Long m = matchIndex.get(peerId);
                 if (m != null && m >= threshold) {
@@ -342,6 +344,6 @@ final class QuorumCalculator {
 
     /** 全体 peer ID 快照 */
     List<String> peerIds() {
-        return new java.util.ArrayList<>(ctx.peerIds);
+        return new ArrayList<>(ctx.peerIds);
     }
 }

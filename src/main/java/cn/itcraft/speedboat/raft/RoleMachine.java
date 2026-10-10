@@ -1,9 +1,9 @@
 package cn.itcraft.speedboat.raft;
-
 import cn.itcraft.speedboat.raft.report.RaftNodeReport;
+import java.util.Arrays;
+import java.util.EnumMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 /**
  * 角色状态机（内部协作器，非公开 API）。
  *
@@ -33,7 +33,7 @@ final class RoleMachine {
     private final NodeContext ctx;
     private final RoleHooks hooks;
     /** 角色行为表（上策状态模式：FOLLOWER/CANDIDATE/LEADER 三态类分发） */
-    private final java.util.EnumMap<NodeState, RaftRole> roles;
+    private final EnumMap<NodeState, RaftRole> roles;
     /** 角色生命周期挂点（心跳武装/撤销、选举超时重置；由门面提供） */
     private RoleLifecycle lifecycle;
     /** 状态报告双通道发布（构造后由门面注入，避免循环依赖） */
@@ -42,8 +42,8 @@ final class RoleMachine {
     RoleMachine(NodeContext ctx, RoleHooks hooks) {
         this.ctx = ctx;
         this.hooks = hooks;
-        this.roles = new java.util.EnumMap<>(NodeState.class);
-        for (RaftRole role : java.util.Arrays.asList(
+        this.roles = new EnumMap<>(NodeState.class);
+        for (RaftRole role : Arrays.asList(
             new FollowerRole(ctx), new CandidateRole(ctx), new LeaderRole())) {
             this.roles.put(role.state(), role);
         }

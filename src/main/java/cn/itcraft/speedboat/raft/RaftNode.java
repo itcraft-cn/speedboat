@@ -24,6 +24,8 @@ import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
 import cn.itcraft.speedboat.transport.TransportLayer;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 /**
  * Raft 共识算法节点的公共 API 契约（Phase B API/Impl 分层）。
  *
@@ -193,7 +195,7 @@ public interface RaftNode {
 
     ChangeValidationStrategy getChangeValidationStrategy();
 
-    java.util.concurrent.ConcurrentHashMap<String, FailureRecord> getFailureRecords();
+    ConcurrentHashMap<String, FailureRecord> getFailureRecords();
 
     StateMachine getStateMachine();
 
@@ -260,7 +262,7 @@ public interface RaftNode {
      * <p>调用线程任意（传输层全异步）；响应仅含"提案是否收录"（ok+entryIndex），
      * 权威判定由发起方等本地 apply 后读取。无 Leader 时未来以 ok=false 完成。</p>
      */
-    java.util.concurrent.CompletableFuture<LockOpResponse> forwardLockOp(
+    CompletableFuture<LockOpResponse> forwardLockOp(
         LockOpRequest request);
 
     /**

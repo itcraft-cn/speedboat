@@ -45,15 +45,6 @@ final class ReportPublisher {
             all, new HashMap<>(ctx.matchIndex));
     }
 
-    /** 成员全集（含自身，observer 视角应见完整成员列表） */
-    private List<String> clusterMemberIds() {
-        List<String> all = new ArrayList<>(ctx.peerIds);
-        if (!all.contains(ctx.nodeId)) {
-            all.add(ctx.nodeId);
-        }
-        return all;
-    }
-
     void publish(RaftNodeReport.ReportReason reason) {
         if (ctx.reportListener == null) {
             return;

@@ -1,17 +1,13 @@
 package cn.itcraft.speedboat.transport;
-
 import cn.itcraft.speedboat.rpc.*;
 import cn.itcraft.speedboat.serialize.CustomSerializer;
 import cn.itcraft.speedboat.serialize.ProtostuffSerializer;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
-import org.junit.jupiter.api.Test;
-
 import java.util.Collections;
-
+import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
-
 class NettyPipelineTest {
 
     private final CustomSerializer serializer = new CustomSerializer(new ProtostuffSerializer());

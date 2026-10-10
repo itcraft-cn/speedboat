@@ -45,7 +45,8 @@ public final class ApConsistencyPolicy implements ConsistencyPolicy {
     /** 降级态下应剔除的机房集合（raft 单线程独占写；对外以不可变快照读） */
     private volatile Set<String> excludedDatacenters = ConsistencyPolicy.emptyExcluded();
 
-    /** 进入降级态时所剔除的机房（供审计日志与退出判定回溯） */
+    /** 进入降级态时所剔除的机房（供审计日志与退出判定回溯）。
+     * 并发契约：仅 raft 单线程读写（报告002 C-3），reset() 亦沿 raft 线程，无需 volatile。 */
     private String degradedAgainst;
 
     /** 进入降级态时的本机房标识（供 reset/退出审计日志回填机房字段） */

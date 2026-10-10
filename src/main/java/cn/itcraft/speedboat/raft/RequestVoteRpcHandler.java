@@ -1,8 +1,5 @@
 package cn.itcraft.speedboat.raft;
-
 import cn.itcraft.speedboat.transport.TransportLayer;
-import cn.itcraft.speedboat.rpc.RequestVoteRequest;
-import cn.itcraft.speedboat.rpc.RequestVoteResponse;
 
 /**
  * RequestVote 入站处理器（内部协作器，非公开 API）。

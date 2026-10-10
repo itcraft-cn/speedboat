@@ -1,6 +1,7 @@
 package cn.itcraft.speedboat.raft;
-
 import cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,7 +64,7 @@ final class HeartbeatWatchdog {
         // 若看门狗自成一派按节点计数，会与选举侧（按权重、父组按机房聚合）口径分裂：
         // 不对称机房权重下主机房 self=2，杀光备机房后若仍按节点数累计
         // freshWeight < required，主机房父组 Leader 会被误降级，场景④退化为无主。
-        java.util.Set<String> freshPeers = new java.util.HashSet<String>();
+        Set<String> freshPeers = new HashSet<String>();
         for (String peerId : ctx.peerIds) {
             Long last = ctx.lastResponseNanos.get(peerId);
             if (last != null && (now - last) <= thresholdNanos) {

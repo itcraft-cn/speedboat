@@ -15,6 +15,7 @@ import cn.itcraft.speedboat.rpc.RequestVoteResponse;
 import cn.itcraft.speedboat.transport.TransportLayer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
@@ -120,23 +121,23 @@ class RaftNodeReportListenerTest {
     /** 测试桩：全部同意（直选路径需要 term==0 && leader==null 的第一步） */
     private static final class MockAllGrantTransport implements TransportLayer {
         @Override
-        public java.util.concurrent.CompletableFuture<RequestVoteResponse> sendRequestVote(
+        public CompletableFuture<RequestVoteResponse> sendRequestVote(
             String peerId, RequestVoteRequest request) {
-            return java.util.concurrent.CompletableFuture.completedFuture(
+            return CompletableFuture.completedFuture(
                 new RequestVoteResponse(request.getRequestId(), request.getTerm(), true));
         }
 
         @Override
-        public java.util.concurrent.CompletableFuture<PreVoteResponse> sendPreVote(
+        public CompletableFuture<PreVoteResponse> sendPreVote(
             String peerId, PreVoteRequest request) {
-            return java.util.concurrent.CompletableFuture.completedFuture(
+            return CompletableFuture.completedFuture(
                 new PreVoteResponse(request.getRequestId(), 0, true));
         }
 
         @Override
-        public java.util.concurrent.CompletableFuture<LockOpResponse> sendLockOp(
+        public CompletableFuture<LockOpResponse> sendLockOp(
             String peerId, LockOpRequest request) {
-            return java.util.concurrent.CompletableFuture.completedFuture(
+            return CompletableFuture.completedFuture(
                 new LockOpResponse(request.getRequestId(), false, -1));
         }
 
@@ -146,16 +147,16 @@ class RaftNodeReportListenerTest {
         }
 
         @Override
-        public java.util.concurrent.CompletableFuture<HeartbeatResponse> sendHeartbeat(
+        public CompletableFuture<HeartbeatResponse> sendHeartbeat(
             String peerId, HeartbeatRequest request) {
-            return java.util.concurrent.CompletableFuture.completedFuture(
+            return CompletableFuture.completedFuture(
                 new HeartbeatResponse(request.getRequestId(), request.getTerm(), true));
         }
 
         @Override
-        public java.util.concurrent.CompletableFuture<AppendEntriesResponse> sendAppendEntries(
+        public CompletableFuture<AppendEntriesResponse> sendAppendEntries(
             String peerId, AppendEntriesRequest request) {
-            return java.util.concurrent.CompletableFuture.completedFuture(
+            return CompletableFuture.completedFuture(
                 new AppendEntriesResponse(request.getRequestId(), request.getTerm(), true, 0));
         }
 

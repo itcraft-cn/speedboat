@@ -239,3 +239,43 @@ ast-grep 自动扫描：硬编码密钥 0、`printStackTrace` 0、生产 `System
 **审查工具**：ast-grep-mcp + PMD 6.19.0 + codegraph + DeepSeek V4.1 Flash
 **规则来源**：`${AI_SPEC_ROOT}/lang-spec/spec.java.md` 1.2.0 / `review.java.md` 1.2.0
 **审查完成时间**：2026-10-10
+
+---
+
+## 修复记录（2026-10-10，同日落地；另含对报告两处判定的复核修正）
+
+**两项复核修正**（不改变"`是问题就修"的行动结论，但为日后追溯保留事实）：
+
+1. **H1 影响链整段高估**：机理前三步（Noop 空快照可越级推进 `compactFloor`、WAL 压实丢前缀、
+   重放静默跳过）全部成立，但第 4 步"优先级提升状态永久丢失"错误——优先级状态的**权威恢复源
+   是 `PriorityStore`**（`parent-priority.properties`，apply/adopt 成功即写、启动 load 覆盖配置
+   派生表，与 Checkpointer 水位零耦合）；文件损坏时尚有对侧心跳 `priorityEpoch` 高于本表即采纳
+   的自愈通道；`applyCommittedEntries` 对被压实条目是 `findEntryAt == null` **静默跳过**（父组
+   状态机 Noop 本无业务状态可丢）。正确定性：**Checkpointer 语义缺口（防御性·中）**，仍按
+   "跳过"修复。特例：`raft.persistence=none` 部署下无 PriorityStore 文件时影响回到原表述。
+2. **L-7 的"配置入口不可达"** 错误：`vote.weight.strategy=even` 分支实际可达
+   （`PropertiesConfigProvider#getVoteWeightStrategy`）；EvenNodeVoteWeightStrategy
+   附加权重恒 0，等价于"无策略"语义，行为无害——改为加 `@Deprecated` 并在 javadoc 更正口径，
+   保留为显式声明等权拓扑的用户可读路径。
+
+**修复落地**（全量 616/616 通过，因 M-4 移除被冻结遗留组件的专属集成测试 -6）：
+
+| 项 | 落地 |
+|---|---|
+| H1 | `StateMachine` 增 `default boolean canSnapshot()`；`NoopStateMachine` 显式返回 false；`Checkpointer.maybeCheckpoint/snapshotOnShutdown` 在不可检查点的状态机上一律**不推进 compactFloor**（停止前仅 flush） |
+| H2/C-1 | `NodeContext.peerIds` 改 `CopyOnWriteArrayList`（raft 单线程写 × 外部观测读的弱一致安全快照） |
+| C-2 | `Term.current` 改 `volatile`（对齐 `RaftNode.getTerm` 契约）；C-3 注明降级细节字段"仅 raft 单线程" |
+| M-1 | `ElectionTimeout` 构造期校验 `0 ≤ min ≤ max`；`reset` 在 `min==max` 时退化为固定超时（不经 `nextLong(0)`） |
+| M-2 | `MembershipConfig.Builder.enableAutoRemoval` 缺省与无参构造统一为 `false` |
+| M-3 | `ReplicationPump` 非 Leader 路径 INFO→DEBUG；`DistributedLockImpl` 锁竞争判负 error→debug |
+| M-4 | 删除 `MembershipCoordinator`（含其专属集成测试）——生产无装配、双实现漂移点、裸建 scheduler |
+| M-5 | `CustomSerializer` CRC 覆盖范围扩为 **ser/msg 类型头 + payload**（wrap/unwrap 同口径生成），`serializerTypeId` 由"读取未用"收紧为显式校验；`CustomSerializerTest` 帧断言同步 |
+| M-6 | `tryLock` 等待上限改 `System.nanoTime()` 单调时钟 |
+| M-7 | `RpcMessageHandler.dispatch` 判定顺序改为 `instanceof` 优先，未列举类型记 warn 丢弃 |
+| Q-4/L-1 | 删除死代码：`MmapRaftStore.activeFile`、`CustomSerializer.HEADER_LEN`、`RaftLogStore.quorum`（字段+构造参数+调用点）、`NettyTransport.invalidateChannel`、`ReportPublisher.clusterMemberIds` |
+| Q-5 | `PropertiesConfigProvider` 两处 `while(true)` 显式化循环条件 |
+| L-2 | 未使用 import 全量清理 |
+| L-6 | Micrometer 基础 Gauge 统一补 `nodeId` tag（多节点同 registry 不再互相覆盖） |
+| L-7 | `EvenNodeVoteWeightStrategy` 加 `@Deprecated` **并更正报告口径**（实际可达，语义等价默认） |
+
+**Q-1（Speedboat 981 行）**：本轮不再进一步拆分（五职责经 M1 拆分后各自带域，981 行량在可控带内），留待后续按业务边界单独成题；**L-3/L-4/L-5/L-8**：报告已自标"幂等无害/Pearl/纯工具"性质，保留现状，另行根据业务实际需求取舍。表中的 H2 与 M-4 联动提醒（核对 peerIds 竞争的唯一入口正是 M-4 组件）即在此闭环落地。

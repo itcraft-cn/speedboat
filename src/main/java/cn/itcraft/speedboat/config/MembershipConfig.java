@@ -120,7 +120,8 @@ public class MembershipConfig {
         private int confirmationPeriods = 2;
         private int registryCheckIntervalMs = 30000;
         private RegistryImpl registryImpl = RegistryImpl.NONE;
-        private boolean enableAutoRemoval = true;
+        // 缺省 false，与无参构造一致：静态成员表才是安全缺省（报告002 M-2）
+        private boolean enableAutoRemoval = false;
 
         public Builder healthCheckIntervalMs(int intervalMs) {
             this.healthCheckIntervalMs = intervalMs;

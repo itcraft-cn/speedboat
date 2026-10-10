@@ -1,7 +1,4 @@
 package cn.itcraft.speedboat.raft;
-
-import cn.itcraft.speedboat.rpc.LockOpRequest;
-import cn.itcraft.speedboat.rpc.LockOpResponse;
 import cn.itcraft.speedboat.transport.TransportLayer;
 
 /**

@@ -1,9 +1,4 @@
 package cn.itcraft.speedboat.raft;
-
-import cn.itcraft.speedboat.rpc.AppendEntriesRequest;
-import cn.itcraft.speedboat.rpc.AppendEntriesResponse;
-import cn.itcraft.speedboat.rpc.HeartbeatRequest;
-import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.transport.TransportLayer;
 
 /**

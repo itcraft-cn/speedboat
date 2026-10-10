@@ -1,11 +1,10 @@
 package cn.itcraft.speedboat.raft.util;
-
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
-
 /**
  * 有界 LRU 缓存（内部协作器，非公开 API；tiny-rules LruCache 思想对照）。
  *
@@ -44,7 +43,7 @@ public final class BoundedCache<K, V> {
     }
 
     /** 同 key 只计算一次（幂等入口），入参为 key */
-    public synchronized V computeIfAbsent(K key, java.util.function.Function<K, V> loader) {
+    public synchronized V computeIfAbsent(K key, Function<K, V> loader) {
         V existing = store.get(key);
         if (existing != null) {
             return existing;
@@ -69,7 +68,7 @@ public final class BoundedCache<K, V> {
     }
 
     /** 快照键列表（观测用途；不可变） */
-    public synchronized java.util.List<K> keysSnapshot() {
+    public synchronized List<K> keysSnapshot() {
         return new ArrayList<>(store.keySet());
     }
 

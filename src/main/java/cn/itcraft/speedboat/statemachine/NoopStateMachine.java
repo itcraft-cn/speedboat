@@ -42,4 +42,16 @@ public class NoopStateMachine implements StateMachine {
     public long getLastAppliedIndex() {
         return lastAppliedIndex;
     }
+
+    /**
+     * 空状态机毫无检查点能力：snapshot()/restore() 均为空操作、无任何文件写入。
+     * 若允许它推进 WAL 压实水位，父组 WAL 前缀会被"没有检查点兜底"的压实回收
+     * （报告002 H1 的失败链源头），故必须显式关闭检查点路径。
+     *
+     * @return 恒 false
+     */
+    @Override
+    public boolean canSnapshot() {
+        return false;
+    }
 }

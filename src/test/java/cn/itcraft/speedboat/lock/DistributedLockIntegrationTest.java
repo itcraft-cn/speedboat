@@ -1,9 +1,6 @@
 package cn.itcraft.speedboat.lock;
-
-import cn.itcraft.speedboat.integration.MockTransport;
 import cn.itcraft.speedboat.integration.TestNode;
 import cn.itcraft.speedboat.raft.ElectionTimeout;
-import cn.itcraft.speedboat.raft.NodeState;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

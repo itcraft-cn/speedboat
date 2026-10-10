@@ -1,5 +1,6 @@
 package cn.itcraft.speedboat.raft.executor;
-
+import java.util.concurrent.Callable;
+import java.util.concurrent.Future;
 /**
  * Raft 内部任务执行器契约（对标 MicroRaft io.microraft.executor.RaftNodeExecutor）。
  *
@@ -49,7 +50,7 @@ public interface RaftNodeExecutor {
      * @param delayMillis 延迟毫秒数，必须 >= 0
      * @return 可用于取消的 Future（仅取消用途，返回值无意义）
      */
-    java.util.concurrent.Future<?> schedule(Runnable task, long delayMillis);
+    Future<?> schedule(Runnable task, long delayMillis);
 
     /**
      * 提交任务并返回 Future，供外部线程"投递 raft 任务并等待结果"使用。
@@ -62,7 +63,7 @@ public interface RaftNodeExecutor {
      * @param <T>  返回类型
      * @return Future，在 raft 线程执行完成后完成
      */
-    <T> java.util.concurrent.Future<T> submit(java.util.concurrent.Callable<T> task);
+    <T> Future<T> submit(Callable<T> task);
 
     /**
      * 在 raft 线程上以固定频率执行周期任务（自首次延时后，每 period 周期一次）。
@@ -75,7 +76,7 @@ public interface RaftNodeExecutor {
      * @param periodMillis      固定周期毫秒数
      * @return 可用于取消的 Future
      */
-    java.util.concurrent.Future<?> scheduleAtFixedRate(Runnable task, long initialDelayMillis, long periodMillis);
+    Future<?> scheduleAtFixedRate(Runnable task, long initialDelayMillis, long periodMillis);
 
     /**
      * 判断当前线程是否就是 raft 单消费者线程。

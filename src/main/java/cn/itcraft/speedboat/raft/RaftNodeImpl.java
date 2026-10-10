@@ -1,7 +1,6 @@
 package cn.itcraft.speedboat.raft;
 import cn.itcraft.speedboat.config.MembershipConfig;
 import cn.itcraft.speedboat.config.SpeedboatConsts;
-import cn.itcraft.speedboat.raft.executor.RaftNodeExecutor;
 import cn.itcraft.speedboat.raft.report.RaftNodeReport;
 import cn.itcraft.speedboat.raft.task.HeartbeatTask;
 import cn.itcraft.speedboat.raft.task.MemberCheckTask;
@@ -11,8 +10,6 @@ import cn.itcraft.speedboat.rpc.HeartbeatRequest;
 import cn.itcraft.speedboat.rpc.HeartbeatResponse;
 import cn.itcraft.speedboat.rpc.LockOpRequest;
 import cn.itcraft.speedboat.rpc.LockOpResponse;
-import cn.itcraft.speedboat.rpc.PreVoteRequest;
-import cn.itcraft.speedboat.rpc.PreVoteResponse;
 import cn.itcraft.speedboat.rpc.RequestVoteRequest;
 import cn.itcraft.speedboat.rpc.RequestVoteResponse;
 import cn.itcraft.speedboat.statemachine.StateMachine;
@@ -23,9 +20,16 @@ import cn.itcraft.speedboat.strategy.membership.RegistryStrategy;
 import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 /**
@@ -103,7 +107,7 @@ public class RaftNodeImpl implements RaftNode {
     RaftNodeImpl(RaftNode.Builder builder) {
         this.ctx = new NodeContext(builder);
         this.quorum = new QuorumCalculator(ctx);
-        this.logStore = new RaftLogStore(ctx, quorum);
+        this.logStore = new RaftLogStore(ctx);
         this.checkpointer = new Checkpointer(ctx);
         this.applyEngine = new ApplyEngine(ctx, checkpointer);
         this.roles = new RoleMachine(ctx, new RoleHooksInner());
@@ -224,22 +228,22 @@ public class RaftNodeImpl implements RaftNode {
      * @param <T>  返回类型
      * @return 任务结果
      */
-    private <T> T onRaftThread(java.util.concurrent.Callable<T> task) {
+    private <T> T onRaftThread(Callable<T> task) {
         try {
             if (ctx.executor.isRaftThread()) {
                 return task.call();
             }
             return ctx.executor.submit(task).get(SpeedboatConsts.SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        } catch (java.util.concurrent.RejectedExecutionException e) {
+        } catch (RejectedExecutionException e) {
             // 停机后被继续调用属预期场景，保留具体异常类型供调用方（propose 等）做退化
             throw e;
-        } catch (java.util.concurrent.ExecutionException e) {
+        } catch (ExecutionException e) {
             Throwable cause = e.getCause();
             if (cause instanceof RuntimeException) {
                 throw (RuntimeException) cause;
             }
             throw new IllegalStateException("Raft task failed", cause);
-        } catch (java.util.concurrent.TimeoutException e) {
+        } catch (TimeoutException e) {
             throw new IllegalStateException("Raft executor busy, task timed out", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -256,7 +260,7 @@ public class RaftNodeImpl implements RaftNode {
      * 拿到 Future 即返回，绝不阻塞等待接收方 raft 线程，避免 mock 集群
      * 场景的跨节点 raft 线程互等死锁。</p>
      */
-    private <T> CompletableFuture<T> onRaftThreadAsync(java.util.concurrent.Callable<T> task) {
+    private <T> CompletableFuture<T> onRaftThreadAsync(Callable<T> task) {
         CompletableFuture<T> future = new CompletableFuture<>();
         ctx.executor.execute(() -> {
             try {
@@ -450,7 +454,7 @@ public class RaftNodeImpl implements RaftNode {
         return ctx.changeValidationStrategy;
     }
 
-    public java.util.concurrent.ConcurrentHashMap<String, FailureRecord> getFailureRecords() {
+    public ConcurrentHashMap<String, FailureRecord> getFailureRecords() {
         return ctx.failureRecords;
     }
 
@@ -468,7 +472,7 @@ public class RaftNodeImpl implements RaftNode {
     public long propose(byte[] data) {
         try {
             return onRaftThread(() -> proposer.propose(data));
-        } catch (java.util.concurrent.RejectedExecutionException e) {
+        } catch (RejectedExecutionException e) {
             // 节点已 shutdown、executor 已终止：propose 返回失败占位（-1）
             logger.warn("Node {} shutdown, propose rejected", ctx.nodeId);
             return -1;
@@ -610,7 +614,7 @@ public class RaftNodeImpl implements RaftNode {
         long termBefore = ctx.term.getCurrent();
 
         // 1) 换表：本机房权重 = Σ(其他机房权重) + 1，epoch+1（任意机房数恒自投即成主，见其 javadoc）
-        java.util.Map<String, Integer> newWeights = computePromotedWeights(before.weights());
+        Map<String, Integer> newWeights = computePromotedWeights(before.weights());
         long newEpoch = before.epoch() + 1;
         table.replace(newEpoch, newWeights,
             DatacenterPriorityTable.Source.PROMOTED);
@@ -659,7 +663,7 @@ public class RaftNodeImpl implements RaftNode {
         DatacenterPriorityTable table = ctx.priorityTable;
         DatacenterPriorityTable.Snapshot before = table.current();
 
-        java.util.Map<String, Integer> configWeights = table.configWeights();
+        Map<String, Integer> configWeights = table.configWeights();
         long newEpoch = before.epoch() + 1;
         table.replace(newEpoch, configWeights,
             DatacenterPriorityTable.Source.CONFIG);
@@ -688,14 +692,14 @@ public class RaftNodeImpl implements RaftNode {
      * <p>双机房下该公式与旧式同为"自投即成主"，仅快照值由 max+2 收窄为 Σ+1
      * （更贴近最小充分权重，避免配置值被历史提升层层抬高）。</p>
      */
-    private java.util.Map<String, Integer> computePromotedWeights(
-        java.util.Map<String, Integer> currentWeights) {
-        java.util.Map<String, Integer> next = new java.util.LinkedHashMap<String, Integer>();
+    private Map<String, Integer> computePromotedWeights(
+        Map<String, Integer> currentWeights) {
+        Map<String, Integer> next = new LinkedHashMap<String, Integer>();
         if (currentWeights != null) {
             next.putAll(currentWeights);
         }
         int sumOther = 0;
-        for (java.util.Map.Entry<String, Integer> e : next.entrySet()) {
+        for (Map.Entry<String, Integer> e : next.entrySet()) {
             if (!e.getKey().equals(ctx.datacenter) && e.getValue() != null && e.getValue() > 0) {
                 sumOther += e.getValue();
             }
@@ -704,7 +708,7 @@ public class RaftNodeImpl implements RaftNode {
         return next;
     }
 
-    public java.util.concurrent.CompletableFuture<LockOpResponse> forwardLockOp(LockOpRequest request) {
+    public CompletableFuture<LockOpResponse> forwardLockOp(LockOpRequest request) {
         return lockOps.forwardLockOp(request);
     }
 

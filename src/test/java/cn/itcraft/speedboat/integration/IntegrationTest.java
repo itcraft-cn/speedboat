@@ -1,10 +1,6 @@
 package cn.itcraft.speedboat.integration;
-
-import cn.itcraft.speedboat.config.SpeedboatConsts;
 import cn.itcraft.speedboat.raft.ElectionTimeout;
 import cn.itcraft.speedboat.raft.NodeState;
-import cn.itcraft.speedboat.raft.RaftNode;
-import cn.itcraft.speedboat.raft.VoteContext;
 import cn.itcraft.speedboat.strategy.group.DefaultGroupStrategy;
 import cn.itcraft.speedboat.strategy.group.GroupStrategy;
 import cn.itcraft.speedboat.strategy.voteweight.EvenNodeVoteWeightStrategy;

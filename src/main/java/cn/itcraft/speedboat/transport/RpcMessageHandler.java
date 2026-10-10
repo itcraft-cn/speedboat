@@ -1,15 +1,12 @@
 package cn.itcraft.speedboat.transport;
-
 import cn.itcraft.speedboat.rpc.*;
 import cn.itcraft.speedboat.serialize.CustomSerializer;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import java.util.concurrent.CompletableFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.concurrent.CompletableFuture;
-
 /**
  * RPC 消息处理器，处理 Netty 通道中的 RPC 消息。
  * 
@@ -91,12 +88,15 @@ class RpcMessageHandler extends ChannelInboundHandlerAdapter {
                 } else if (response instanceof HeartbeatResponse) {
                     HeartbeatResponse r = (HeartbeatResponse) response;
                     ctx.writeAndFlush(serializer.wrap(new HeartbeatResponse(requestId, r.getTerm(), r.isSuccess())));
-                } else {
+                } else if (response instanceof RequestVoteResponse) {
+                    // 报告002 M-7：instanceof 判定优先于强转——未列举的响应类型
+                    // 走下方 else 兜底（记 warn 丢弃），不得 ClassCastException
                     RequestVoteResponse r = (RequestVoteResponse) response;
-                    if (response instanceof RequestVoteResponse) {
-                        ctx.writeAndFlush(serializer.wrap(new RequestVoteResponse(
-                            requestId, r.getTerm(), r.isVoteGranted())));
-                    }
+                    ctx.writeAndFlush(serializer.wrap(new RequestVoteResponse(
+                        requestId, r.getTerm(), r.isVoteGranted())));
+                } else {
+                    logger.warn("RpcMessageHandler: unrecognized response type {} for requestId={}, drop",
+                        response.getClass().getName(), requestId);
                 }
             } catch (Exception e) {
                 logger.error("RpcMessageHandler dispatch write error: {}", e.toString(), e);
@@ -115,7 +115,7 @@ class RpcMessageHandler extends ChannelInboundHandlerAdapter {
      * 判定（GRANTED/DENIED/epoch）不在此传递——发起方从本地 apply 结果读取。
      */
     private void dispatchLockOp(ChannelHandlerContext ctx,
-                                java.util.concurrent.CompletableFuture<LockOpResponse> future,
+                                CompletableFuture<LockOpResponse> future,
                                 String requestId) {
         future.whenComplete((response, throwable) -> {
             if (throwable != null || response == null) {

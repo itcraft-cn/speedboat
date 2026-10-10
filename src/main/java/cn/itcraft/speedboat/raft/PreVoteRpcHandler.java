@@ -1,7 +1,4 @@
 package cn.itcraft.speedboat.raft;
-
-import cn.itcraft.speedboat.rpc.PreVoteRequest;
-import cn.itcraft.speedboat.rpc.PreVoteResponse;
 import cn.itcraft.speedboat.transport.TransportLayer;
 
 /**

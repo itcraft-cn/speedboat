@@ -117,14 +117,11 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
     public List<List<String>> getNodes() {
         List<List<String>> nodes = new ArrayList<>();
         
-        int datacenterIndex = 0;
-        while (true) {
-            List<String> datacenterNodes = parseDatacenterNodes(datacenterIndex);
-            if (datacenterNodes.isEmpty()) {
-                break;
-            }
-            nodes.add(datacenterNodes);
-            datacenterIndex++;
+        // 显式循环条件（报告002 Q-5）：按机房索引顺读，读到首个空机房即止（等价 while(true)+break）
+        for (int datacenterIndex = 0;
+             !parseDatacenterNodes(datacenterIndex).isEmpty();
+             datacenterIndex++) {
+            nodes.add(parseDatacenterNodes(datacenterIndex));
         }
         
         if (nodes.isEmpty()) {
@@ -137,15 +134,14 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
     private List<String> parseDatacenterNodes(int datacenterIndex) {
         List<String> nodes = new ArrayList<>();
         
-        int nodeIndex = 0;
-        while (true) {
+        // 显式循环条件（报告002 Q-5）：按节点索引顺读，缺键即止
+        for (int nodeIndex = 0; ; nodeIndex++) {
             String key = String.format("nodes.%d.%d", datacenterIndex, nodeIndex);
             String value = properties.getProperty(key);
             if (value == null) {
                 break;
             }
             nodes.add(value);
-            nodeIndex++;
         }
         
         return nodes;

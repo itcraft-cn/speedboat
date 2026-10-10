@@ -1,17 +1,16 @@
 package cn.itcraft.speedboat.rpc;
-
 import io.protostuff.LinkedBuffer;
 import io.protostuff.ProtostuffIOUtil;
 import io.protostuff.Schema;
 import io.protostuff.runtime.Field;
 import io.protostuff.runtime.RuntimeSchema;
+import java.util.HashMap;
+import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 /**
  * {@code datacenter} 字段的线格式兼容性测试。
  *
@@ -157,7 +156,7 @@ class DatacenterFieldCompatTest {
         RuntimeSchema<?> schema = RuntimeSchema.createFrom(messageType);
 
         int baseNumber = -1;
-        java.util.Map<String, Integer> newNumbers = new java.util.HashMap<String, Integer>();
+        Map<String, Integer> newNumbers = new HashMap<String, Integer>();
         for (Field<?> field : schema.getFields()) {
             if (baseField.equals(field.name)) {
                 baseNumber = field.number;

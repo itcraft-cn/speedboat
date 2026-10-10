@@ -1,10 +1,10 @@
 package cn.itcraft.speedboat.raft.report;
-
 import cn.itcraft.speedboat.raft.NodeState;
-
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-
 /**
  * Raft 节点状态快照报告（Phase E，对标 MicroRaft report/RaftNodeReport）。
  *
@@ -41,13 +41,13 @@ public class RaftNodeReport {
     private final long lastApplied;
     private final int lastLogIndex;
     /** 成员列表（只读） */
-    private final java.util.List<String> members;
+    private final List<String> members;
     /** follower matchIndex 快照（只读；非 leader 为空） */
     private final Map<String, Long> followerMatchIndices;
 
     public RaftNodeReport(String nodeId, NodeState role, long term, String votedFor, String leaderId,
                           long commitIndex, long lastApplied, int lastLogIndex,
-                          java.util.List<String> members, Map<String, Long> followerMatchIndices) {
+                          List<String> members, Map<String, Long> followerMatchIndices) {
         this.nodeId = nodeId;
         this.role = role;
         this.term = term;
@@ -56,8 +56,8 @@ public class RaftNodeReport {
         this.commitIndex = commitIndex;
         this.lastApplied = lastApplied;
         this.lastLogIndex = lastLogIndex;
-        this.members = Collections.unmodifiableList(new java.util.ArrayList<>(members));
-        this.followerMatchIndices = Collections.unmodifiableMap(new java.util.HashMap<>(followerMatchIndices));
+        this.members = Collections.unmodifiableList(new ArrayList<>(members));
+        this.followerMatchIndices = Collections.unmodifiableMap(new HashMap<>(followerMatchIndices));
     }
 
     public String getNodeId() {
@@ -92,7 +92,7 @@ public class RaftNodeReport {
         return lastLogIndex;
     }
 
-    public java.util.List<String> getMembers() {
+    public List<String> getMembers() {
         return members;
     }
 

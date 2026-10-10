@@ -23,7 +23,6 @@ import cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable;
 import cn.itcraft.speedboat.strategy.voteweight.PriorityCodec;
 import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
 import cn.itcraft.speedboat.transport.TransportLayer;
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -113,6 +112,11 @@ final class NodeContext {
     TransportLayer transportLayer;
 
     /** peer 节点全集（成员变更可扩展；raft 单线程独占写） */
+    /**
+     * 父/子组成员表（跨机房级联时的 raft 线程内 add/remove；报告002 H2 修复）。
+     * 用 CopyOnWriteArrayList 兜住 raft 单线程写与外部（观测/检视）线程
+     * {@code getPeerIds()} 复制的并发边界——COW 迭代是弱一致安全快照。
+     */
     final List<String> peerIds;
     /** 每个 peer 的机房标识，用于权重策略计算。未配置时默认空字符串（视为同机房） */
     final Map<String, String> peerDatacenters;
@@ -257,7 +261,9 @@ final class NodeContext {
             : LeadershipPolicy.defaultPolicy();
         this.groupStrategy = builder.groupStrategy;
         this.transportLayer = builder.transportLayer;
-        this.peerIds = builder.peerIds != null ? new ArrayList<>(builder.peerIds) : new ArrayList<>();
+        this.peerIds = builder.peerIds != null
+            ? new java.util.concurrent.CopyOnWriteArrayList<>(builder.peerIds)
+            : new java.util.concurrent.CopyOnWriteArrayList<>();
         this.peerDatacenters = new ConcurrentHashMap<>();
         this.votesReceived = new ConcurrentHashMap<>();
         this.lastHeartbeatNanos = System.nanoTime();
@@ -314,7 +320,7 @@ final class NodeContext {
             || remoteWeights == null || remoteWeights.isEmpty()) {
             return;
         }
-        java.util.Map<String, Integer> decoded = decodePriorityCached(remoteWeights);
+        Map<String, Integer> decoded = decodePriorityCached(remoteWeights);
         if (decoded.isEmpty()) {
             return;
         }
@@ -340,13 +346,13 @@ final class NodeContext {
      * 换表后编码串改变自然失效，正确性与缓存互不耦合。仅 raft 单线程读写。</p>
      */
     private String cachedPriorityEncoded;
-    private java.util.Map<String, Integer> cachedPriorityDecoded;
+    private Map<String, Integer> cachedPriorityDecoded;
 
-    private java.util.Map<String, Integer> decodePriorityCached(String encoded) {
+    private Map<String, Integer> decodePriorityCached(String encoded) {
         if (encoded.equals(cachedPriorityEncoded) && cachedPriorityDecoded != null) {
             return cachedPriorityDecoded;
         }
-        java.util.Map<String, Integer> decoded =
+        Map<String, Integer> decoded =
             PriorityCodec.decode(encoded);
         cachedPriorityEncoded = encoded;
         cachedPriorityDecoded = decoded;

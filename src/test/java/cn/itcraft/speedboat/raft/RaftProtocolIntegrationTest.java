@@ -1,6 +1,4 @@
 package cn.itcraft.speedboat.raft;
-
-import cn.itcraft.speedboat.integration.MockTransport;
 import cn.itcraft.speedboat.integration.TestNode;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
