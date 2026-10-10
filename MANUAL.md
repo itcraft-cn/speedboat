@@ -129,6 +129,7 @@ election.cross.timeout.max=5000
 | `vote.weight.strategy` | ❌ | none | 投票权重策略：`prefer` / `even` / `none` |
 | `consistency.policy` | ❌ | cp | 一致性策略：`cp`（强一致唯一性，绝不双主，整机房死亡退化为无主）/ `ap`（可用性优先，对侧机房失联超阈值后降级接管，分区期间可能短暂双主）。**启动时选定，全生命周期恒定**；双机房级联父组专用，单机房不受影响 |
 | `consistency.degraded.timeout.ms` | ❌ | 10000 | 仅 `ap` 生效：对侧机房持续无应答多久后允许降级接管；应显著大于 check-quorum 新鲜阈值（5s）与跨机房选举超时上界（5s） |
+| `promote.term.leap` | ❌ | 100 | 人工提升机房优先级时的 term 跃升幅度（须 > 0）；越大越能确保对侧旧任期在愈合后退让，代价是 term 更快增长 |
 | `vote.weight.prefer` | ⚠️ prefer 必填 | - | 享受额外权重的节点 ID（格式 `node-<ip>-<port>`） |
 | `vote.weight.prefer.weight` | ❌ | 3 | 该节点获得的额外权重 |
 | `raft.persistence` | ❌ | mmap | 持久化三档：`mmap`（默认，跨进程挂回）/ `mem`（显式档，重启即全丢） / `none` |
@@ -297,6 +298,31 @@ boolean running = Speedboat.isRunning()
 ```
 
 返回单例实例是否正在运行。
+
+#### 人工提升机房优先级（运维兜底）
+
+```java
+boolean ok = Speedboat.promoteDatacenter(operator, datacenterId, reason)
+```
+
+跨机房模式下，把本机房在父组的优先级提升到"自投即成主"。详见部署指南
+「人工升级与回退」小节。返回 `false` 表示被前置校验或连通性闸门拒绝。
+
+#### 人工回退优先级到配置值
+
+```java
+boolean ok = Speedboat.restoreDefaultPriorities(operator, reason)
+```
+
+把优先级表回退到配置派生值。回退不跃升 term、不夺主。
+
+#### 查看当前优先级快照
+
+```java
+DatacenterPriorityTable.Snapshot snap = Speedboat.getPrioritySnapshot()
+```
+
+返回父组当前优先级快照（epoch + 权重表 + 来源）；单机房/子组返回 `null`。
 
 ### 分布式命名锁
 
@@ -480,6 +506,69 @@ consistency.degraded.timeout.ms=10000
 
 > ⚠️ **AP 的代价**：降级接管意味着分区期间两房可能各自向客户端确认写入。
 > 仅在"两房数据可最终合并/业务可容忍短暂双写"的场景启用；对数据强一致有硬要求时保持 `cp`（默认）。
+
+### 人工升级与回退（运维兜底）
+
+跨机房父组在**主机房整体失联**时，备机房因自身权重低（如 `1 < required 2`）无法成主，
+CP 下退化为无主。此时可由运维通过门面 API **显式提升**备机房在父组的优先级，
+使其自投成主、恢复 `isMain` 唯一主语义。这是一条**人工兜底通路**，不自动触发、不做远程接口、不做控制台。
+
+#### 提升：`promoteDatacenter`
+
+```java
+// 在备机房的任一代表进程上调用（operator 必填，用于审计追溯）
+boolean ok = Speedboat.promoteDatacenter("alice", "beijing002", "hangzhou 机房整体下线");
+```
+
+**接受前置（全部满足才放行）**：
+
+1. 单例在跑，且为跨机房模式；
+2. `operator` 非空（审计必填）；
+3. 目标 `datacenterId` **等于本机房**（不能提升对侧）；
+4. **连通性闸门**：探对侧机房全部父组端点，**任一可达即拒绝**——网络仍通时强行提升会打开"双主"窗口。
+
+**放行后的执行序**（raft 单线程内）：换表（本机房权重 = `max(对侧) + 2`）→ term 跃升（`promote.term.leap`，缺省 100）→ 自投登基 → 追加并复制一条 `PRIORITY_CHANGE` 日志条目 → 写父侧独立持久化文件。提升后本机房权重严格超过对侧，双主在**权重数学上**不可能，与网络状态无关。
+
+#### 回退：`restoreDefaultPriorities`
+
+```java
+// 主机房恢复后，把优先级表交还配置派生值（在当前父组 Leader 上调用）
+boolean ok = Speedboat.restoreDefaultPriorities("alice", "hangzhou 机房已恢复");
+```
+
+回退以配置派生表为新快照、epoch 递增、来源 `CONFIG`，走同一条复制 + 持久化 + 心跳传播路径。
+回退**不跃升 term、不夺主**——只把本机房权重降回配置值。主机房凭更高权重可在下一次选举夺回，
+但**不自动发生**：需主机房代表自身发起选举，或在 CP 下由 check-quorum 降级后自然触发。
+
+#### 查看当前优先级快照
+
+```java
+DatacenterPriorityTable.Snapshot snap = Speedboat.getPrioritySnapshot();
+// snap.epoch() / snap.weights() / snap.source()
+```
+
+#### 审计日志
+
+每次提升/回退调用（无论接受/拒绝）都落一条 `WARN` 级 `PROMOTE-AUDIT` 结构化日志，
+固定字段顺序便于 grep：`op / operator / node / dc / target / reason / detail /
+termBefore / termAfter / epochBefore / epochAfter / weightsBefore / weightsAfter`。
+
+#### 持久化与重启
+
+优先级表写入**独立文件** `parent-priority.properties`（位于父组持久化目录），与 `RaftStore` 的
+mmap term 档彻底分离。父组启动时若该文件存在，以其为初值覆盖配置派生表——**重启不丢人工提升状态**。
+
+#### 风险警示（务必阅读）
+
+> ⚠️ **切勿把提升/回退自动化**。这条通路的前提是"运维已用带外手段确认主机房确已终止或确已分区"。
+> 连通性闸门只是最后一道机械防线，它只探"对侧父组端点是否可达"，无法区分"主机房真死"与
+> "仅探测链路抖动"。若在主机房仅是**临时抖动**时贸然提升，仍可能在窗口内出现短暂双主。
+>
+> ⚠️ **回退同样需谨慎**。回退后若主机房尚未真正恢复，系统会回到"备机房无主"状态。
+> 回退应在确认主机房已可参与选举后再执行。
+>
+> ⚠️ **提升只解决"唯一主"，不解决数据**。它让备机房成主以恢复写入语义，但主机房历史数据
+> 仍需按 Raft 日志复制机制追平；不会因提升而跳过日志复制或状态机重放。
 
 ### 容器化部署
 

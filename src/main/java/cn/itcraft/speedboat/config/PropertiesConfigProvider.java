@@ -327,6 +327,28 @@ public class PropertiesConfigProvider implements SpeedboatConfigProvider {
         return weights;
     }
 
+    /**
+     * 人工升级 API 的 term 跃升步长，对应配置键 {@code promote.term.leap}。
+     *
+     * @return 跃升步长；未配置或非法（非数字或 &lt;= 0）时取接口缺省 100
+     */
+    @Override
+    public long getPromoteTermLeap() {
+        String value = properties.getProperty("promote.term.leap");
+        if (value != null) {
+            try {
+                long leap = Long.parseLong(value.trim());
+                if (leap > 0) {
+                    return leap;
+                }
+                logger.warn("Invalid promote.term.leap value: {} (must be > 0), using default 100", value);
+            } catch (NumberFormatException e) {
+                logger.warn("Invalid promote.term.leap value: {}, using default 100", value);
+            }
+        }
+        return SpeedboatConfigProvider.super.getPromoteTermLeap();
+    }
+
 
     @Override
     public String getRaftPersistenceType() {

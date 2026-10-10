@@ -13,6 +13,8 @@ import cn.itcraft.speedboat.strategy.membership.HealthCheckStrategy;
 import cn.itcraft.speedboat.strategy.membership.RegistryStrategy;
 import cn.itcraft.speedboat.strategy.voteweight.VoteWeightStrategy;
 import cn.itcraft.speedboat.transport.TransportLayer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -38,6 +40,8 @@ import java.util.concurrent.Future;
  * @since 1.1.0
  */
 final class NodeContext {
+
+    private static final Logger logger = LoggerFactory.getLogger(NodeContext.class);
 
     // ==================== 持久性等级标注（对标 MicroRaft [PERSISTENT] 自文档化）====================
 
@@ -73,6 +77,18 @@ final class NodeContext {
 
     /** 投票权重策略（可空：null 视为均等策略） */
     final VoteWeightStrategy voteWeightStrategy;
+    /**
+     * 机房优先级表（阶段五人工升级 API 用；可空）。
+     *
+     * <p>仅跨机房级联父组注入。与投票策略共享<b>同一实例</b>——策略每次权重计算读其最新快照，
+     * 本上下文供优先级变更应用（ApplyEngine 分派 PRIORITY_CHANGE）与 RPC 传播读取。</p>
+     */
+    final cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable priorityTable;
+    /**
+     * 父侧独立优先级持久化（阶段五；可空——子组/单机房无持久化）。
+     * 与 {@code RaftStore} 分离，不动其接口与契约。
+     */
+    final cn.itcraft.speedboat.persistence.PriorityStore priorityStore;
     /**
      * 一致性策略（CP/AP）。可空时在构造器兜底为 CP 单例，
      * 保证单机房与既有调用路径行为逐字节不变。
@@ -215,6 +231,9 @@ final class NodeContext {
         this.leaderId = null;
         this.electionTimeout = builder.electionTimeout;
         this.voteWeightStrategy = builder.voteWeightStrategy;
+        // 机房优先级表：与投票策略共享同一实例（父组布线；子组/单机房为 null，行为不变）
+        this.priorityTable = builder.priorityTable;
+        this.priorityStore = builder.priorityStore;
         // 一致性策略缺省 CP：未显式注入时走强一致唯一性，单机房/既有路径行为逐字节不变
         this.consistencyPolicy = builder.consistencyPolicy != null
             ? builder.consistencyPolicy
@@ -258,6 +277,43 @@ final class NodeContext {
 
     void setStateMachine(StateMachine stateMachine) {
         this.stateMachine = stateMachine;
+    }
+
+    /**
+     * 依远端携带的优先级快照收敛本节点优先级表（阶段五传播收敛公共入口）。
+     *
+     * <p>心跳（AppendEntries）与投票（RequestVote）两条传播路径共用本方法：仅当远端
+     * epoch 高于本表当前 epoch 才采纳，构成"只升不降"——旧快照（含提升前的低优先级）
+     * 永远无法回灌。无优先级表（子组/单机房）或远端未携带（epoch=0/空串）时 no-op，
+     * 旧版本节点发送的 null/0 字段据此忽略，协议向后兼容。</p>
+     *
+     * <p>并发契约：仅限 raft 单线程调用（随入站消息处理触发）。</p>
+     *
+     * @param remoteEpoch   远端携带的 epoch
+     * @param remoteWeights 远端携带的权重表编码（"dc=w,dc=w"）；可为 null
+     */
+    void adoptPrioritySnapshot(long remoteEpoch, String remoteWeights) {
+        if (priorityTable == null || remoteEpoch <= 0
+            || remoteWeights == null || remoteWeights.isEmpty()) {
+            return;
+        }
+        java.util.Map<String, Integer> decoded =
+            cn.itcraft.speedboat.strategy.voteweight.PriorityCodec.decode(remoteWeights);
+        if (decoded.isEmpty()) {
+            return;
+        }
+        // 来源推断：与配置派生表一致则视为 CONFIG，否则视为 PROMOTED
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source source =
+            decoded.equals(priorityTable.configWeights())
+                ? cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source.CONFIG
+                : cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source.PROMOTED;
+        if (priorityTable.convergeIfNewer(remoteEpoch, decoded, source)) {
+            logger.info("Node {} converged priority table from remote snapshot: epoch={}, weights={}",
+                nodeId, remoteEpoch, decoded);
+            if (priorityStore != null) {
+                priorityStore.save(priorityTable.current());
+            }
+        }
     }
 
     Future<?> getElectionTimeoutFuture() {

@@ -2,6 +2,7 @@ package cn.itcraft.speedboat.persistence;
 
 import cn.itcraft.speedboat.raft.LogEntry;
 import cn.itcraft.speedboat.raft.MemberChangeEntry;
+import cn.itcraft.speedboat.raft.PriorityChangeEntry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -88,6 +89,8 @@ public class MmapRaftStore implements RaftStore {
     static final byte FRAME_COMMAND = 2;
     static final byte FRAME_TRUNC_FROM = 3;
     static final byte FRAME_TRUNC_UNTIL = 4;
+    /** 机房优先级变更帧（阶段五人工升级 API；复用通用 leader+data 帧布局） */
+    static final byte FRAME_PRIORITY_CHANGE = 5;
 
     /** WAL 扫描/追加共同维护的内存镜像（恢复输出/截断收口） */
     private final TreeMap<Long, LogEntry> entryIndex = new TreeMap<>();
@@ -401,6 +404,15 @@ public class MmapRaftStore implements RaftStore {
                 entryIndex.put(index, cn.itcraft.speedboat.raft.CommandLogEntry.create(index, term, leader, data));
                 break;
             }
+            case FRAME_PRIORITY_CHANGE: {
+                // 机房优先级变更：与 COMMAND 同款 leader+data 帧布局，data 内编码结构化字段
+                String leader = readLengthPrefixedString(b);
+                int dataLen = b.getInt();
+                byte[] data = new byte[dataLen];
+                b.get(data);
+                entryIndex.put(index, cn.itcraft.speedboat.raft.PriorityChangeEntry.fromData(index, term, leader, data));
+                break;
+            }
             case FRAME_TRUNC_FROM:
                 entryIndex.tailMap(index).clear();
                 break;
@@ -545,6 +557,9 @@ public class MmapRaftStore implements RaftStore {
         if (t == LogEntry.EntryType.COMMAND) {
             return FRAME_COMMAND;
         }
+        if (t == LogEntry.EntryType.PRIORITY_CHANGE) {
+            return FRAME_PRIORITY_CHANGE;
+        }
         return FRAME_LEADER_INFO;
     }
 
@@ -554,6 +569,11 @@ public class MmapRaftStore implements RaftStore {
             return m.getChangeType() == MemberChangeEntry.ChangeType.ADD
                 ? MemberChangeEntry.add(src.getIndex(), src.getTerm(), src.getLeaderId(), m.getNodeId(), m.getAddress())
                 : MemberChangeEntry.remove(src.getIndex(), src.getTerm(), src.getLeaderId(), m.getNodeId());
+        }
+        if (src.getEntryType() == LogEntry.EntryType.PRIORITY_CHANGE && src instanceof PriorityChangeEntry) {
+            // 优先级变更条目从 data 字节重建（data 内已编码全部结构化字段）
+            return PriorityChangeEntry.fromData(src.getIndex(), src.getTerm(), src.getLeaderId(),
+                src.getData() == null ? new byte[0] : src.getData().clone());
         }
         LogEntry restored = new LogEntry(src.getIndex(), src.getTerm(), src.getLeaderId());
         restored.setEntryType(src.getEntryType());

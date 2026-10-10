@@ -92,12 +92,33 @@ final class ReplicationPump {
         AppendEntriesRequest request = new AppendEntriesRequest(
             ctx.term.getCurrent(), ctx.nodeId, prevLogIndex, prevLogTerm, entriesToSend, ctx.commitIndex
         );
+        // 阶段五：心跳/复制载体附带优先级快照（epoch + 权重表），接收方仅当 epoch 更高才采纳
+        attachPrioritySnapshot(request);
 
         logger.debug("Leader {} calling transportLayer.sendAppendEntries to peer {}, transportLayer={}",
             ctx.nodeId, peerId, ctx.transportLayer.getClass().getName());
         ctx.transportLayer.sendAppendEntries(peerId, request)
             .thenAccept(response -> ctx.executor.execute(
                 () -> doHandleAppendEntriesResponse(peerId, response)));
+    }
+
+    /**
+     * 出站 AppendEntries 附带优先级快照（阶段五传播载体）。
+     *
+     * <p>无优先级表（子组/单机房）或快照 epoch 为 0（从未变更）时不附带，
+     * 旧版本节点收到 null/0 字段据此忽略，协议向后兼容。</p>
+     */
+    private void attachPrioritySnapshot(AppendEntriesRequest request) {
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable table = ctx.priorityTable;
+        if (table == null) {
+            return;
+        }
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot snapshot = table.current();
+        if (snapshot.epoch() <= 0) {
+            return;
+        }
+        request.setPrioritySnapshot(snapshot.epoch(),
+            cn.itcraft.speedboat.strategy.voteweight.PriorityCodec.encode(snapshot.weights()));
     }
 
     /**

@@ -113,6 +113,8 @@ public class RaftNodeImpl implements RaftNode {
         this.roles.bind(reporter);
         this.applyEngine.bind(logStore);
         this.applyEngine.bind(membership);
+        // 阶段五：PRIORITY_CHANGE apply 落表后写父侧独立持久化（子组/单机房为 null，no-op）
+        this.applyEngine.bindPriorityStore(ctx.priorityStore);
         // ActorActor 纪律：ElectionCoordinator 依赖 ApplyEngine（经 ApplyBridge 收敛，
         // 由门面两段布线避免构造顺序环）
         this.election = new ElectionCoordinator(ctx, roles, quorum, logStore, pump::sendAppendEntries);
@@ -473,6 +475,197 @@ public class RaftNodeImpl implements RaftNode {
 
     public boolean proposeRemoveMember(String peerId) {
         return onRaftThread(() -> membership.proposeRemoveMember(peerId));
+    }
+
+    // ==================== 人工升级 API（阶段五运维兜底） ====================
+
+    /**
+     * 人工提升本机房在父组的优先级（阶段五；仅跨机房父组有意义）。
+     *
+     * <p>执行序（全部收敛到 raft 单线程内，见设计文档 §6）：</p>
+     * <ol>
+     *   <li><b>换表</b>：本机房权重 = max(对侧) + 2，epoch+1，来源 PROMOTED；</li>
+     *   <li><b>term 跃升</b>：默认 +{@code termLeap}（配置 promote.term.leap，缺省 100），
+     *       使对侧旧任期在愈合后必然退让；</li>
+     *   <li><b>登基</b>：自投（selfWeight ≥ requiredWeight）免广播直接成为 Leader；</li>
+     *   <li><b>复制</b>：append + replicate 一条 PRIORITY_CHANGE 条目，自身权重已达标故
+     *       本地即可推进提交；</li>
+     *   <li><b>持久化</b>：写父侧独立文件（PriorityStore），重启不丢。</li>
+     * </ol>
+     *
+     * <p><b>前置闸门不在本方法</b>——"对侧机房父组端点全部不可达"由 Speedboat 门面探测
+     * （门面持有对侧端点集合）。本方法只做 raft 线程内状态变更，不复查网络。</p>
+     *
+     * @param operator 操作者（审计必填；由门面校验非空）
+     * @param termLeap term 跃升幅度（&gt;0；门面已按配置缺省补齐）
+     * @param reason   变更原因（审计）
+     * @return true 表示提升已在 raft 线程内生效并复制出去
+     */
+    @Override
+    public boolean promoteDatacenter(String operator, long termLeap, String reason) {
+        if (ctx.priorityTable == null) {
+            logger.warn("Node {} promote rejected: no priority table (not a cross-datacenter parent group)",
+                ctx.nodeId);
+            return false;
+        }
+        if (!ctx.seatHeld) {
+            logger.warn("Node {} promote rejected: not the datacenter representative (no seat)",
+                ctx.nodeId);
+            return false;
+        }
+        return onRaftThread(() -> doPromoteDatacenter(operator, termLeap, reason));
+    }
+
+    /**
+     * 人工回退优先级表到配置派生值（阶段五；与提升走同一条复制+持久化+心跳传播路径）。
+     *
+     * <p>回退<b>不跃升 term、不夺主</b>——它只把本机房权重降回配置值。回退后主机房凭
+     * 更高权重可在下一次选举夺回，但<b>不自动</b>发生：需主机房代表自身发起选举，
+     * 或在 CP 下由 check-quorum 降级后自然触发。切勿把回退自动化。</p>
+     *
+     * <p>本机房已是父组 Leader 时才执行换表（否则拒绝：回退需要以 Leader 身份复制出去，
+     * 否则对侧无法经心跳收到新表）。与提升一致，网络闸门由门面把守。</p>
+     *
+     * @param operator 操作者（审计必填）
+     * @param reason   变更原因（审计）
+     * @return true 表示回退已生效并复制出去
+     */
+    @Override
+    public boolean restoreDefaultPriorities(String operator, String reason) {
+        if (ctx.priorityTable == null) {
+            logger.warn("Node {} restore rejected: no priority table (not a cross-datacenter parent group)",
+                ctx.nodeId);
+            return false;
+        }
+        if (!ctx.seatHeld) {
+            logger.warn("Node {} restore rejected: not the datacenter representative (no seat)",
+                ctx.nodeId);
+            return false;
+        }
+        if (ctx.currentState != NodeState.LEADER) {
+            logger.warn("Node {} restore rejected: not parent leader (state={}); restore must run as leader "
+                + "so the reverted table replicates outward", ctx.nodeId, ctx.currentState);
+            return false;
+        }
+        return onRaftThread(() -> doRestoreDefaultPriorities(operator, reason));
+    }
+
+    /**
+     * 当前父组优先级快照（epoch + 权重表 + 来源）；单机房/子组返回 null。
+     * 任意线程可读（快照本身不可变）。
+     */
+    @Override
+    public cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot getPrioritySnapshot() {
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable table = ctx.priorityTable;
+        return table == null ? null : table.current();
+    }
+
+    /**
+     * 提升编排本体（raft 单线程内）。
+     *
+     * <p>权重数学：本机房取 {@code max(对侧) + 2}，保证
+     * {@code selfWeight ≥ requiredWeight} 自投即成主，且对侧无论如何组合都无法
+     * 同时满足多数派——双主在结构上不可能（见设计文档 §5）。</p>
+     */
+    private boolean doPromoteDatacenter(String operator, long termLeap, String reason) {
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable table = ctx.priorityTable;
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot before = table.current();
+        long termBefore = ctx.term.getCurrent();
+
+        // 1) 换表：本机房权重 = max(对侧) + 2，epoch+1
+        java.util.Map<String, Integer> newWeights = computePromotedWeights(before.weights());
+        long newEpoch = before.epoch() + 1;
+        table.replace(newEpoch, newWeights,
+            cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source.PROMOTED);
+
+        // 2) term 跃升（先于登基：使对侧旧任期在愈合后必然退让）
+        if (termLeap > 0) {
+            ctx.term.updateIfHigher(ctx.term.getCurrent() + termLeap);
+            logStore.persistTermState(ctx.term.getCurrent(), ctx.votedFor, ctx.leaderId);
+        }
+
+        // 3) 登基：已是 Leader（如重复调用）则跳过；否则 startElection 自投成主
+        if (ctx.currentState != NodeState.LEADER) {
+            election.doStartElection();
+            if (ctx.currentState != NodeState.LEADER) {
+                logger.error("Node {} failed to become leader after promote; state={}, epoch={} weights={}",
+                    ctx.nodeId, ctx.currentState, newEpoch, newWeights);
+                return false;
+            }
+        }
+
+        // 4) append + replicate 一条 PRIORITY_CHANGE（自身权重已 ≥ required，本地即可推进提交）
+        PriorityChangeEntry entry = PriorityChangeEntry.create(
+            logStore.getLastLogIndex() + 1, ctx.term.getCurrent(), ctx.nodeId,
+            newEpoch, newWeights, PriorityChangeEntry.SOURCE_PROMOTED, ctx.datacenter, operator, reason);
+        logStore.appendEntry(entry);
+        pump.advanceCommitIndex();
+        pump.sendAppendEntries();
+
+        // 5) 持久化（独立文件；失败仅 WARN，不影响已生效的内存表与复制）
+        if (ctx.priorityStore != null) {
+            ctx.priorityStore.save(table.current());
+        }
+
+        logger.warn("Node {} promoted datacenter {} epoch {} (was {}): term {} -> {}, weights {} -> {}, "
+                + "operator={}, reason={}",
+            ctx.nodeId, ctx.datacenter, newEpoch, before.epoch(), termBefore, ctx.term.getCurrent(),
+            before.weights(), newWeights, operator, reason);
+        return true;
+    }
+
+    /**
+     * 回退编排本体（raft 单线程内）：以配置派生表为新快照、epoch+1、来源 CONFIG，
+     * 走与提升相同的复制 + 持久化 + 心跳传播路径。
+     */
+    private boolean doRestoreDefaultPriorities(String operator, String reason) {
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable table = ctx.priorityTable;
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot before = table.current();
+
+        java.util.Map<String, Integer> configWeights = table.configWeights();
+        long newEpoch = before.epoch() + 1;
+        table.replace(newEpoch, configWeights,
+            cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source.CONFIG);
+
+        PriorityChangeEntry entry = PriorityChangeEntry.create(
+            logStore.getLastLogIndex() + 1, ctx.term.getCurrent(), ctx.nodeId,
+            newEpoch, configWeights, PriorityChangeEntry.SOURCE_CONFIG, ctx.datacenter, operator, reason);
+        logStore.appendEntry(entry);
+        // 回退后本机房权重可能低于 required，故不强推 commit；随心跳复制由多数派自然提交
+        pump.sendAppendEntries();
+
+        if (ctx.priorityStore != null) {
+            ctx.priorityStore.save(table.current());
+        }
+
+        logger.warn("Node {} restored default priorities for datacenter {}: epoch {} (was {}), "
+                + "weights {} -> {}, operator={}, reason={}",
+            ctx.nodeId, ctx.datacenter, newEpoch, before.epoch(), before.weights(), configWeights,
+            operator, reason);
+        return true;
+    }
+
+    /**
+     * 计算提升后的权重表：本机房 = max(对侧) + 2，其余机房保持不变。
+     *
+     * <p>{@code max(对侧) + 2} 保证本机房权重严格超过"对侧最大值 + 1"，从而
+     * {@code selfWeight ≥ total/2 + 1 = requiredWeight}，自投即达法定多数；同时对侧
+     * 即便拿到全部本机房以外的票也无法越过该门槛——唯一性由权重数学而非网络状态保证。</p>
+     */
+    private java.util.Map<String, Integer> computePromotedWeights(
+        java.util.Map<String, Integer> currentWeights) {
+        java.util.Map<String, Integer> next = new java.util.LinkedHashMap<String, Integer>();
+        if (currentWeights != null) {
+            next.putAll(currentWeights);
+        }
+        int maxOther = 0;
+        for (java.util.Map.Entry<String, Integer> e : next.entrySet()) {
+            if (!e.getKey().equals(ctx.datacenter) && e.getValue() != null && e.getValue() > maxOther) {
+                maxOther = e.getValue();
+            }
+        }
+        next.put(ctx.datacenter, maxOther + 2);
+        return next;
     }
 
     public java.util.concurrent.CompletableFuture<LockOpResponse> forwardLockOp(LockOpRequest request) {

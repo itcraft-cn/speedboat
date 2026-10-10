@@ -208,6 +208,43 @@ public interface RaftNode {
     boolean proposeRemoveMember(String peerId);
 
     /**
+     * 人工提升<b>本机房</b>在父组中的优先级（阶段五人工升级 API；raft 线程内执行）。
+     *
+     * <p>仅跨机房级联父组有效（单机房/子组 {@code priorityTable} 为 null 时返回 false）。
+     * 接受后：本机房权重抬升为 {@code max(对侧权重) + 2}（使其自投即可成主且结构上不可能双主）、
+     * term 按 {@code termLeap} 跃升（主机房旧任期追不上）、随选举登基为父组 Leader、
+     * 提出 {@code PRIORITY_CHANGE} 日志条目复制到可达 peer、并写入父侧独立持久化。</p>
+     *
+     * <p><b>前置校验归门面</b>（连通性闸门、operator 非空、目标机房为本机房、审计）；
+     * 本方法只做 raft 线程内的状态变更，不再复查网络。</p>
+     *
+     * @param operator 操作者（审计必填）
+     * @param termLeap term 跃升步长（须 &gt; 0）
+     * @param reason   变更原因（审计）
+     * @return true 表示已在父组内完成提升并登基为 Leader
+     */
+    boolean promoteDatacenter(String operator, long termLeap, String reason);
+
+    /**
+     * 回退到配置派生的默认优先级表（阶段五；raft 线程内执行）。
+     *
+     * <p>以配置权重为新快照、epoch 递增、来源置 CONFIG，并走同一条复制+持久化+心跳传播路径。
+     * 回退后主机房凭更高权重可在<b>下一次</b>选举夺回，但不自动发生——需主机房代表自行发起选举。</p>
+     *
+     * @param operator 操作者（审计必填）
+     * @param reason   回退原因（审计）
+     * @return true 表示已完成回退并复制
+     */
+    boolean restoreDefaultPriorities(String operator, String reason);
+
+    /**
+     * 当前优先级快照（epoch / 权重表 / 来源）。
+     *
+     * @return 当前快照；单机房/子组（无优先级表）返回 null
+     */
+    cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot getPrioritySnapshot();
+
+    /**
      * 锁操作转发（命名锁设计）：非 Leader 成员把序列化的 LockCommand
      * 经本方法送达当前 Leader propose。
      *
@@ -226,6 +263,8 @@ public interface RaftNode {
         List<String> peerIds;
         ElectionTimeout electionTimeout;
         VoteWeightStrategy voteWeightStrategy;
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable priorityTable;
+        cn.itcraft.speedboat.persistence.PriorityStore priorityStore;
         cn.itcraft.speedboat.strategy.consistency.ConsistencyPolicy consistencyPolicy;
         GroupStrategy groupStrategy;
         TransportLayer transportLayer;
@@ -262,6 +301,35 @@ public interface RaftNode {
 
         public Builder voteWeightStrategy(VoteWeightStrategy voteWeightStrategy) {
             this.voteWeightStrategy = voteWeightStrategy;
+            return this;
+        }
+
+        /**
+         * 注入机房优先级表（阶段五人工升级 API 用）。
+         *
+         * <p>与 {@link #voteWeightStrategy(VoteWeightStrategy)} 共享<b>同一实例</b>——策略每次
+         * 权重计算读其最新快照；本表供 PRIORITY_CHANGE 应用分派与 RPC 传播读取。仅跨机房
+         * 级联父组注入；子组与单机房路径不注入即为 null，行为逐字节不变。</p>
+         *
+         * @param priorityTable 机房优先级表
+         * @return builder 自身
+         */
+        public Builder priorityTable(cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable priorityTable) {
+            this.priorityTable = priorityTable;
+            return this;
+        }
+
+        /**
+         * 注入父侧独立优先级持久化（阶段五；与 {@code RaftStore} 分离，不动其接口）。
+         *
+         * <p>仅跨机房级联父组注入；子组与单机房路径不注入即为 null。PRIORITY_CHANGE 条目
+         * 落表后写入该 store，父组启动时以其为初值覆盖配置派生表（重启不丢提升状态）。</p>
+         *
+         * @param priorityStore 父侧优先级持久化
+         * @return builder 自身
+         */
+        public Builder priorityStore(cn.itcraft.speedboat.persistence.PriorityStore priorityStore) {
+            this.priorityStore = priorityStore;
             return this;
         }
 

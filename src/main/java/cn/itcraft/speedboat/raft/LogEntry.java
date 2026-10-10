@@ -13,7 +13,8 @@ public class LogEntry {
     public enum EntryType {
         LEADER_INFO,      // Leader标识
         MEMBER_CHANGE,    // 成员变更
-        COMMAND           // 命令（分布式锁等）
+        COMMAND,          // 命令（分布式锁等）
+        PRIORITY_CHANGE   // 机房优先级变更（阶段五人工升级 API；config-change 日志复制）
     }
 
     private long index;

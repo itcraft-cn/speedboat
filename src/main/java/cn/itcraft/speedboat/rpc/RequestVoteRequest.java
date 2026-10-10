@@ -24,6 +24,19 @@ public class RequestVoteRequest extends RpcRequest {
      */
     private String datacenter;
 
+    /**
+     * 优先级表版本号（阶段五人工升级 API 传播载体）。
+     *
+     * <p>候选者随 RequestVote 携带当前优先级快照的 epoch；接收方仅当该值 &gt; 本表 epoch
+     * 才采纳其权重。0 表示不携带（子组/单机房/旧版本节点），接收方忽略。</p>
+     *
+     * <p><b>注意事项：</b>本字段与 {@link #priorityWeights} 必须追加在类的<b>末尾</b>
+     * （Protostuff 按声明顺序分配 field ID，追加到末尾保持线格式兼容）。</p>
+     */
+    private long priorityEpoch;
+    /** 优先级权重表编码（"dc=w,dc=w"；空表示不携带）。与 {@link #priorityEpoch} 成对追加在类末尾。 */
+    private String priorityWeights;
+
     public RequestVoteRequest() {
         super();
     }
@@ -67,5 +80,26 @@ public class RequestVoteRequest extends RpcRequest {
      */
     public String getDatacenter() {
         return datacenter;
+    }
+
+    /** 优先级表版本号（0 表示不携带） */
+    public long getPriorityEpoch() {
+        return priorityEpoch;
+    }
+
+    /** 优先级权重表编码（"dc=w,dc=w"；空表示不携带） */
+    public String getPriorityWeights() {
+        return priorityWeights;
+    }
+
+    /**
+     * 携带优先级传播快照（候选者随 RequestVote 传播用）。
+     *
+     * @param priorityEpoch   优先级表版本号（&gt; 本表 epoch 才被接收方采纳）
+     * @param priorityWeights 权重表编码（"dc=w,dc=w"）；可为 null
+     */
+    public void setPrioritySnapshot(long priorityEpoch, String priorityWeights) {
+        this.priorityEpoch = priorityEpoch;
+        this.priorityWeights = priorityWeights;
     }
 }

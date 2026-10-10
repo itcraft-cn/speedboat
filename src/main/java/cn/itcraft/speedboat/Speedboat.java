@@ -302,6 +302,18 @@ public class Speedboat {
     private Map<String, Integer> parentDatacenterWeights = java.util.Collections.emptyMap();
 
     /**
+     * 父组全部 peer 端点（含对侧与本机房非代表进程；阶段五连通性闸门探测源）。
+     * 单机房模式下为空。
+     */
+    private final List<NodeEndpoint> parentPeerEndpoints = new ArrayList<>();
+    /** 父组各 peer 的机房标识（闸门据此只探"对侧机房"端点） */
+    private final Map<String, String> parentPeerDatacenters = new HashMap<>();
+    /** 父组优先级表（阶段五人工升级；与父组投票策略共享同一实例） */
+    private cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable parentPriorityTable;
+    /** 父侧独立优先级持久化（阶段五；重启不丢提升状态） */
+    private cn.itcraft.speedboat.persistence.PriorityStore parentPriorityStore;
+
+    /**
      * 子组角色变化 → 驱动父组"代表席位"门控。
      *
      * <p>父组的投票成员是各机房的<b>子组 Leader</b>。同一机房同时只能有一个代表，
@@ -344,9 +356,10 @@ public class Speedboat {
             allDatacenterIds.add(resolveDatacenterId(config, i));
         }
 
-        List<NodeEndpoint> parentPeerEndpoints = new ArrayList<>();
+        // 复用字段（阶段五起为实例字段，供提升闸门探测对侧端点）：先清空再填充
+        parentPeerEndpoints.clear();
+        parentPeerDatacenters.clear();
         List<String> parentPeerIds = new ArrayList<>();
-        Map<String, String> parentPeerDatacenters = new HashMap<>();
 
         // 父组采用**全网互联**：peer 铺满所有机房的全部进程（仅本进程自身除外），
         // 而不是只连对侧机房。
@@ -397,9 +410,29 @@ public class Speedboat {
         effectiveWeights.putAll(config.getDatacenterWeights());
         this.parentDatacenterWeights = effectiveWeights;
 
-        // 兜底权重 1：未登记的机房按最低权重，不会凭空获得多数派优势
+        // 阶段五：父组优先级表（可运行时换表）与投票策略共享同一实例。
+        // 启动时若独立持久化文件存在，则以其为初值覆盖配置派生表（重启不丢提升状态）。
+        this.parentPriorityTable =
+            new cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable(
+                effectiveWeights,
+                cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Source.CONFIG);
+        this.parentPriorityStore =
+            new cn.itcraft.speedboat.persistence.PriorityStore(
+                new java.io.File(config.getRaftPersistenceDir(), parentNodeId));
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot persistedPriority =
+            parentPriorityStore.load();
+        if (persistedPriority != null && !persistedPriority.weights().isEmpty()) {
+            parentPriorityTable.replace(persistedPriority.epoch(), persistedPriority.weights(),
+                persistedPriority.source());
+            this.parentDatacenterWeights = persistedPriority.weights();
+            logger.info("Parent priority restored from store: epoch={} source={} weights={}",
+                persistedPriority.epoch(), persistedPriority.source(), persistedPriority.weights());
+        }
+
+        // 兜底权重 1：未登记的机房按最低权重，不会凭空获得多数派优势。
+        // 四参构造把优先级表注入策略：策略每次权重计算读其最新快照。
         VoteWeightStrategy parentStrategy =
-            new DatacenterPriorityVoteWeightStrategy(effectiveWeights, datacenterId, 1);
+            new DatacenterPriorityVoteWeightStrategy(effectiveWeights, datacenterId, 1, parentPriorityTable);
 
         NodeEndpoint parentLocalEndpoint = new NodeEndpoint(parentNodeId, localIp, parentPort);
         parentNettyTransport = new NettyTransport(
@@ -419,6 +452,9 @@ public class Speedboat {
             .stateMachine(new NoopStateMachine())
             .datacenter(datacenterId)
             .voteWeightStrategy(parentStrategy)
+            // 阶段五：优先级表 + 父侧独立持久化（人工升级 API 与重启恢复用）
+            .priorityTable(parentPriorityTable)
+            .priorityStore(parentPriorityStore)
             // 一致性策略（CP/AP）：仅父组消费。子组与单机房路径不注入即缺省 CP，
             // 机房内部选举不受降级接管影响——否则本机房内部分区会产出多个代表参与父组。
             .consistencyPolicy(config.getConsistencyPolicy())
@@ -954,7 +990,194 @@ public class Speedboat {
         checkSingletonRunning();
         return instance.doGetLock(lockName);
     }
-    
+
+    // ==================== 人工升级 API（阶段五运维兜底） ====================
+
+    /**
+     * 人工提升本机房在父组的优先级（阶段五运维兜底）。
+     *
+     * <p>仅在跨机房模式下有效。本方法是<b>唯一入口</b>——不做远程接口、不做控制台。
+     * 接受前依次校验：单例在跑、跨机房模式、操作者非空、目标机房等于本机房；
+     * 随后执行<b>连通性闸门</b>：探对侧机房全部父组端点，<b>任一可达即拒绝</b>
+     * （此时强行提升会打开"双主"窗口，唯一性保证被破坏）。全部不可达才放行到
+     * raft 线程执行换表 + term 跃升 + 登基 + 复制 + 持久化。</p>
+     *
+     * <p>每次调用（无论接受/拒绝）都打一条 {@code PROMOTE-AUDIT} 结构化审计日志，
+     * 含时间、操作者、节点、机房、接受/拒绝、原因、term/epoch 前后值与权重表前后值。</p>
+     *
+     * @param operator     操作者标识（必填；建议用真实账号/工号，便于审计追溯）
+     * @param datacenterId 目标机房标识（必须等于本机房，否则拒绝）
+     * @param reason       变更原因（审计）
+     * @return true 表示提升已在父组生效并复制出去；false 表示被闸门拒绝或执行失败
+     */
+    public static boolean promoteDatacenter(String operator, String datacenterId, String reason) {
+        if (instance == null || !instance.running) {
+            logger.warn("PROMOTE-AUDIT operator={} target={} reason={} result=REJECTED cause=singleton-not-running",
+                operator, datacenterId, reason);
+            return false;
+        }
+        return instance.doPromoteDatacenter(operator, datacenterId, reason);
+    }
+
+    /**
+     * 人工回退优先级表到配置派生值（阶段五；与提升同一条复制+持久化+心跳传播路径）。
+     *
+     * <p>回退<b>不跃升 term、不夺主</b>：只把本机房权重降回配置值，主机房凭更高权重
+     * 可在下一次选举夺回，但不自动发生。同样打 {@code PROMOTE-AUDIT} 审计日志。</p>
+     *
+     * @param operator 操作者标识（必填）
+     * @param reason   变更原因（审计）
+     * @return true 表示回退已在父组生效并复制出去
+     */
+    public static boolean restoreDefaultPriorities(String operator, String reason) {
+        if (instance == null || !instance.running) {
+            logger.warn("PROMOTE-AUDIT operator={} result=REJECTED cause=singleton-not-running reason={}",
+                operator, reason);
+            return false;
+        }
+        return instance.doRestoreDefaultPriorities(operator, reason);
+    }
+
+    /**
+     * 当前父组优先级快照（epoch + 权重表 + 来源）；单机房/子组返回 null。
+     * 运维查询用，任意线程可读。
+     */
+    public static cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot getPrioritySnapshot() {
+        checkSingletonRunning();
+        return instance.parentRaftNode == null ? null : instance.parentRaftNode.getPrioritySnapshot();
+    }
+
+    /**
+     * 提升本体（实例级）：校验 + 连通性闸门 + 委派父组 RaftNode + 审计。
+     */
+    private boolean doPromoteDatacenter(String operator, String datacenterId, String reason) {
+        // ---- 校验：跨机房模式 + 操作者非空 + 目标机房匹配 ----
+        if (!crossDatacenterMode || parentRaftNode == null) {
+            auditPromote("REJECTED", operator, datacenterId, reason, "not-cross-datacenter-mode", null, null);
+            return false;
+        }
+        if (operator == null || operator.trim().isEmpty()) {
+            auditPromote("REJECTED", operator, datacenterId, reason, "operator-required", null, null);
+            return false;
+        }
+        if (datacenterId == null || !datacenterId.equals(this.datacenterId)) {
+            auditPromote("REJECTED", operator, datacenterId, reason,
+                "target-datacenter-mismatch(local=" + this.datacenterId + ")", null, null);
+            return false;
+        }
+        // ---- 连通性闸门：对侧机房父组端点任一可达即拒绝 ----
+        if (anyOppositeParentEndpointReachable()) {
+            auditPromote("REJECTED", operator, datacenterId, reason, "opposite-datacenter-still-reachable",
+                null, null);
+            return false;
+        }
+        // ---- 放行到父组 raft 线程：委派前后各捕获一次快照供审计 ----
+        AuditState before = captureAuditState();
+        long termLeap = config.getPromoteTermLeap();
+        boolean ok = parentRaftNode.promoteDatacenter(operator, termLeap, reason);
+        AuditState after = captureAuditState();
+        auditPromote(ok ? "ACCEPTED" : "EXEC-FAILED", operator, datacenterId, reason,
+            "termLeap=" + termLeap, before, after);
+        return ok;
+    }
+
+    /** 回退本体（实例级）：校验 + 委派父组 RaftNode + 审计。回退不做连通性闸门（它降低优先级，不打开双主窗口）。 */
+    private boolean doRestoreDefaultPriorities(String operator, String reason) {
+        if (!crossDatacenterMode || parentRaftNode == null) {
+            auditPromote("REJECTED", operator, null, reason, "not-cross-datacenter-mode", null, null);
+            return false;
+        }
+        if (operator == null || operator.trim().isEmpty()) {
+            auditPromote("REJECTED", operator, null, reason, "operator-required", null, null);
+            return false;
+        }
+        AuditState before = captureAuditState();
+        boolean ok = parentRaftNode.restoreDefaultPriorities(operator, reason);
+        AuditState after = captureAuditState();
+        auditPromote(ok ? "ACCEPTED" : "EXEC-FAILED", operator, null, reason, "restore-default", before, after);
+        return ok;
+    }
+
+    /** 审计用状态切片（term + 优先级快照）；父组不存在时全零/空 */
+    private static final class AuditState {
+        final long term;
+        final long epoch;
+        final Object weights;
+
+        AuditState(long term, long epoch, Object weights) {
+            this.term = term;
+            this.epoch = epoch;
+            this.weights = weights;
+        }
+    }
+
+    /** 捕获当前父组 term 与优先级快照（供审计前后对比） */
+    private AuditState captureAuditState() {
+        if (parentRaftNode == null) {
+            return new AuditState(0, 0, null);
+        }
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot snap =
+            parentRaftNode.getPrioritySnapshot();
+        long term = 0;
+        try {
+            term = parentRaftNode.getTerm().getCurrent();
+        } catch (Exception ignored) {
+            // term 读取失败不影响审计主流程
+        }
+        return new AuditState(term, snap == null ? 0 : snap.epoch(), snap == null ? null : snap.weights());
+    }
+
+    /**
+     * 连通性闸门：探对侧机房全部父组端点，<b>任一可达</b>返回 true（表示网络仍通，须拒绝提升）。
+     *
+     * <p>对每个"机房 != 本机房"的父组端点做 TCP 连接探测（短超时）。只要有一个能连上，
+     * 说明主机房未死也未分区——此时提升会打开"双主"窗口。全部连不上才认为可安全提升。
+     * 探测失败（连接被拒/超时）不视为可达。单机房模式无对侧端点，恒返回 false。</p>
+     */
+    private boolean anyOppositeParentEndpointReachable() {
+        for (NodeEndpoint ep : parentPeerEndpoints) {
+            String peerDc = parentPeerDatacenters.get(ep.getNodeId());
+            if (peerDc == null || peerDc.equals(datacenterId)) {
+                continue; // 只探对侧机房
+            }
+            try (java.net.Socket sock = new java.net.Socket()) {
+                sock.connect(new java.net.InetSocketAddress(ep.getHost(), ep.getPort()),
+                    CONNECT_PROBE_TIMEOUT_MS);
+                logger.info("Connectivity gate: opposite endpoint {}/{} (dc={}) reachable",
+                    ep.getHost(), ep.getPort(), peerDc);
+                return true;
+            } catch (Exception e) {
+                logger.debug("Connectivity gate: opposite endpoint {}/{} unreachable ({})",
+                    ep.getHost(), ep.getPort(), e.toString());
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 结构化审计日志（阶段五；每次提升/回退调用打一条，含前后 term/epoch/权重表）。
+     * 固定字段顺序便于 grep：op/operator/node/dc/target/reason/detail/termBefore/termAfter/
+     * epochBefore/epochAfter/weightsBefore/weightsAfter。
+     */
+    private void auditPromote(String op, String operator, String targetDc, String reason, String detail,
+                              AuditState before, AuditState after) {
+        long termBefore = before == null ? 0 : before.term;
+        long termAfter = after == null ? 0 : after.term;
+        long epochBefore = before == null ? 0 : before.epoch;
+        long epochAfter = after == null ? 0 : after.epoch;
+        Object weightsBefore = before == null ? null : before.weights;
+        Object weightsAfter = after == null ? null : after.weights;
+        logger.warn("PROMOTE-AUDIT op={} operator={} node={} dc={} target={} reason={} detail={} "
+                + "termBefore={} termAfter={} epochBefore={} epochAfter={} "
+                + "weightsBefore={} weightsAfter={}",
+            op, operator, nodeId, datacenterId, targetDc, reason, detail,
+            termBefore, termAfter, epochBefore, epochAfter,
+            weightsBefore, weightsAfter);
+    }
+
+    /** 连通性探测超时（毫秒）：单端点短超时，避免闸门长时间阻塞调用方 */
+    private static final int CONNECT_PROBE_TIMEOUT_MS = 1000;
+
     private static void checkSingletonRunning() {
         if (instance == null || !instance.running) {
             throw new IllegalStateException("Speedboat singleton not running");

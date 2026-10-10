@@ -175,6 +175,10 @@ final class RaftLogStore {
             } else if (e.getEntryType() == LogEntry.EntryType.COMMAND) {
                 mirror = CommandLogEntry.create(e.getIndex(), e.getTerm(), e.getLeaderId(),
                     e.getData() == null ? new byte[0] : e.getData().clone());
+            } else if (e.getEntryType() == LogEntry.EntryType.PRIORITY_CHANGE) {
+                // 优先级变更条目：从 data 字节重建（data 内已编码 epoch/weights/source/operator/reason）
+                mirror = PriorityChangeEntry.fromData(e.getIndex(), e.getTerm(), e.getLeaderId(),
+                    e.getData() == null ? new byte[0] : e.getData().clone());
             } else {
                 LogEntry plain = new LogEntry(e.getIndex(), e.getTerm(), e.getLeaderId());
                 plain.setEntryType(e.getEntryType());

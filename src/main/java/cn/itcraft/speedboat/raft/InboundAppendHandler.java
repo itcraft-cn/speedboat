@@ -88,6 +88,10 @@ final class InboundAppendHandler {
         resetElectionTimeout.run();
         ctx.lastHeartbeatNanos = System.nanoTime();
 
+        // 阶段五：心跳携带的优先级快照先行收敛（epoch 更高才采纳，与日志一致性检查无关），
+        // 使提升后的优先级表能随父组心跳传播到全网。
+        ctx.adoptPrioritySnapshot(request.getPriorityEpoch(), request.getPriorityWeights());
+
         logger.debug("Follower {} received appendEntries from leader {}, entries={}, prevLogIndex={}, leaderCommit={}",
             ctx.nodeId, request.getLeaderId(), request.getEntries().size(), request.getPrevLogIndex(), request.getLeaderCommit());
 

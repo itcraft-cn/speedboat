@@ -125,6 +125,8 @@ final class ElectionCoordinator {
             RequestVoteRequest request = new RequestVoteRequest(
                 ctx.term.getCurrent(), ctx.nodeId, quorum.selfWeight(ctx.term.getCurrent()), ctx.datacenter
             );
+            // 阶段五：投票请求同样携带优先级快照，投票方可顺带收敛到更高 epoch
+            attachPrioritySnapshot(request);
 
             ctx.transportLayer.sendRequestVote(peerId, request)
                 .thenAccept(response -> ctx.executor.execute(() -> {
@@ -194,6 +196,36 @@ final class ElectionCoordinator {
 
         sendAppendFlows.run();
         logger.info("Node {} became leader for term {}, commitIndex set to {}", ctx.nodeId, ctx.term.getCurrent(), ctx.commitIndex);
+    }
+
+    /**
+     * 出站 RequestVote 附带优先级快照（阶段五传播载体）。
+     *
+     * <p>无优先级表（子组/单机房）或 epoch 为 0（从未变更）时不附带，
+     * 旧版本节点收到 null/0 字段据此忽略，协议向后兼容。</p>
+     */
+    private void attachPrioritySnapshot(RequestVoteRequest request) {
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable table = ctx.priorityTable;
+        if (table == null) {
+            return;
+        }
+        cn.itcraft.speedboat.strategy.voteweight.DatacenterPriorityTable.Snapshot snapshot = table.current();
+        if (snapshot.epoch() <= 0) {
+            return;
+        }
+        request.setPrioritySnapshot(snapshot.epoch(),
+            cn.itcraft.speedboat.strategy.voteweight.PriorityCodec.encode(snapshot.weights()));
+    }
+
+    /**
+     * 入站消息携带的优先级快照收敛（阶段五；与是否授票无关）。
+     * 委派到 {@link NodeContext#adoptPrioritySnapshot}（与 AppendEntries 路径共用同一实现）。
+     *
+     * @param remoteEpoch   远端携带的 epoch
+     * @param remoteWeights 远端携带的权重表编码（"dc=w,dc=w"）；可为 null
+     */
+    void adoptPrioritySnapshot(long remoteEpoch, String remoteWeights) {
+        ctx.adoptPrioritySnapshot(remoteEpoch, remoteWeights);
     }
 
     // ==================== 预投票 ====================
@@ -369,6 +401,10 @@ final class ElectionCoordinator {
      * </ol>
      */
     RequestVoteResponse doHandleRequestVote(RequestVoteRequest request) {
+        // 阶段五：投票请求携带的优先级快照先行收敛（epoch 更高才采纳，与是否授票无关），
+        // 使投票方在分区愈合后能把已提升的优先级表带给对侧。
+        adoptPrioritySnapshot(request.getPriorityEpoch(), request.getPriorityWeights());
+
         // 跨机房父组：未持有代表席位的节点不代表本机房投票。
         // 否则同一机房会出现多份"代表"投票，父组票数被虚增、多数派判定失真。
         if (!ctx.seatHeld) {

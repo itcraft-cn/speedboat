@@ -43,6 +43,11 @@ public class DatacenterPriorityVoteWeightStrategy implements VoteWeightStrategy 
     private final Map<String, Integer> weightsByDatacenter;
     private final String localDatacenter;
     private final int defaultWeight;
+    /**
+     * 可运行时替换的优先级表（阶段五人工升级 API 用）；null 表示退化为构造期不可变
+     * Map（单机房与既有部署路径，行为逐字节不变）。
+     */
+    private final DatacenterPriorityTable priorityTable;
 
     /**
      * @param weightsByDatacenter 机房标识 → 权重（null 视为空 Map）
@@ -52,6 +57,20 @@ public class DatacenterPriorityVoteWeightStrategy implements VoteWeightStrategy 
     public DatacenterPriorityVoteWeightStrategy(Map<String, Integer> weightsByDatacenter,
                                                 String localDatacenter,
                                                 int defaultWeight) {
+        this(weightsByDatacenter, localDatacenter, defaultWeight, null);
+    }
+
+    /**
+     * @param weightsByDatacenter 机房标识 → 权重（null 视为空 Map；仅当 priorityTable 为 null 时生效）
+     * @param localDatacenter     本机房标识（候选者未自报机房时的兜底）
+     * @param defaultWeight       未在权重表中登记的机房所用权重（须 &gt;= {@value #MIN_WEIGHT}）
+     * @param priorityTable       可运行时替换的优先级表；非 null 时每次权重计算读其最新快照，
+     *                           构造期 Map 仅作初始值被忽略
+     */
+    public DatacenterPriorityVoteWeightStrategy(Map<String, Integer> weightsByDatacenter,
+                                                String localDatacenter,
+                                                int defaultWeight,
+                                                DatacenterPriorityTable priorityTable) {
         Objects.requireNonNull(localDatacenter, "localDatacenter cannot be null");
         if (defaultWeight < MIN_WEIGHT) {
             throw new IllegalArgumentException("defaultWeight must be >= " + MIN_WEIGHT + ", got " + defaultWeight);
@@ -61,6 +80,7 @@ public class DatacenterPriorityVoteWeightStrategy implements VoteWeightStrategy 
             : Collections.unmodifiableMap(new LinkedHashMap<String, Integer>(weightsByDatacenter));
         this.localDatacenter = localDatacenter;
         this.defaultWeight = defaultWeight;
+        this.priorityTable = priorityTable;
     }
 
     /**
@@ -146,16 +166,29 @@ public class DatacenterPriorityVoteWeightStrategy implements VoteWeightStrategy 
             : candidateDatacenter;
     }
 
-    /** 取某机房的权重，未登记时用兜底权重，并钳制到下限 */
+    /** 取某机房的权重，未登记时用兜底权重，并钳制到下限。注入了优先级表时读其最新快照。 */
     private int weightOf(String datacenter) {
-        Integer configured = weightsByDatacenter.get(datacenter);
+        Integer configured = activeWeights().get(datacenter);
         int weight = configured == null ? defaultWeight : configured.intValue();
         return Math.max(weight, MIN_WEIGHT);
     }
 
-    /** 只读的权重表视图（日志与运维查询用） */
+    /**
+     * 当前生效的权重表：注入了优先级表则读其最新快照（支持运行时热更新），
+     * 否则返回构造期不可变 Map（既有路径，行为不变）。
+     */
+    private Map<String, Integer> activeWeights() {
+        return priorityTable != null ? priorityTable.current().weights() : weightsByDatacenter;
+    }
+
+    /** 只读的权重表视图（日志与运维查询用）。优先反映优先级表最新快照。 */
     public Map<String, Integer> getWeightsByDatacenter() {
-        return weightsByDatacenter;
+        return activeWeights();
+    }
+
+    /** 关联的优先级表（可为 null；人工升级 API 经此引用换表） */
+    public DatacenterPriorityTable priorityTable() {
+        return priorityTable;
     }
 
     /** 本机房标识 */

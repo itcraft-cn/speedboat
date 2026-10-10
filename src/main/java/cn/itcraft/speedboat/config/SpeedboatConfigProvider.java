@@ -239,4 +239,15 @@ public interface SpeedboatConfigProvider {
     default java.util.Map<String, Integer> getDatacenterWeights() {
         return java.util.Collections.emptyMap();
     }
+
+    /**
+     * 人工升级 API 的 term 跃升步长（阶段五；键 = {@code promote.term.leap}）。
+     *
+     * <p>{@code promoteDatacenter} 被接受后，本机房父组 term 直接抬升该步长，使主机房旧任期
+     * 追不上、恢复后以低 term 退让。默认 100：既保证跃升远超正常选举抖动，又不至于一次
+     * 抬得过大。值必须 &gt; 0，非法值回退默认。</p>
+     */
+    default long getPromoteTermLeap() {
+        return 100L;
+    }
 }
